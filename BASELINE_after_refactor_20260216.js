@@ -648,15 +648,20 @@ function getPayload_(e) {
 /******************** SHEET HELPERS ********************/
 function ensureHeaders_(sheet, payload) {
   var meta = [
-    CONFIG.APPLICANT_ID_HEADER,
-    "Folder_Url",
-    "PortalLastUpdateAt",
-    "Portal_Submitted",
-    "Physical_Exam_Site",
-    "Subjects_Selected_Canonical",
-    CONFIG.PARENT_EMAIL_CORRECTED_HEADER,
-    "File_Log"
-  ];
+  CONFIG.APPLICANT_ID_HEADER,
+  "Folder_Url",
+  "PortalLastUpdateAt",
+  "Portal_Submitted",
+  "Physical_Exam_Site",
+  "Subjects_Selected_Canonical",
+  CONFIG.PARENT_EMAIL_CORRECTED_HEADER,
+  "File_Log",
+
+  // ✅ NEW — verification tracking
+  "Doc_Last_Verified_At",
+  "Doc_Last_Verified_By"
+];
+
 
   for (var i = 0; i < CONFIG.DOCS.length; i++) {
     meta.push(CONFIG.DOCS[i].status);
@@ -795,3 +800,76 @@ function jsonOutput_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+/******************** ADMIN DOC VERIFICATION ********************/
+function adminVerifyDocument_(applicantId, fieldName, status, comment, adminEmail) {
+
+  applicantId = clean_(applicantId);
+  fieldName = clean_(fieldName);
+  status = clean_(status);
+  comment = clean_(comment);
+  adminEmail = clean_(adminEmail);
+
+  if (!applicantId || !fieldName) {
+    throw new Error("Missing applicantId or fieldName.");
+  }
+
+  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
+
+  var found = findRowByIdEmail_(sheet, applicantId, clean_(sheet.getRange(2, findCol_(sheet, "Parent_Email")).getValue()).toLowerCase());
+  if (!found) throw new Error("Applicant not found.");
+
+  var docMeta = docMetaByField_(fieldName);
+  if (!docMeta) throw new Error("Invalid document field.");
+
+  if (!CONFIG.DOC_STATUS[status]) {
+    throw new Error("Invalid verification status.");
+  }
+
+  var updates = {};
+  updates[docMeta.status] = status;
+  updates[docMeta.comment] = comment || "";
+  updates.Doc_Last_Verified_At = new Date().toISOString();
+  updates.Doc_Last_Verified_By = adminEmail || "SYSTEM";
+
+  writeBack_(sheet, found.rowNum, updates);
+
+  log_(logSheet, "DOC VERIFY",
+    "ApplicantID=" + applicantId +
+    " field=" + fieldName +
+    " status=" + status +
+    " by=" + (adminEmail || "SYSTEM")
+  );
+
+  return { ok: true };
+}
+
+// test code
+function test_ShowConfig() {
+  Logger.log("SHEET_ID=" + CONFIG.SHEET_ID);
+  Logger.log("LOG_SHEET_ID=" + CONFIG.LOG_SHEET_ID);
+  Logger.log("LOG_SHEET_NAME=" + CONFIG.LOG_SHEET_NAME);
+}
+
+function test_DumpConfigKeys() {
+  Logger.log(JSON.stringify(Object.keys(CONFIG).sort(), null, 2));
+}
+
+function test_LogSheetWrite() {
+  // Open Portal Log spreadsheet by ID
+  var ss = SpreadsheetApp.openById(CONFIG.LOG_SHEET_ID);
+  var sheet = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
+
+  if (!sheet) {
+    throw new Error(
+      "Sheet not found: " + CONFIG.LOG_SHEET_NAME +
+      " (Spreadsheet: " + ss.getName() + ")"
+    );
+  }
+
+  // Minimal write first (don’t push a 50-column row until we confirm wiring)
+  sheet.appendRow([new Date(), "TEST", "CONFIG_OK"]);
+
+  Logger.log("Log sheet write successful -> " + ss.getName() + " / " + sheet.getName());
+}
