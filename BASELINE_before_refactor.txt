@@ -92,7 +92,7 @@ var CONFIG = {
 };
 
 /******************** ENTRYPOINT: POST ********************/
-function BASELINE_doPost(e) {
+function doPost(e) {
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   var dataSheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
@@ -131,7 +131,7 @@ function BASELINE_doPost(e) {
 }
 
 /******************** ENTRYPOINT: GET ********************/
-function BASELINE_doGet(e) {
+function doGet(e) {
   var view = String((e.parameter.view || "portal")).toLowerCase();
   var id = clean_(e.parameter.id || "");
 
