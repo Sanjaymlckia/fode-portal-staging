@@ -7,7 +7,7 @@ function renderAdminApp_(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 
-  var t = HtmlService.createTemplateFromFile("Admin");
+  var t = HtmlService.createTemplateFromFile("AdminUI");
   t.BRAND = CONFIG.BRAND || {};
   t.USER_EMAIL = email;
   t.WEBAPP_URL = CONFIG.WEBAPP_URL;
@@ -17,13 +17,10 @@ function renderAdminApp_(e) {
 }
 
 function isAdmin_(email) {
-  var e = clean_(email).toLowerCase();
-  if (!e) return false;
-  var list = CONFIG.ADMIN_EMAILS || [];
-  for (var i = 0; i < list.length; i++) {
-    if (clean_(list[i]).toLowerCase() === e) return true;
-  }
-  return false;
+  email = String(email || "").toLowerCase().trim();
+  return (CONFIG.ADMIN_EMAILS || []).map(function(e){
+    return String(e).toLowerCase().trim();
+  }).indexOf(email) >= 0;
 }
 
 function admin_searchApplicants(payload) {
@@ -172,11 +169,14 @@ function admin_setOverallStatus(payload) {
   var sh = openDataSheet_();
   var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
   requireHeaders_(idx, ["Doc_Verification_Status","Portal_Access_Status","Doc_Last_Verified_At","Doc_Last_Verified_By"]);
-
-  setCell_(sh, rowNumber, idx, "Doc_Verification_Status", action);
-  if (action === "Fraudulent") setCell_(sh, rowNumber, idx, "Portal_Access_Status", "Locked");
-  setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
-  setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
+  var patch = {};
+  patch[SCHEMA.DOC_VERIFICATION_STATUS] = action;
+  if (action === "Fraudulent") {
+    patch[SCHEMA.PORTAL_ACCESS_STATUS] = "Locked";
+  }
+  patch[SCHEMA.DOC_LAST_VERIFIED_AT] = new Date();
+  patch[SCHEMA.DOC_LAST_VERIFIED_BY] = adminEmail || "admin";
+  applyPatch_(sh, rowNumber, patch);
 
   log_(openLogSheet_(), "ADMIN_OVERALL_STATUS", "row=" + rowNumber + " action=" + action + " by=" + (adminEmail || "admin") + " reason=" + (reason || "-"));
   return { ok: true };
@@ -285,4 +285,8 @@ function recomputeOverallDocStatus_(sh, rowNumber, idx, docMap) {
   if (hasRejected) return "Rejected";
   if (requiredVerified) return "Verified";
   return "Pending";
+}
+
+function test_AdminAuth() {
+  Logger.log("Active user: " + Session.getActiveUser().getEmail());
 }

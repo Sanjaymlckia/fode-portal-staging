@@ -115,7 +115,7 @@ function doGet(e) {
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
     editFields: getPortalEditableFields_(),
-    docs: CONFIG.DOCS,
+    docs: getDocUiFields_(),
     visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS
   }));
 }
@@ -207,7 +207,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
       subjects: CONFIG.PORTAL_SUBJECTS,
       examSites: examSites,
       editFields: getPortalEditableFields_(),
-      docs: CONFIG.DOCS,
+      docs: getDocUiFields_(),
       visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
       error: "Please complete/fix: " + missing.join(", ")
     }));
@@ -687,9 +687,9 @@ function ensureHeaders_(sheet, payload) {
 ];
 
 
-  for (var i = 0; i < CONFIG.DOCS.length; i++) {
-    meta.push(CONFIG.DOCS[i].status);
-    meta.push(CONFIG.DOCS[i].comment);
+  for (var i = 0; i < CONFIG.DOC_FIELDS.length; i++) {
+    meta.push(CONFIG.DOC_FIELDS[i].status);
+    meta.push(CONFIG.DOC_FIELDS[i].comment);
   }
 
   var headersWanted = Object.keys(payload).concat(meta);
@@ -806,10 +806,23 @@ function escapeRegExp_(s) {
 
 /******************** DOC META ********************/
 function docMetaByField_(fieldName) {
-  for (var i = 0; i < CONFIG.DOCS.length; i++) {
-    if (CONFIG.DOCS[i].field === fieldName) return CONFIG.DOCS[i];
+  for (var i = 0; i < CONFIG.DOC_FIELDS.length; i++) {
+    if (CONFIG.DOC_FIELDS[i].file === fieldName) {
+      return {
+        label: CONFIG.DOC_FIELDS[i].label,
+        field: CONFIG.DOC_FIELDS[i].file,
+        status: CONFIG.DOC_FIELDS[i].status,
+        comment: CONFIG.DOC_FIELDS[i].comment
+      };
+    }
   }
   return null;
+}
+
+function getDocUiFields_() {
+  return (CONFIG.DOC_FIELDS || []).map(function(d) {
+    return { label: d.label, field: d.file, status: d.status, comment: d.comment };
+  });
 }
 
 /******************** LOG APPEND ********************/

@@ -25,60 +25,31 @@ function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comme
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
-  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  var idCol = headers.indexOf(CONFIG.APPLICANT_ID_HEADER);
-  if (idCol === -1) throw new Error("ApplicantID column missing.");
+  var rowIndex = findApplicantRow_(sheet, applicantId, null);
+  if (!rowIndex) throw new Error("Applicant not found: " + applicantId);
 
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) throw new Error("No records found.");
-
-  var data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
-
-  var rowIndex = -1;
-  var record = null;
-
-  for (var i = 0; i < data.length; i++) {
-    if (clean_(data[i][idCol]) === applicantId) {
-      rowIndex = i + 2;
-      record = {};
-      for (var c = 0; c < headers.length; c++) record[headers[c]] = data[i][c];
-      break;
-    }
-  }
-
-  if (rowIndex === -1) throw new Error("Applicant not found: " + applicantId);
+  var rowObj = getRowObject_(sheet, rowIndex);
+  var headerMap = getHeaderIndexMap_(sheet);
 
   var docMeta = docMetaByField_(fieldName);
   if (!docMeta) throw new Error("Invalid document field: " + fieldName);
+  if (!headerMap[docMeta.status]) throw new Error("Status column missing: " + docMeta.status);
 
-  if (!hasHeader_(sheet, docMeta.status)) throw new Error("Status column missing: " + docMeta.status);
+  // Build patch
+  var patch = {};
+  patch[docMeta.status] = newStatus;
 
-  // Build updates
-  var updates = {};
-  updates[docMeta.status] = newStatus;
-
-  if (docMeta.comment && hasHeader_(sheet, docMeta.comment)) {
-    updates[docMeta.comment] = comment || "";
+  if (docMeta.comment && headerMap[docMeta.comment]) {
+    patch[docMeta.comment] = comment || "";
   }
 
-  // Minimal audit (last verification only)
-  if (hasHeader_(sheet, SCHEMA.DOC_LAST_VERIFIED_AT)) updates[SCHEMA.DOC_LAST_VERIFIED_AT] = new Date().toISOString();
-  if (hasHeader_(sheet, SCHEMA.DOC_LAST_VERIFIED_BY)) updates[SCHEMA.DOC_LAST_VERIFIED_BY] = adminUser;
-
-  // Append File_Log
-  var line = new Date().toISOString()
-    + " | ADMIN_VERIFY | " + fieldName
-    + " | status=" + newStatus
-    + " | by=" + adminUser
-    + " | comment=" + (comment || "-");
-  if (hasHeader_(sheet, SCHEMA.FILE_LOG)) {
-    updates[SCHEMA.FILE_LOG] = appendLog_(clean_(record[SCHEMA.FILE_LOG] || ""), line);
-  }
+  if (headerMap[SCHEMA.DOC_LAST_VERIFIED_AT]) patch[SCHEMA.DOC_LAST_VERIFIED_AT] = new Date().toISOString();
+  if (headerMap[SCHEMA.DOC_LAST_VERIFIED_BY]) patch[SCHEMA.DOC_LAST_VERIFIED_BY] = adminUser;
 
   // Roll-up Docs_Verified (required docs must be VERIFIED)
   var requiredFields = [];
-  for (var d = 0; d < CONFIG.DOCS.length; d++) {
-    var f = CONFIG.DOCS[d].field;
+  for (var d = 0; d < CONFIG.DOC_FIELDS.length; d++) {
+    var f = CONFIG.DOC_FIELDS[d].file;
     var isOptional = (CONFIG.OPTIONAL_DOC_FIELDS || []).indexOf(f) >= 0;
     if (!isOptional) requiredFields.push(f);
   }
@@ -87,21 +58,21 @@ function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comme
   for (var r = 0; r < requiredFields.length; r++) {
     var f2 = requiredFields[r];
     var meta2 = docMetaByField_(f2);
-    var st = (f2 === fieldName) ? newStatus : clean_(record[meta2.status] || "");
+    var st = (f2 === fieldName) ? newStatus : clean_(rowObj[meta2.status] || "");
     if (st !== "VERIFIED") { allOk = false; break; }
   }
 
-  if (hasHeader_(sheet, SCHEMA.DOCS_VERIFIED)) {
-    updates[SCHEMA.DOCS_VERIFIED] = allOk ? "Yes" : "";
+  if (headerMap[SCHEMA.DOCS_VERIFIED]) {
+    patch[SCHEMA.DOCS_VERIFIED] = allOk ? "Yes" : "";
   }
 
   // Optional roll-up stamps (if you keep these headers)
   if (allOk) {
-    if (hasHeader_(sheet, SCHEMA.VERIFIED_BY)) updates[SCHEMA.VERIFIED_BY] = adminUser;
-    if (hasHeader_(sheet, SCHEMA.VERIFIED_AT)) updates[SCHEMA.VERIFIED_AT] = new Date().toISOString();
+    if (headerMap[SCHEMA.VERIFIED_BY]) patch[SCHEMA.VERIFIED_BY] = adminUser;
+    if (headerMap[SCHEMA.VERIFIED_AT]) patch[SCHEMA.VERIFIED_AT] = new Date().toISOString();
   }
 
-  writeBack_(sheet, rowIndex, updates);
+  applyPatch_(sheet, rowIndex, patch);
 
   log_(logSheet, "ADMIN VERIFY", applicantId + " | " + fieldName + " | " + newStatus);
 

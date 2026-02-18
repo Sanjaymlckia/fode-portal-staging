@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-18-PNG-STAGING-r6",
-  CHANGELOG_LAST: "r6: add admin verification app (view=admin), admin allowlist auth, and portal access lock enforcement",
+  VERSION: "2026-02-18-PNG-STAGING-r9",
+  CHANGELOG_LAST: "r9: unify doc model (DOC_FIELDS only), formalize portal status headers, harden admin auth",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -26,11 +26,11 @@ var CONFIG = {
   // Web app URL (staging deployment)
   WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
 
-    // Admin allowlist (must be lowercase emails)
-ADMIN_EMAILS: [
-  "sanjay@minervacenters.com",
-  "sanjay@kundu.ac"
-],
+  // Admin allowlist (must be lowercase emails)
+  ADMIN_EMAILS: [
+    "sanjay@minervacenters.com",
+    "sanjay@kundu.ac"
+  ],
 
   // ApplicantID
   APPLICANT_ID_HEADER: "ApplicantID",
@@ -96,15 +96,6 @@ ADMIN_EMAILS: [
     "Fee_Receipt_File"
   ],
 
-  // Document fields (Drive upload buttons)
-  DOCS: [
-    { label: "Birth Certificate / NID / Passport", field: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment" },
-    { label: "Latest School Reports / Documents", field: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment" },
-    { label: "Transfer Certificate (optional)", field: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment" },
-    { label: "Passport Size Colour Photo", field: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment" },
-    { label: "Admission Fee Payment Receipt", field: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment" }
-  ],
-
   // Allowed admin verification statuses (keys, not values)
   DOC_STATUS: {
     PENDING_REVIEW: true,
@@ -112,6 +103,26 @@ ADMIN_EMAILS: [
     REJECTED: true,
     FRAUDULENT: true
   },
+
+  BRAND: {
+    name: "Kundu FODE",
+    bg: "#0b1220",
+    card: "#111a2e",
+    text: "#e5e7eb",
+    muted: "#94a3b8",
+    accent: "#0ea5a4",
+    danger: "#ef4444",
+    warn: "#f59e0b",
+    ok: "#22c55e"
+  },
+
+  DOC_FIELDS: [
+    { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true },
+    { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true },
+    { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false },
+    { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true },
+    { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true }
+  ],
 
 
   // Optional: list of doc fields that are NOT required for Docs_Verified
@@ -142,6 +153,9 @@ var SCHEMA = {
 
   // Docs verification (minimal audit model)
   DOCS_VERIFIED: "Docs_Verified",             // "Yes" when required docs VERIFIED
+  DOC_VERIFICATION_STATUS: "Doc_Verification_Status",
+  PORTAL_ACCESS_STATUS: "Portal_Access_Status",
+  PAYMENT_VERIFIED: "Payment_Verified",
   DOC_LAST_VERIFIED_AT: "Doc_Last_Verified_At",
   DOC_LAST_VERIFIED_BY: "Doc_Last_Verified_By",
 
@@ -149,23 +163,3 @@ var SCHEMA = {
   VERIFIED_BY: "Verified_By",
   VERIFIED_AT: "Verified_At"
 };
-// Brand and Doc fields for admin modal 
-BRAND: {
-  name: "Kundu FODE",
-  bg: "#0b1220",
-  card: "#111a2e",
-  text: "#e5e7eb",
-  muted: "#94a3b8",
-  accent: "#0ea5a4",
-  danger: "#ef4444",
-  warn: "#f59e0b",
-  ok: "#22c55e"
-},
-
-DOC_FIELDS: [
-  { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true },
-  { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true },
-  { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false },
-  { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true },
-  { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true }
-],
