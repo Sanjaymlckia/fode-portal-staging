@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-17-PNG-STAGING",
-  CHANGELOG_LAST: "Phase0+1: add VERSION, SCHEMA, smoke test, and Sheet IO primitives",
+  VERSION: "2026-02-18-PNG-STAGING-r6",
+  CHANGELOG_LAST: "r6: add admin verification app (view=admin), admin allowlist auth, and portal access lock enforcement",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -26,6 +26,12 @@ var CONFIG = {
   // Web app URL (staging deployment)
   WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
 
+    // Admin allowlist (must be lowercase emails)
+ADMIN_EMAILS: [
+  "sanjay@minervacenters.com",
+  "sanjay@kundu.ac"
+],
+
   // ApplicantID
   APPLICANT_ID_HEADER: "ApplicantID",
   APPLICANT_PREFIX: "FODE-26-",
@@ -34,18 +40,41 @@ var CONFIG = {
   // Exam sites
   EXAM_SITES_SHEET: "Exam_Sites",
 
-  // Subjects shown (portal checkbox list)
+  // Subjects shown (portal checkbox list) — Agriculture removed
   PORTAL_SUBJECTS: [
     "English","Mathematics","Biology","Chemistry","Physics","History","Geography",
     "Economics","ICT","Business Studies","Personal Development","Science","Social Science",
-    "Accounting","Agriculture"
+    "Accounting"
   ],
 
   // Do not overwrite Parent_Email
   PARENT_EMAIL_CORRECTED_HEADER: "Parent_Email_Corrected",
 
   // Editable fields (controlled)
-  PORTAL_EDIT_FIELDS: [],
+  PORTAL_EDIT_FIELDS: [
+    "Home_Address",
+    "Parent_Phone",
+    "Travel_Mode",
+    "Prev_School_Name",
+    "Prev_School_Grade",
+    "Reason_For_Transfer",
+    "Siblings_Name_Grade"
+  ],
+  PORTAL_NON_EDIT_FIELDS: ["ApplicantID","First_Name","Last_Name"],
+  PORTAL_EDIT_EXCLUDE_FIELDS: [
+    "Travel_Mode",
+    "Program",
+    "Program_Applied_For",
+    "Type",
+    "Physical_Exam_Site",
+    "Subjects_Selected_Canonical",
+    "Birth_ID_Passport_File",
+    "Latest_School_Report_File",
+    "Transfer_Certificate_File",
+    "Passport_Photo_File",
+    "Fee_Receipt_File"
+  ],
+  PORTAL_EDIT_MODE: "ALL_VISIBLE_EXCEPT_NON_EDIT",
 
   // What students can see (allowlist)
   PORTAL_VISIBLE_FIELDS: [
@@ -71,10 +100,22 @@ var CONFIG = {
   DOCS: [
     { label: "Birth Certificate / NID / Passport", field: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment" },
     { label: "Latest School Reports / Documents", field: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment" },
-    { label: "Transfer Certificate", field: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment" },
+    { label: "Transfer Certificate (optional)", field: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment" },
     { label: "Passport Size Colour Photo", field: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment" },
     { label: "Admission Fee Payment Receipt", field: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment" }
-  ]
+  ],
+
+  // Allowed admin verification statuses (keys, not values)
+  DOC_STATUS: {
+    PENDING_REVIEW: true,
+    VERIFIED: true,
+    REJECTED: true,
+    FRAUDULENT: true
+  },
+
+
+  // Optional: list of doc fields that are NOT required for Docs_Verified
+  OPTIONAL_DOC_FIELDS: ["Transfer_Certificate_File"]
 };
 
 
@@ -85,9 +126,9 @@ var CONFIG = {
  */
 var SCHEMA = {
   // Identity / lookup
-  APPLICANT_ID: CONFIG.APPLICANT_ID_HEADER,                 // "ApplicantID"
-  PARENT_EMAIL: "Parent_Email",                             // exact header in sheet
-  PARENT_EMAIL_CORRECTED: CONFIG.PARENT_EMAIL_CORRECTED_HEADER, // "Parent_Email_Corrected"
+  APPLICANT_ID: CONFIG.APPLICANT_ID_HEADER,                      // "ApplicantID"
+  PARENT_EMAIL: "Parent_Email",                                  // must match your sheet header
+  PARENT_EMAIL_CORRECTED: CONFIG.PARENT_EMAIL_CORRECTED_HEADER,  // "Parent_Email_Corrected"
 
   // Portal meta / logs
   FOLDER_URL: "Folder_Url",
@@ -99,8 +140,32 @@ var SCHEMA = {
   SUBJECTS_CANONICAL: "Subjects_Selected_Canonical",
   PHYSICAL_EXAM_SITE: "Physical_Exam_Site",
 
-  // Verification / document review (reserved for Phase 3)
-  DOC_VERIFIED: "Docs_Verified",              // matches your header
+  // Docs verification (minimal audit model)
+  DOCS_VERIFIED: "Docs_Verified",             // "Yes" when required docs VERIFIED
   DOC_LAST_VERIFIED_AT: "Doc_Last_Verified_At",
-  DOC_VERIFIED_BY: "Doc_Last_Verified_By"
+  DOC_LAST_VERIFIED_BY: "Doc_Last_Verified_By",
+
+  // Optional existing rollups
+  VERIFIED_BY: "Verified_By",
+  VERIFIED_AT: "Verified_At"
 };
+// Brand and Doc fields for admin modal 
+BRAND: {
+  name: "Kundu FODE",
+  bg: "#0b1220",
+  card: "#111a2e",
+  text: "#e5e7eb",
+  muted: "#94a3b8",
+  accent: "#0ea5a4",
+  danger: "#ef4444",
+  warn: "#f59e0b",
+  ok: "#22c55e"
+},
+
+DOC_FIELDS: [
+  { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true },
+  { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true },
+  { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false },
+  { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true },
+  { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true }
+],

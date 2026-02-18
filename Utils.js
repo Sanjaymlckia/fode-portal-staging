@@ -49,6 +49,22 @@ function isValidEmail_(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean_(email));
 }
 
+// IMPORTANT: regex literal must be /^https?:\/\//i (no extra escaping)
+function isHttpUrl_(s) {
+  return /^https?:\/\//i.test(String(s || "").trim());
+}
+
+function getPortalEditableFields_() {
+  if (CONFIG.PORTAL_EDIT_MODE === "ALL_VISIBLE_EXCEPT_NON_EDIT") {
+    var nonEdit = new Set(CONFIG.PORTAL_NON_EDIT_FIELDS || []);
+    var exclude = new Set(CONFIG.PORTAL_EDIT_EXCLUDE_FIELDS || []);
+    return (CONFIG.PORTAL_VISIBLE_FIELDS || []).filter(function (f) {
+      return !nonEdit.has(f) && !exclude.has(f);
+    });
+  }
+  return CONFIG.PORTAL_EDIT_FIELDS || [];
+}
+
 /******************** PHASE 0 — SAFETY RAILS ********************/
 
 function assertDriveId_(id, label) {
@@ -167,7 +183,6 @@ function findApplicantRow_(sheet, id, email) {
 
 /**
  * Applies a header->value patch to the given row (writes values).
- * We will use this in later phases; Phase 1 tests can remain read-only.
  */
 function applyPatch_(sheet, rowIndex, patchObj) {
   var headerMap = getHeaderIndexMap_(sheet);
@@ -181,45 +196,15 @@ function applyPatch_(sheet, rowIndex, patchObj) {
   });
 }
 
-/******************** PHASE 1 — READ-ONLY TESTS ********************/
-
-/**
- * Read-only — verify that row lookup works.
- * Replace testId (or email) with a real value before running.
- */
-function test_FindApplicantRow_ReadOnly() {
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sh = ss.getSheetByName(CONFIG.DATA_SHEET);
-
-  // TODO: Replace with a REAL ApplicantID that exists in your sheet.
-  var testId = CONFIG.APPLICANT_PREFIX + "000001";
-  // Or test by email:
-  // var testEmail = "parent@example.com";
-
-  var row = findApplicantRow_(sh, testId, null);
-  Logger.log("Row = " + row);
-
-  if (!row) {
-    Logger.log("No match found. Update testId (or use email) and run again.");
-    return;
-  }
-
-  var obj = getRowObject_(sh, row);
-  Logger.log("ApplicantID = " + obj[SCHEMA.APPLICANT_ID]);
-  Logger.log("Parent_Email = " + obj[SCHEMA.PARENT_EMAIL]);
-}
-
 /******************** PHASE 2 — PORTAL LOGGING (NON-FATAL) ********************/
 
-/**
- * Canonical portal log append.
- * Assumes LOG_SHEET_ID / LOG_SHEET_NAME point to the portal log spreadsheet/tab.
- */
 function appendPortalLog_(eventObj) {
-  assertDriveId_(CONFIG.LOG_SHEET_ID, "CONFIG.LOG_SHEET_ID");
-  var ss = SpreadsheetApp.openById(CONFIG.LOG_SHEET_ID);
-  var sh = ss.getSheetByName(CONFIG.LOG_SHEET_NAME);
-  if (!sh) throw new Error("Missing portal log sheet: " + CONFIG.LOG_SHEET_NAME);
+  // Log into the main staging spreadsheet tab for visibility during testing.
+  // (The older LOG_SHEET_ID / LOG_SHEET_NAME config is kept for reference but not used here.)
+  assertDriveId_(CONFIG.SHEET_ID, "CONFIG.SHEET_ID");
+  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sh = ss.getSheetByName(CONFIG.LOG_SHEET);
+  if (!sh) throw new Error("Missing log sheet tab in main sheet: " + CONFIG.LOG_SHEET);
 
   var row = [
     new Date(),
@@ -233,14 +218,12 @@ function appendPortalLog_(eventObj) {
   sh.appendRow(row);
 }
 
-/**
- * Never breaks portal if log fails.
- */
-function safePortalLog_(eventObj) {
+function safePortalLog_(eventObj, throwOnFail) {
   try {
     appendPortalLog_(eventObj);
   } catch (err) {
     Logger.log("PORTAL LOG FAILURE (non-fatal): " + err.message);
+    if (throwOnFail) throw err;
   }
 }
 
@@ -251,6 +234,6 @@ function test_PortalLogWrite() {
     email: "test@example.com",
     status: "OK",
     message: "Portal log smoke write"
-  });
+  }, true);
   Logger.log("Done");
 }

@@ -25,7 +25,13 @@ function doPost(e) {
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
   var payload = getPayload_(e);
+  appendPortalLog_({ route: "doPost", status: "HIT", message: "doPost called", email: payload.email || payload.Parent_Email || "", applicantId: payload.id || payload.ApplicantID || "" });
+
   var action = clean_(payload.action || payload._action || "");
+
+
+  log_(logSheet, "doPost HIT", payloadSummary_(payload));
+  log_(logSheet, "ACTION", action || "(blank)");
 
   // Portal update (normal fields)
   if (action === "portal_update") {
@@ -60,6 +66,15 @@ function doPost(e) {
 /******************** ENTRYPOINT: GET ********************/
 function doGet(e) {
   var view = String((e.parameter.view || "portal")).toLowerCase();
+
+  // ROUTE FIRST (no id/email gate here)
+  if (view === "admin") return renderAdminApp_(e);
+  // if (view === "login") return renderStudentLogin_(e); // if/when implemented
+  if (view === "json") {
+    // json still requires id+email (keep behaviour)
+  }
+
+  // student portal parameters
   var id = clean_(e.parameter.id || "");
 
   // accept email aliases
@@ -99,14 +114,18 @@ function doGet(e) {
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
-    editFields: CONFIG.PORTAL_EDIT_FIELDS,
+    editFields: getPortalEditableFields_(),
     docs: CONFIG.DOCS,
     visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS
   }));
 }
 
+
 /******************** PORTAL UPDATE HANDLER ********************/
 function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
+  log_(logSheet, "PORTAL_UPDATE payload", payloadSummary_(payload));
+  log_(logSheet, "PORTAL_UPDATE editFields", JSON.stringify(getPortalEditableFields_()));
+
   var id = clean_(payload.id || "");
   var emailFromLink = clean_(payload.email || "").toLowerCase();
 
@@ -114,12 +133,15 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
 
   var found = findRowByIdEmail_(dataSheet, id, emailFromLink);
   if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
+  var rowIndex = found.rowNum;
+  log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
 
   if (isPaymentVerified_(found.record)) {
     return htmlOutput_(renderErrorHtml_("Your record is locked because payment has been verified. No further changes are allowed."));
   }
 
   var updates = {};
+  var editFields = getPortalEditableFields_();
 
   // Core fields from portal
   var dob = clean_(payload.Date_Of_Birth || "");
@@ -137,8 +159,9 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   if (correctedEmail) updates[CONFIG.PARENT_EMAIL_CORRECTED_HEADER] = correctedEmail;
 
   // (Optional extra editable fields - currently none)
-  for (var i = 0; i < CONFIG.PORTAL_EDIT_FIELDS.length; i++) {
-    var h = CONFIG.PORTAL_EDIT_FIELDS[i];
+  for (var i = 0; i < editFields.length; i++) {
+    var h = editFields[i];
+    if (h === "Parent_Email") continue;
     var key = "field_" + h;
     if (Object.prototype.hasOwnProperty.call(payload, key)) {
       updates[h] = normalize_(payload[key]);
@@ -183,7 +206,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
       record: rec,
       subjects: CONFIG.PORTAL_SUBJECTS,
       examSites: examSites,
-      editFields: CONFIG.PORTAL_EDIT_FIELDS,
+      editFields: getPortalEditableFields_(),
       docs: CONFIG.DOCS,
       visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
       error: "Please complete/fix: " + missing.join(", ")
@@ -195,7 +218,8 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   // mark first submit time if empty
   if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
 
-  writeBack_(dataSheet, found.rowNum, updates);
+  log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+  writeBack_(dataSheet, rowIndex, updates);
   log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " linkEmail=" + emailFromLink);
 
   return htmlOutput_(renderSuccessHtml_(id));
@@ -800,50 +824,6 @@ function jsonOutput_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-/******************** ADMIN DOC VERIFICATION ********************/
-function adminVerifyDocument_(applicantId, fieldName, status, comment, adminEmail) {
-
-  applicantId = clean_(applicantId);
-  fieldName = clean_(fieldName);
-  status = clean_(status);
-  comment = clean_(comment);
-  adminEmail = clean_(adminEmail);
-
-  if (!applicantId || !fieldName) {
-    throw new Error("Missing applicantId or fieldName.");
-  }
-
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
-  var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
-
-  var found = findRowByIdEmail_(sheet, applicantId, clean_(sheet.getRange(2, findCol_(sheet, "Parent_Email")).getValue()).toLowerCase());
-  if (!found) throw new Error("Applicant not found.");
-
-  var docMeta = docMetaByField_(fieldName);
-  if (!docMeta) throw new Error("Invalid document field.");
-
-  if (!CONFIG.DOC_STATUS[status]) {
-    throw new Error("Invalid verification status.");
-  }
-
-  var updates = {};
-  updates[docMeta.status] = status;
-  updates[docMeta.comment] = comment || "";
-  updates.Doc_Last_Verified_At = new Date().toISOString();
-  updates.Doc_Last_Verified_By = adminEmail || "SYSTEM";
-
-  writeBack_(sheet, found.rowNum, updates);
-
-  log_(logSheet, "DOC VERIFY",
-    "ApplicantID=" + applicantId +
-    " field=" + fieldName +
-    " status=" + status +
-    " by=" + (adminEmail || "SYSTEM")
-  );
-
-  return { ok: true };
-}
 
 // test code
 function test_ShowConfig() {

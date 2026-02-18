@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    :root{
+      --bg: <?= BRAND.bg ?>;
+      --card: <?= BRAND.card ?>;
+      --text: <?= BRAND.text ?>;
+      --muted: <?= BRAND.muted ?>;
+      --accent: <?= BRAND.accent ?>;
+      --danger: <?= BRAND.danger ?>;
+      --warn: <?= BRAND.warn ?>;
+      --ok: <?= BRAND.ok ?>;
+      --radius: 14px;
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background: radial-gradient(1000px 700px at 20% -10%, rgba(14,165,164,.25), transparent 60%),
+                  var(--bg);
+      color:var(--text);
+    }
+    .wrap{ max-width:1100px; margin:0 auto; padding:22px; }
+    .topbar{
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding:14px 16px; background: rgba(17,26,46,.85);
+      border: 1px solid rgba(148,163,184,.18);
+      border-radius: var(--radius);
+      backdrop-filter: blur(8px);
+    }
+    .brand h1{ margin:0; font-size:18px; }
+    .sub{ font-size:12px; color:var(--muted); margin-top:4px; }
+    .card{
+      background: rgba(17,26,46,.85);
+      border: 1px solid rgba(148,163,184,.18);
+      border-radius: var(--radius);
+      padding:14px;
+      backdrop-filter: blur(8px);
+      margin-top:14px;
+    }
+    .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+    .field{ flex: 1 1 240px; }
+    label{ display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+    input, textarea, select{
+      width:100%;
+      padding:10px 11px;
+      border-radius: 12px;
+      border: 1px solid rgba(148,163,184,.22);
+      background: rgba(11,18,32,.55);
+      color: var(--text);
+      outline:none;
+    }
+    textarea{ min-height:70px; resize:vertical; }
+    .btn{
+      border:none; cursor:pointer;
+      padding:10px 12px;
+      border-radius: 12px;
+      color: var(--text);
+      background: rgba(148,163,184,.10);
+      border: 1px solid rgba(148,163,184,.18);
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .btn.accent{ background: rgba(14,165,164,.18); border-color: rgba(14,165,164,.35); }
+    .btn.ok{ background: rgba(34,197,94,.16); border-color: rgba(34,197,94,.35); }
+    .btn.warn{ background: rgba(245,158,11,.16); border-color: rgba(245,158,11,.35); }
+    .btn.danger{ background: rgba(239,68,68,.16); border-color: rgba(239,68,68,.35); }
+    .btn.small{ padding:8px 10px; font-size:12px; }
+    table{ width:100%; border-collapse: collapse; }
+    th, td{ text-align:left; padding:10px 8px; font-size:13px; border-bottom: 1px solid rgba(148,163,184,.12); }
+    th{ color:var(--muted); font-weight:700; font-size:12px; }
+    a{ color: rgba(14,165,164,.95); text-decoration:none; }
+    a:hover{ text-decoration:underline; }
+    .muted{ color:var(--muted); }
+
+    .modalBack{
+      position:fixed; inset:0; background: rgba(0,0,0,.55);
+      display:none; align-items:center; justify-content:center; padding:18px;
+    }
+    .modal{
+      width:min(1050px, 100%);
+      max-height: 92vh;
+      overflow:auto;
+      border-radius: 18px;
+      background: rgba(17,26,46,.95);
+      border: 1px solid rgba(148,163,184,.18);
+      padding:16px;
+      backdrop-filter: blur(10px);
+    }
+    .modalHead{
+      display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+      margin-bottom: 10px;
+    }
+    .kv{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin: 10px 0 12px 0; }
+    .box{
+      padding:10px; border-radius: 12px;
+      border: 1px solid rgba(148,163,184,.18);
+      background: rgba(11,18,32,.45);
+    }
+    .k{ font-size:12px; color:var(--muted); }
+    .v{ font-size:13px; margin-top:4px; }
+    .docs{ display:grid; grid-template-columns: 1fr; gap:10px; margin-top:8px; }
+    .doc{
+      padding:10px; border-radius: 12px;
+      border: 1px solid rgba(148,163,184,.18);
+      background: rgba(11,18,32,.45);
+      display:grid;
+      grid-template-columns: 1.2fr .8fr 1fr .6fr;
+      gap:10px;
+      align-items:start;
+    }
+    .docTitle{ font-weight:800; font-size:13px; }
+    @media (max-width: 900px){
+      .kv{ grid-template-columns:1fr; }
+      .doc{ grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <h1>FODE Admin — Document Verification</h1>
+        <div class="sub">Signed in as: <?= USER_EMAIL ?></div>
+      </div>
+      <div class="sub">WebApp: <?= WEBAPP_URL ?></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="field">
+          <label>ApplicantID</label>
+          <input id="qApplicantId" placeholder="e.g., FODE-26-002879">
+        </div>
+        <div class="field">
+          <label>Parent Email (Corrected)</label>
+          <input id="qEmail" placeholder="e.g., parent@example.com">
+        </div>
+        <button class="btn accent" onclick="search()">Search</button>
+        <button class="btn" onclick="clearSearch()">Clear</button>
+      </div>
+      <div id="msg" class="muted" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+        <div style="font-weight:900;">Results</div>
+        <div class="muted" style="font-size:12px;">Search by ApplicantID for exact match.</div>
+      </div>
+      <div style="margin-top:10px; overflow:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>ApplicantID</th>
+              <th>Name</th>
+              <th>Doc Status</th>
+              <th>Payment</th>
+              <th>Portal</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="6" class="muted">No results yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div id="modalBack" class="modalBack">
+    <div class="modal">
+      <div class="modalHead">
+        <div>
+          <div style="font-weight:900; font-size:16px;" id="mTitle">Applicant Review</div>
+          <div class="muted" style="font-size:12px; margin-top:4px;" id="mSub"></div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn small" onclick="closeModal()">Close</button>
+        </div>
+      </div>
+
+      <div class="kv">
+        <div class="box">
+          <div class="k">Overall Doc Verification</div>
+          <div class="v" id="mOverall">—</div>
+        </div>
+        <div class="box">
+          <div class="k">Payment Verified</div>
+          <div class="v" id="mPayment">—</div>
+        </div>
+        <div class="box">
+          <div class="k">Portal Access</div>
+          <div class="v" id="mPortal">—</div>
+        </div>
+      </div>
+
+      <div class="box">
+        <div class="k">Audit</div>
+        <div class="v" id="mAudit">—</div>
+      </div>
+
+      <div style="margin-top:12px; font-weight:900;">Documents (status + comment)</div>
+      <div id="docs" class="docs"></div>
+
+      <div class="row" style="margin-top:12px;">
+        <div class="field">
+          <label>Set Overall Status</label>
+          <select id="overallStatus">
+            <option>Pending</option>
+            <option>Verified</option>
+            <option>Rejected</option>
+            <option>Fraudulent</option>
+          </select>
+        </div>
+        <div class="field" style="flex: 2 1 420px;">
+          <label>Overall Reason (only if Rejected/Fraudulent) — stored in each doc comment as you choose</label>
+          <textarea id="overallReason" placeholder="Optional overall note. (We do not write a separate Fraud_Reason column.)"></textarea>
+        </div>
+        <button class="btn ok" onclick="saveOverall()">Save Overall</button>
+        <div style="flex:1;"></div>
+        <button class="btn small" onclick="setPortal('Open')">Unlock</button>
+        <button class="btn small danger" onclick="setPortal('Locked')">Lock</button>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <button class="btn accent" onclick="saveDocs()">Save Document Statuses</button>
+      </div>
+
+      <div id="mMsg" class="muted" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentRowNumber = null;
+    let currentDetail = null;
+
+    function setMsg(id, txt){ document.getElementById(id).textContent = txt || ""; }
+    function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+
+    function clearSearch(){
+      document.getElementById("qApplicantId").value = "";
+      document.getElementById("qEmail").value = "";
+      document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No results yet.</td></tr>`;
+      setMsg("msg","");
+    }
+
+    function search(){
+      const applicantId = document.getElementById("qApplicantId").value.trim();
+      const email = document.getElementById("qEmail").value.trim();
+
+      setMsg("msg","Searching...");
+      google.script.run
+        .withSuccessHandler(res => {
+          const rows = (res && res.rows) ? res.rows : [];
+          if (!rows.length){
+            document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No matches found.</td></tr>`;
+            setMsg("msg","No matches.");
+            return;
+          }
+          setMsg("msg", rows.length + " match(es).");
+          document.getElementById("tbody").innerHTML = rows.map(r => `
+            <tr>
+              <td>${esc(r.applicantId)}</td>
+              <td>${esc(r.name)}</td>
+              <td>${esc(r.docStatus)}</td>
+              <td>${esc(r.paymentVerified)}</td>
+              <td>${esc(r.portalAccess)}</td>
+              <td><button class="btn small accent" onclick="review(${r.rowNumber})">Review</button></td>
+            </tr>
+          `).join("");
+        })
+        .withFailureHandler(err => setMsg("msg","Error: " + (err && err.message ? err.message : err)))
+        .admin_searchApplicants({ applicantId, email });
+    }
+
+    function review(rowNumber){
+      currentRowNumber = rowNumber;
+      setMsg("mMsg","Loading...");
+      google.script.run
+        .withSuccessHandler(res => {
+          currentDetail = res.detail;
+          openModal(currentDetail);
+          setMsg("mMsg","");
+        })
+        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
+        .admin_getApplicantDetail({ rowNumber });
+    }
+
+    function openModal(d){
+      document.getElementById("mTitle").textContent = "Applicant Review — " + (d.ApplicantID || "Unknown");
+      document.getElementById("mSub").textContent = "Name: " + ((d.First_Name||"") + " " + (d.Last_Name||"")).trim();
+
+      document.getElementById("mOverall").textContent = d.Doc_Verification_Status || "Pending";
+      document.getElementById("mPayment").textContent = d.Payment_Verified || "";
+      document.getElementById("mPortal").textContent = d.Portal_Access_Status || "Open";
+      document.getElementById("mAudit").textContent = "Last: " + (d.Doc_Last_Verified_At ? String(d.Doc_Last_Verified_At) : "—")
+        + " | By: " + (d.Doc_Last_Verified_By || "—");
+
+      document.getElementById("overallStatus").value = d.Doc_Verification_Status || "Pending";
+      document.getElementById("overallReason").value = "";
+
+      const docs = Array.isArray(d._docs) ? d._docs : [];
+      document.getElementById("docs").innerHTML = docs.map((x, i) => `
+        <div class="doc" data-i="${i}">
+          <div>
+            <div class="docTitle">${esc(x.label)}</div>
+            <div class="muted" style="font-size:12px; margin-top:4px;">
+              ${x.hasFile ? `<a href="${esc(x.url)}" target="_blank">View uploaded file</a>` : `Not uploaded`}
+            </div>
+          </div>
+          <div>
+            <label>Status</label>
+            <select class="docStatus">
+              ${["Pending","Verified","Rejected","Fraudulent"].map(s => `<option ${s===x.status?"selected":""}>${s}</option>`).join("")}
+            </select>
+          </div>
+          <div>
+            <label>Comment</label>
+            <textarea class="docComment" placeholder="Comment...">${esc(x.comment)}</textarea>
+          </div>
+          <div>
+            <div class="muted" style="font-size:12px;">Field map</div>
+            <div class="muted" style="font-size:12px; margin-top:6px;">
+              ${esc(x.statusField)}<br>${esc(x.commentField)}
+            </div>
+          </div>
+        </div>
+      `).join("");
+
+      document.getElementById("modalBack").style.display = "flex";
+    }
+
+    function closeModal(){
+      document.getElementById("modalBack").style.display = "none";
+      currentRowNumber = null;
+      currentDetail = null;
+      setMsg("mMsg","");
+    }
+
+    function saveDocs(){
+      if (!currentRowNumber || !currentDetail) return;
+
+      const docEls = Array.from(document.querySelectorAll(".doc"));
+      const docs = docEls.map((el, idx) => {
+        const status = el.querySelector(".docStatus").value;
+        const comment = el.querySelector(".docComment").value.trim();
+        const base = currentDetail._docs[idx];
+        return {
+          statusField: base.statusField,
+          commentField: base.commentField,
+          status, comment
+        };
+      });
+
+      setMsg("mMsg","Saving document statuses...");
+      google.script.run
+        .withSuccessHandler(res => {
+          setMsg("mMsg","Saved document statuses.");
+          // refresh modal + table
+          review(currentRowNumber);
+          search();
+        })
+        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
+        .admin_updateDocStatuses({ rowNumber: currentRowNumber, docs });
+    }
+
+    function saveOverall(){
+      if (!currentRowNumber) return;
+
+      const action = document.getElementById("overallStatus").value;
+      const reason = document.getElementById("overallReason").value.trim();
+
+      if ((action === "Rejected" || action === "Fraudulent") && !reason){
+        setMsg("mMsg","Reason required for " + action + ".");
+        return;
+      }
+
+      setMsg("mMsg","Saving overall status...");
+      google.script.run
+        .withSuccessHandler(res => {
+          setMsg("mMsg","Saved overall status: " + action + ".");
+          review(currentRowNumber);
+          search();
+        })
+        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
+        .admin_setOverallStatus({ rowNumber: currentRowNumber, action, reason });
+    }
+
+    function setPortal(status){
+      if (!currentRowNumber) return;
+      setMsg("mMsg","Updating portal access...");
+      google.script.run
+        .withSuccessHandler(res => {
+          setMsg("mMsg","Portal set to: " + status + ".");
+          review(currentRowNumber);
+          search();
+        })
+        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
+        .admin_setPortalAccess({ rowNumber: currentRowNumber, status });
+    }
+  </script>
+</body>
+</html>
