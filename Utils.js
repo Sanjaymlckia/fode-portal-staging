@@ -65,6 +65,27 @@ function getPortalEditableFields_() {
   return CONFIG.PORTAL_EDIT_FIELDS || [];
 }
 
+function newPortalSecret_() {
+  // 64 hex chars from two UUIDs; take first 32 for compact URL-safe token.
+  var bytes = Utilities.getUuid().replace(/-/g, "") + Utilities.getUuid().replace(/-/g, "");
+  return bytes.slice(0, 32);
+}
+
+function hashPortalSecret_(secret) {
+  var bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(secret || ""),
+    Utilities.Charset.UTF_8
+  );
+  var out = [];
+  for (var i = 0; i < bytes.length; i++) {
+    var b = (bytes[i] + 256) % 256;
+    var h = b.toString(16);
+    out.push(h.length === 1 ? "0" + h : h);
+  }
+  return out.join("");
+}
+
 /******************** PHASE 0 — SAFETY RAILS ********************/
 
 function assertDriveId_(id, label) {

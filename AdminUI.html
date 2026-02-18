@@ -92,7 +92,7 @@
       display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
       margin-bottom: 10px;
     }
-    .kv{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin: 10px 0 12px 0; }
+    .kv{ display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap:10px; margin: 10px 0 12px 0; }
     .box{
       padding:10px; border-radius: 12px;
       border: 1px solid rgba(148,163,184,.18);
@@ -126,6 +126,10 @@
         <div class="sub">Signed in as: <?= USER_EMAIL ?></div>
       </div>
       <div class="sub">WebApp: <?= WEBAPP_URL ?></div>
+    </div>
+    <div id="studentUrlWarn" class="card" style="display:none;border-color: rgba(245,158,11,.45);">
+      <div style="color:#f59e0b;font-weight:700;">Student URL warning</div>
+      <div class="muted" id="studentUrlWarnText" style="margin-top:6px;"></div>
     </div>
 
     <div class="card">
@@ -195,6 +199,10 @@
           <div class="k">Portal Access</div>
           <div class="v" id="mPortal">—</div>
         </div>
+        <div class="box">
+          <div class="k">Token Age</div>
+          <div class="v" id="mTokenAge">—</div>
+        </div>
       </div>
 
       <div class="box">
@@ -219,26 +227,71 @@
           <label>Overall Reason (only if Rejected/Fraudulent) — stored in each doc comment as you choose</label>
           <textarea id="overallReason" placeholder="Optional overall note. (We do not write a separate Fraud_Reason column.)"></textarea>
         </div>
-        <button class="btn ok" onclick="saveOverall()">Save Overall</button>
+        <button id="btnSaveOverall" class="btn ok" onclick="saveOverall()">Save Overall</button>
         <div style="flex:1;"></div>
-        <button class="btn small" onclick="setPortal('Open')">Unlock</button>
-        <button class="btn small danger" onclick="setPortal('Locked')">Lock</button>
+        <button id="btnUnlockPortal" class="btn small" onclick="setPortal('Open')">Unlock</button>
+        <button id="btnLockPortal" class="btn small danger" onclick="setPortal('Locked')">Lock</button>
       </div>
 
       <div class="row" style="margin-top:10px;">
-        <button class="btn accent" onclick="saveDocs()">Save Document Statuses</button>
+        <button id="btnSaveDocs" class="btn accent" onclick="saveDocs()">Save Document Statuses</button>
+        <button id="btnCopyLink" class="btn" onclick="copyPortalLink()">Copy Portal Link</button>
+        <button id="btnResetLink" class="btn warn" onclick="resetPortalLink()">Reset Link</button>
+        <button id="btnRefreshDetails" class="btn small" onclick="refreshDetails()">Refresh Details</button>
       </div>
 
+      <div id="superTools" class="row" style="margin-top:10px;">
+        <button class="btn small" onclick="backfillTokens(true)">Backfill Tokens (dry run)</button>
+        <button class="btn small warn" onclick="backfillTokens(false)">Backfill Tokens (apply)</button>
+      </div>
+
+      <div id="portalLinkBox" class="muted" style="margin-top:10px;word-break:break-all;"></div>
       <div id="mMsg" class="muted" style="margin-top:10px;"></div>
     </div>
   </div>
 
   <script>
+    const ADMIN_ROLE = "<?= ADMIN_ROLE ?>";
+    const IS_SUPER = "<?= IS_SUPER ?>".toLowerCase() === "true";
+    const ADMIN_EMAIL = "<?= USER_EMAIL ?>";
+    const STUDENT_URL_READY = "<?= STUDENT_URL_READY ?>".toLowerCase() === "true";
+    const STUDENT_URL_WARNING = "<?= STUDENT_URL_WARNING ?>";
     let currentRowNumber = null;
     let currentDetail = null;
+    let isLinkBusy = false;
+    let lastRequestId = 0;
 
     function setMsg(id, txt){ document.getElementById(id).textContent = txt || ""; }
     function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+    function setLinkBusy(flag){
+      isLinkBusy = !!flag;
+      const copyBtn = document.getElementById("btnCopyLink");
+      const resetBtn = document.getElementById("btnResetLink");
+      if (copyBtn) {
+        copyBtn.disabled = isLinkBusy;
+        copyBtn.textContent = isLinkBusy ? "Working..." : "Copy Portal Link";
+      }
+      if (resetBtn) {
+        resetBtn.disabled = isLinkBusy;
+        resetBtn.textContent = isLinkBusy ? "Resetting..." : "Reset Link";
+      }
+    }
+
+    function setActionButtonsEnabled(enabled){
+      const ids = [
+        "btnSaveOverall",
+        "btnSaveDocs",
+        "btnCopyLink",
+        "btnResetLink",
+        "btnRefreshDetails",
+        "btnUnlockPortal",
+        "btnLockPortal"
+      ];
+      ids.forEach(function(id){
+        const el = document.getElementById(id);
+        if (el) el.disabled = !enabled;
+      });
+    }
 
     function clearSearch(){
       document.getElementById("qApplicantId").value = "";
@@ -277,30 +330,79 @@
     }
 
     function review(rowNumber){
+      const reqId = ++lastRequestId;
       currentRowNumber = rowNumber;
+      currentDetail = null;
+      setActionButtonsEnabled(false);
+      document.getElementById("portalLinkBox").textContent = "";
+      setLinkBusy(false);
       setMsg("mMsg","Loading...");
       google.script.run
         .withSuccessHandler(res => {
+          if (reqId !== lastRequestId) return;
           currentDetail = res.detail;
           openModal(currentDetail);
+          setActionButtonsEnabled(!!currentRowNumber);
           setMsg("mMsg","");
         })
-        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
+        .withFailureHandler(err => {
+          if (reqId !== lastRequestId) return;
+          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+          setLinkBusy(false);
+          setActionButtonsEnabled(false);
+        })
         .admin_getApplicantDetail({ rowNumber });
     }
 
+    function setRoleUi(){
+      const showSuper = IS_SUPER;
+      const superTools = document.getElementById("superTools");
+      const btnReset = document.getElementById("btnResetLink");
+      const btnLock = document.getElementById("btnLockPortal");
+      const btnUnlock = document.getElementById("btnUnlockPortal");
+      if (superTools) superTools.style.display = showSuper ? "flex" : "none";
+      if (btnReset) btnReset.style.display = showSuper ? "inline-block" : "none";
+      if (btnLock) btnLock.style.display = showSuper ? "inline-block" : "none";
+      if (btnUnlock) btnUnlock.style.display = showSuper ? "inline-block" : "none";
+      const warn = document.getElementById("studentUrlWarn");
+      const warnText = document.getElementById("studentUrlWarnText");
+      if (warn && warnText) {
+        warn.style.display = STUDENT_URL_READY ? "none" : "block";
+        warnText.textContent = STUDENT_URL_WARNING || "Student URL not configured.";
+      }
+    }
+
+    function applyAuditNow(){
+      const now = new Date().toISOString();
+      document.getElementById("mAudit").textContent = "Last: " + now + " | By: " + (ADMIN_EMAIL || "admin");
+    }
+
     function openModal(d){
+      setRoleUi();
+      setLinkBusy(false);
+      setActionButtonsEnabled(!!currentRowNumber);
+      setMsg("mMsg","");
+      document.getElementById("portalLinkBox").textContent = "";
       document.getElementById("mTitle").textContent = "Applicant Review — " + (d.ApplicantID || "Unknown");
       document.getElementById("mSub").textContent = "Name: " + ((d.First_Name||"") + " " + (d.Last_Name||"")).trim();
 
       document.getElementById("mOverall").textContent = d.Doc_Verification_Status || "Pending";
       document.getElementById("mPayment").textContent = d.Payment_Verified || "";
       document.getElementById("mPortal").textContent = d.Portal_Access_Status || "Open";
+      if (d.PortalTokenAgeDays === null || d.PortalTokenAgeDays === undefined || d.PortalTokenAgeDays === "") {
+        document.getElementById("mTokenAge").textContent = "Not issued";
+      } else {
+        let tokenText = String(d.PortalTokenAgeDays) + " day(s)";
+        if (d.PortalTokenExpired) tokenText += " | Expired";
+        else if (d.PortalTokenMaxAgeDays) tokenText += " / " + String(d.PortalTokenMaxAgeDays) + " max";
+        document.getElementById("mTokenAge").textContent = tokenText;
+      }
       document.getElementById("mAudit").textContent = "Last: " + (d.Doc_Last_Verified_At ? String(d.Doc_Last_Verified_At) : "—")
         + " | By: " + (d.Doc_Last_Verified_By || "—");
 
       document.getElementById("overallStatus").value = d.Doc_Verification_Status || "Pending";
       document.getElementById("overallReason").value = "";
+      document.getElementById("portalLinkBox").textContent = "";
 
       const docs = Array.isArray(d._docs) ? d._docs : [];
       document.getElementById("docs").innerHTML = docs.map((x, i) => `
@@ -337,6 +439,8 @@
       document.getElementById("modalBack").style.display = "none";
       currentRowNumber = null;
       currentDetail = null;
+      setLinkBusy(false);
+      setActionButtonsEnabled(false);
       setMsg("mMsg","");
     }
 
@@ -359,8 +463,10 @@
       google.script.run
         .withSuccessHandler(res => {
           setMsg("mMsg","Saved document statuses.");
-          // refresh modal + table
-          review(currentRowNumber);
+          applyAuditNow();
+          if (res && res.overallStatus) {
+            document.getElementById("mOverall").textContent = res.overallStatus;
+          }
           search();
         })
         .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
@@ -382,7 +488,9 @@
       google.script.run
         .withSuccessHandler(res => {
           setMsg("mMsg","Saved overall status: " + action + ".");
-          review(currentRowNumber);
+          document.getElementById("mOverall").textContent = action;
+          if (action === "Fraudulent") document.getElementById("mPortal").textContent = "Locked";
+          applyAuditNow();
           search();
         })
         .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
@@ -395,12 +503,96 @@
       google.script.run
         .withSuccessHandler(res => {
           setMsg("mMsg","Portal set to: " + status + ".");
-          review(currentRowNumber);
+          document.getElementById("mPortal").textContent = status;
+          applyAuditNow();
           search();
         })
         .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
         .admin_setPortalAccess({ rowNumber: currentRowNumber, status });
     }
+
+    function copyPortalLink(){
+      if (!currentRowNumber) return;
+      if (isLinkBusy) return;
+      if (!STUDENT_URL_READY) {
+        setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
+        return;
+      }
+      const reqId = ++lastRequestId;
+      setLinkBusy(true);
+      setMsg("mMsg","Generating portal link...");
+      google.script.run
+        .withSuccessHandler(res => {
+          if (reqId !== lastRequestId) return;
+          const link = (res && res.link) ? res.link : "";
+          document.getElementById("portalLinkBox").textContent = link || "";
+          if (res && res.warning) setMsg("mMsg", res.warning);
+          if (link && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(link).then(function(){
+              if (!res.warning) setMsg("mMsg","Portal link copied.");
+            }).catch(function(){
+              if (!res.warning) setMsg("mMsg","Portal link generated.");
+            });
+          } else {
+            if (!res.warning) setMsg("mMsg","Portal link generated.");
+          }
+          setLinkBusy(false);
+        })
+        .withFailureHandler(err => {
+          if (reqId !== lastRequestId) return;
+          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+          setLinkBusy(false);
+        })
+        .admin_generatePortalLink({ rowNumber: currentRowNumber });
+    }
+
+    function resetPortalLink(){
+      if (!currentRowNumber) return;
+      if (isLinkBusy) return;
+      if (!STUDENT_URL_READY) {
+        setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
+        return;
+      }
+      const reqId = ++lastRequestId;
+      setLinkBusy(true);
+      setMsg("mMsg","Resetting portal link...");
+      google.script.run
+        .withSuccessHandler(res => {
+          if (reqId !== lastRequestId) return;
+          const link = (res && res.link) ? res.link : "";
+          document.getElementById("portalLinkBox").textContent = link || "";
+          if (res && res.warning) setMsg("mMsg", res.warning);
+          else setMsg("mMsg","Portal link reset.");
+          setLinkBusy(false);
+        })
+        .withFailureHandler(err => {
+          if (reqId !== lastRequestId) return;
+          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+          setLinkBusy(false);
+        })
+        .admin_resetPortalSecret({ rowNumber: currentRowNumber });
+    }
+
+    function refreshDetails(){
+      if (!currentRowNumber) return;
+      review(currentRowNumber);
+    }
+
+    function backfillTokens(dryRun){
+      if (!IS_SUPER) return;
+      setMsg("mMsg", dryRun ? "Backfill dry run..." : "Backfill apply...");
+      const fn = dryRun ? "admin_backfillPortalTokensDryRun" : "admin_backfillPortalTokensApply";
+      google.script.run
+        .withSuccessHandler(res => {
+          setMsg("mMsg", "Backfill done: checked=" + (res.checked || 0) + ", updated=" + (res.updated || 0) + ", dryRun=" + String(!!res.dryRun));
+        })
+        .withFailureHandler(err => {
+          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+        })[fn]({ limit: 0 });
+    }
+
+    setRoleUi();
+    setActionButtonsEnabled(false);
   </script>
 </body>
 </html>

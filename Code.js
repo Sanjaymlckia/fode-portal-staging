@@ -59,6 +59,7 @@ function doPost(e) {
     Folder_Url: folder.getUrl(),
     ApplicantID: applicantId || ""
   });
+  ensurePortalTokenAtRow_(dataSheet, rowNum);
 
   return jsonOutput_({ status: "ok", ApplicantID: applicantId || "" });
 }
@@ -67,50 +68,108 @@ function doPost(e) {
 function doGet(e) {
   var view = String((e.parameter.view || "portal")).toLowerCase();
 
-  // ROUTE FIRST (no id/email gate here)
+  // ROUTE FIRST
   if (view === "admin") return renderAdminApp_(e);
-  // if (view === "login") return renderStudentLogin_(e); // if/when implemented
-  if (view === "json") {
-    // json still requires id+email (keep behaviour)
-  }
+  if (view !== "portal") return htmlOutput_(renderErrorHtml_("Missing portal link"));
 
-  // student portal parameters
   var id = clean_(e.parameter.id || "");
-
-  // accept email aliases
-  var email = clean_(e.parameter.email || e.parameter.Parent_Email || e.parameter.parent_email || "").toLowerCase();
-
-  if (!id || !email) {
-    return (view === "json")
-      ? jsonOutput_({ status: "error", message: "Missing id or email" })
-      : htmlOutput_(renderErrorHtml_("Missing id or email"));
+  var secret = clean_(e.parameter.s || "");
+  var reqMeta = getPortalRequestMeta_(e);
+  if (!id || !secret) {
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id || "",
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "missing_params | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Missing portal link parameters"));
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
-
-  var found = findRowByIdEmail_(sheet, id, email);
-  if (!found) {
-    return (view === "json")
-      ? jsonOutput_({ status: "error", message: "No matching record found" })
-      : htmlOutput_(renderErrorHtml_("No matching record found"));
+  var rowNum = findRowByApplicantId_(sheet, id);
+  if (!rowNum) {
+    var missingCount = incrementInvalidPortalAttempt_(id);
+    if (missingCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "row_not_found attempts=" + missingCount + " | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Invalid portal link"));
+  }
+  var rowObj = getRowObject_(sheet, rowNum);
+  if (!clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "")) {
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "token_not_initialized | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Link not initialized; contact admissions."));
+  }
+  var issuedAt = rowObj[SCHEMA.PORTAL_TOKEN_ISSUED_AT];
+  if (isPortalTokenExpired_(issuedAt, CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS)) {
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "expired | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderExpiredHtml_());
   }
 
-  var record = found.record;
-  record._PortalLocked = isPaymentVerified_(record);
+  var currentHash = clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "");
+  var inputHash = hashPortalSecret_(secret);
+  if (!currentHash || !inputHash || currentHash !== inputHash) {
+    var badCount = incrementInvalidPortalAttempt_(id);
+    if (badCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "hash_mismatch attempts=" + badCount + " | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Invalid portal link"));
+  }
+
+  var record = rowObj;
+  if (String(record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "locked",
+      message: "portal_locked | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Access suspended"));
+  }
+
+  record._PortalLocked = isPaymentVerified_(record) || String(record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked";
+  safePortalLog_({
+    route: "doGet:portal",
+    applicantId: id,
+    email: reqMeta.ip || "",
+    status: "success",
+    message: "open_ok | ua=" + (reqMeta.ua || "")
+  }, false);
 
   // prefill subjects from canonical OR raw Subjects_Selected
   var canonical = clean_(record.Subjects_Selected_Canonical || "");
   var fallbackCsv = subjectsToCsv_(record.Subjects_Selected || "");
   record._SubjectsCsv = canonical || fallbackCsv;
 
-  if (view === "json") return jsonOutput_({ status: "ok", record: record });
-
   var examSites = getExamSites_(ss);
 
   return htmlOutput_(renderPortalHtml_({
     id: id,
-    email: email,
+    secret: secret,
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
@@ -127,14 +186,18 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   log_(logSheet, "PORTAL_UPDATE editFields", JSON.stringify(getPortalEditableFields_()));
 
   var id = clean_(payload.id || "");
-  var emailFromLink = clean_(payload.email || "").toLowerCase();
+  var secret = clean_(payload.s || "");
 
-  if (!id || !emailFromLink) return htmlOutput_(renderErrorHtml_("Missing id or email. Please reopen your portal link."));
+  if (!id || !secret) return htmlOutput_(renderErrorHtml_("Missing portal link parameters. Please reopen your portal link."));
 
-  var found = findRowByIdEmail_(dataSheet, id, emailFromLink);
+  var found = findPortalRowByIdSecret_(dataSheet, id, secret);
   if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
   var rowIndex = found.rowNum;
   log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
+
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+    return htmlOutput_(renderErrorHtml_("Access suspended. Please contact admissions."));
+  }
 
   if (isPaymentVerified_(found.record)) {
     return htmlOutput_(renderErrorHtml_("Your record is locked because payment has been verified. No further changes are allowed."));
@@ -154,9 +217,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   var subjectsCsv = clean_(payload.Subjects_Selected_Canonical || "");
   if (subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
 
-  // ✅ Do NOT overwrite Parent_Email (stable lookup key). Store corrected separately.
-  var correctedEmail = clean_(payload.Parent_Email_Corrected || "").toLowerCase();
-  if (correctedEmail) updates[CONFIG.PARENT_EMAIL_CORRECTED_HEADER] = correctedEmail;
+  // Do NOT overwrite Parent_Email_Corrected.
 
   // (Optional extra editable fields - currently none)
   for (var i = 0; i < editFields.length; i++) {
@@ -183,13 +244,6 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
   if (!effectiveSite) missing.push("Physical Exam Site");
 
-  var effectiveEmail =
-    (updates[CONFIG.PARENT_EMAIL_CORRECTED_HEADER] ||
-     clean_(found.record[CONFIG.PARENT_EMAIL_CORRECTED_HEADER] || "") ||
-     clean_(found.record.Parent_Email || "")).toLowerCase();
-
-  if (!effectiveEmail || !isValidEmail_(effectiveEmail)) missing.push("Valid Parent Email");
-
   if (missing.length) {
     // re-render with typed values
     var rec = shallowCopy_(found.record);
@@ -202,7 +256,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
     var examSites = getExamSites_(ss);
     return htmlOutput_(renderPortalHtml_({
       id: id,
-      email: emailFromLink,
+      secret: secret,
       record: rec,
       subjects: CONFIG.PORTAL_SUBJECTS,
       examSites: examSites,
@@ -220,15 +274,15 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
 
   log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
   writeBack_(dataSheet, rowIndex, updates);
-  log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " linkEmail=" + emailFromLink);
+  log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
 
   return htmlOutput_(renderSuccessHtml_(id));
 }
 
 /******************** DRIVE UPLOAD (called via google.script.run) ********************/
-function uploadPortalFile(applicantId, linkEmail, fieldName, fileName, mimeType, base64Data) {
+function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, base64Data) {
   applicantId = clean_(applicantId);
-  linkEmail = clean_(linkEmail).toLowerCase();
+  secret = clean_(secret);
   fieldName = clean_(fieldName);
   fileName = clean_(fileName) || ("upload_" + Date.now());
   mimeType = clean_(mimeType) || "application/octet-stream";
@@ -237,8 +291,9 @@ function uploadPortalFile(applicantId, linkEmail, fieldName, fileName, mimeType,
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
-  var found = findRowByIdEmail_(sheet, applicantId, linkEmail);
+  var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
   if (!found) throw new Error("Record not found.");
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") throw new Error("Access suspended.");
 
   if (isPaymentVerified_(found.record)) throw new Error("Record locked (payment verified).");
 
@@ -284,13 +339,15 @@ function uploadPortalFile(applicantId, linkEmail, fieldName, fileName, mimeType,
 
 /******************** PORTAL HTML ********************/
 function renderPortalHtml_(opts) {
-  var id = opts.id, email = opts.email, record = opts.record;
+  var id = opts.id, secret = opts.secret, record = opts.record;
   var subjects = opts.subjects || [];
   var examSites = opts.examSites || [];
   var editFields = opts.editFields || [];
   var docs = opts.docs || [];
   var visibleFields = opts.visibleFields || [];
   var error = opts.error || "";
+  var actionMeta = getStudentActionUrl_();
+  var actionUrl = actionMeta.url;
 
   var locked = record._PortalLocked === true;
   var dis = locked ? "disabled" : "";
@@ -304,8 +361,6 @@ function renderPortalHtml_(opts) {
   if (dobVal && dobVal.indexOf("/") !== -1) dobVal = ""; // avoid invalid date showing wrong
 
   var examVal = clean_(record.Physical_Exam_Site || "");
-  var effectiveEmail = clean_(record[CONFIG.PARENT_EMAIL_CORRECTED_HEADER] || record.Parent_Email || "");
-  var emailVal = esc_(effectiveEmail);
 
   // exam site options
   var examList = (examSites.length ? examSites : ["Port Moresby - HQ"]);
@@ -335,6 +390,9 @@ function renderPortalHtml_(opts) {
   var lockedBlock = locked
     ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Locked:</b> Payment has been verified. No further changes are allowed.</div>'
     : "";
+  var actionWarnBlock = actionMeta.warning
+    ? '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Warning:</b> ' + esc_(actionMeta.warning) + "</div>"
+    : "";
 
   // allowlist-only summary
   var summaryHtml = renderAllowlistSummary_(record, visibleFields);
@@ -343,7 +401,7 @@ function renderPortalHtml_(opts) {
   var extraInputs = renderEditableFields_(record, editFields, dis);
 
   // docs upload UI
-  var docsHtml = renderDocsSection_(id, email, record, docs, locked);
+  var docsHtml = renderDocsSection_(id, secret, record, docs, locked);
 
   var saveButton = locked
     ? '<div style="margin-top:12px;color:#1a4fb3;"><b>No action available.</b></div>'
@@ -358,10 +416,11 @@ function renderPortalHtml_(opts) {
     + "<h2>FODE Student Portal</h2>"
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + "<div><b>Applicant ID:</b> " + esc_(id) + "</div>"
-    + "<div><b>Link Email (locked for lookup):</b> " + esc_(email) + "</div>"
+    + "<div><b>Secure Link:</b> verified</div>"
     + "</div>"
     + lockedBlock
     + errorBlock
+    + actionWarnBlock
 
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + '<h3 style="margin-top:0;">Submitted Details (read-only)</h3>'
@@ -374,11 +433,11 @@ function renderPortalHtml_(opts) {
     + "</div>"
 
     // ✅ hardcoded action URL to prevent blank screen / doPost not firing
-    + '<form method="post" action="' + CONFIG.WEBAPP_URL + '" onsubmit="return packSubjects();"'
+    + '<form method="post" action="' + esc_(actionUrl) + '" onsubmit="return packSubjects();"'
     + ' style="padding:12px;border:1px solid #ddd;border-radius:10px;">'
     + '<input type="hidden" name="action" value="portal_update" />'
     + '<input type="hidden" name="id" value="' + esc_(id) + '" />'
-    + '<input type="hidden" name="email" value="' + esc_(email) + '" />'
+    + '<input type="hidden" name="s" value="' + esc_(secret) + '" />'
     + '<input type="hidden" id="Subjects_Selected_Canonical" name="Subjects_Selected_Canonical" value="" />'
 
     + '<h3 style="margin-top:0;">Update / Confirm Information</h3>'
@@ -403,11 +462,6 @@ function renderPortalHtml_(opts) {
     + "</div>"
     + "</div>"
 
-    + '<div style="margin:12px 0;">'
-    + "<label><b>Correct Parent Email (mandatory):</b></label><br/>"
-    + '<input type="email" name="Parent_Email_Corrected" value="' + emailVal + '" style="padding:8px;width:520px;" ' + dis + " />"
-    + "</div>"
-
     + (editFields.length ? ('<div style="margin:12px 0;">'
       + "<h4 style='margin:8px 0;'>Additional Editable Fields</h4>"
       + extraInputs
@@ -428,7 +482,7 @@ function renderPortalHtml_(opts) {
     + "</body></html>";
 }
 
-function renderDocsSection_(id, email, record, docs, locked) {
+function renderDocsSection_(id, secret, record, docs, locked) {
   var out = "";
   for (var i = 0; i < docs.length; i++) {
     var d = docs[i];
@@ -482,7 +536,7 @@ function renderDocsSection_(id, email, record, docs, locked) {
     + "      .withFailureHandler(function(err){"
     + "        msg.innerHTML='Upload failed: '+(err && err.message ? err.message : err);"
     + "      })"
-    + "      .uploadPortalFile('" + esc_(id) + "','" + esc_(email) + "', fieldName, file.name, file.type, base64);"
+    + "      .uploadPortalFile('" + esc_(id) + "','" + esc_(secret) + "', fieldName, file.name, file.type, base64);"
     + "  };"
     + "  reader.readAsDataURL(file);"
     + "}"
@@ -527,9 +581,12 @@ function renderEditableFields_(record, editFields, dis) {
   for (var i = 0; i < editFields.length; i++) {
     var h = editFields[i];
     var val = clean_(record[h] || "");
+    var isUrl = isHttpUrl_(val);
+    var linkHtml = isUrl ? (" <a target='_blank' rel='noopener' href='" + esc_(val) + "'>Open</a>") : "";
     out += "<div style='margin:10px 0;'>"
       + "<label><b>" + esc_(h) + ":</b></label><br/>"
       + "<input type='text' name='field_" + esc_(h) + "' value='" + esc_(val) + "' style='padding:8px;width:520px;' " + dis + " />"
+      + linkHtml
       + "</div>";
   }
   return out || "<div><i>No additional editable fields configured.</i></div>";
@@ -542,6 +599,14 @@ function renderErrorHtml_(msg) {
     + esc_(msg) + "</div></body></html>";
 }
 
+function renderExpiredHtml_() {
+  return '<!doctype html><html><body style="font-family:Arial;max-width:780px;margin:24px auto;padding:0 16px;">'
+    + "<h2>FODE Student Portal</h2>"
+    + '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;">'
+    + "This portal link has expired. Please contact admissions for a new link."
+    + "</div></body></html>";
+}
+
 function renderSuccessHtml_(applicantId) {
   return '<!doctype html><html><body style="font-family:Arial;max-width:780px;margin:24px auto;padding:0 16px;">'
     + "<h2>FODE Student Portal</h2>"
@@ -550,12 +615,76 @@ function renderSuccessHtml_(applicantId) {
     + "</div></body></html>";
 }
 
+function getStudentActionUrl_() {
+  var studentUrl = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  var adminUrl = clean_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
+  var isStudentReady = /^https:\/\/script\.google\.com\//i.test(studentUrl);
+  var url = isStudentReady ? studentUrl : adminUrl;
+  var warning = isStudentReady ? "" : "Student URL not configured. Saving may not work for external users.";
+  return {
+    url: url,
+    isStudentReady: isStudentReady,
+    warning: warning
+  };
+}
 function htmlOutput_(html) {
   return HtmlService.createHtmlOutput(html)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /******************** LOOKUP ********************/
+function findPortalRowByIdSecret_(sheet, applicantId, secret) {
+  var rowNum = findRowByApplicantId_(sheet, applicantId);
+  if (!rowNum) return null;
+  var record = getRowObject_(sheet, rowNum);
+  var currentHash = clean_(record[SCHEMA.PORTAL_TOKEN_HASH] || "");
+  if (!currentHash) return null;
+  var inputHash = hashPortalSecret_(clean_(secret || ""));
+  if (!inputHash || currentHash !== inputHash) return null;
+  return { rowNum: rowNum, record: record };
+}
+
+function isPortalTokenExpired_(issuedAtValue, maxAgeDays) {
+  var maxDays = Number(maxAgeDays || 0);
+  if (!maxDays || maxDays <= 0) return false;
+  if (!issuedAtValue) return true;
+  var issuedAt = new Date(issuedAtValue);
+  if (isNaN(issuedAt.getTime())) return true;
+  var ageMs = new Date().getTime() - issuedAt.getTime();
+  return ageMs > (maxDays * 24 * 60 * 60 * 1000);
+}
+
+function getPortalRequestMeta_(e) {
+  var p = (e && e.parameter) ? e.parameter : {};
+  return {
+    ip: clean_(p.ip || p.clientIp || p.client_ip || p.x_forwarded_for || ""),
+    ua: clean_(p.ua || p.userAgent || p.user_agent || "")
+  };
+}
+
+function incrementInvalidPortalAttempt_(applicantId) {
+  var cache = CacheService.getScriptCache();
+  var key = "portal_invalid_" + clean_(applicantId || "unknown");
+  var current = Number(cache.get(key) || 0);
+  var next = current + 1;
+  cache.put(key, String(next), 3600);
+  return next;
+}
+
+function findRowByApplicantId_(sheet, applicantId) {
+  var headerMap = getHeaderIndexMap_(sheet);
+  var idCol = headerMap[SCHEMA.APPLICANT_ID];
+  if (!idCol) throw new Error("Missing header: " + SCHEMA.APPLICANT_ID);
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  var idNorm = clean_(applicantId);
+  var idVals = sheet.getRange(2, idCol, lastRow - 1, 1).getValues();
+  for (var r = 0; r < idVals.length; r++) {
+    if (clean_(idVals[r][0]) === idNorm) return r + 2;
+  }
+  return null;
+}
+
 function findRowByIdEmail_(sheet, applicantId, parentEmailLower) {
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var idCol = headers.indexOf(CONFIG.APPLICANT_ID_HEADER);
@@ -676,6 +805,9 @@ function ensureHeaders_(sheet, payload) {
   "Folder_Url",
   "PortalLastUpdateAt",
   "Portal_Submitted",
+  SCHEMA.PORTAL_TOKEN_HASH,
+  SCHEMA.PORTAL_TOKEN_ISSUED_AT,
+  SCHEMA.PORTAL_ACCESS_STATUS,
   "Physical_Exam_Site",
   "Subjects_Selected_Canonical",
   CONFIG.PARENT_EMAIL_CORRECTED_HEADER,
@@ -717,6 +849,21 @@ function appendRow_(sheet, payload, folder) {
   }
   sheet.appendRow(row);
   return sheet.getLastRow();
+}
+
+function ensurePortalTokenAtRow_(sheet, rowNum) {
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var hashCol = headers.indexOf("PortalTokenHash");
+  var issuedCol = headers.indexOf("PortalTokenIssuedAt");
+  if (hashCol < 0 || issuedCol < 0) return;
+
+  var currentHash = clean_(sheet.getRange(rowNum, hashCol + 1).getValue());
+  var currentIssued = sheet.getRange(rowNum, issuedCol + 1).getValue();
+  if (currentHash && currentIssued) return;
+
+  var secret = newPortalSecret_();
+  sheet.getRange(rowNum, hashCol + 1).setValue(hashPortalSecret_(secret));
+  sheet.getRange(rowNum, issuedCol + 1).setValue(new Date());
 }
 
 function writeBack_(sheet, row, kv) {
@@ -866,3 +1013,6 @@ function test_LogSheetWrite() {
 
   Logger.log("Log sheet write successful -> " + ss.getName() + " / " + sheet.getName());
 }
+
+
+

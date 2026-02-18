@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-18-PNG-STAGING-r9",
-  CHANGELOG_LAST: "r9: unify doc model (DOC_FIELDS only), formalize portal status headers, harden admin auth",
+  VERSION: "2026-02-18-PNG-STAGING-r18",
+  CHANGELOG_LAST: "r18: route student portal form POST to student deployment URL with admin fallback warning",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -23,14 +23,33 @@ var CONFIG = {
   ROOT_FOLDER_ID: "1vGD3DoOv1hlxYoTIfrNCZqAnrVKmghuB",
   YEAR_FOLDER: "2025",
 
-  // Web app URL (staging deployment)
+  // Web app URLs
+  // - WEBAPP_URL_ADMIN: admin deployment (/exec), executeAs=USER_ACCESSING, access=DOMAIN
+  // - WEBAPP_URL_STUDENT: student deployment (/exec), executeAs=ME, access=ANYONE/ANYONE_ANONYMOUS
+  // WEBAPP_URL is kept for backward compatibility and mirrors WEBAPP_URL_ADMIN.
+  WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
   WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
+  WEBAPP_URL_STUDENT: "",
+
+  // Deployment model:
+  // - Admin web app: executeAs=USER_ACCESSING, access=DOMAIN
+  // - Student web app: executeAs=ME, access=ANYONE or ANYONE_ANONYMOUS
 
   // Admin allowlist (must be lowercase emails)
   ADMIN_EMAILS: [
     "sanjay@minervacenters.com",
-    "sanjay@kundu.ac"
+    "enquiries@kundu.ac",
+    "mlc@minervacenters.com",
+    "operations@minervacenters.com",
+    "mlccorporate@minervacenters.com"
   ],
+  ADMIN_ROLES: {
+    "sanjay@minervacenters.com": "SUPER",
+    "enquiries@kundu.ac": "VERIFIER",
+    "mlc@minervacenters.com": "VERIFIER",
+    "operations@minervacenters.com": "VERIFIER",
+    "mlccorporate@minervacenters.com": "VERIFIER"
+  },
 
   // ApplicantID
   APPLICANT_ID_HEADER: "ApplicantID",
@@ -68,6 +87,7 @@ var CONFIG = {
     "Type",
     "Physical_Exam_Site",
     "Subjects_Selected_Canonical",
+    "Parent_Email_Corrected",
     "Birth_ID_Passport_File",
     "Latest_School_Report_File",
     "Transfer_Certificate_File",
@@ -75,6 +95,7 @@ var CONFIG = {
     "Fee_Receipt_File"
   ],
   PORTAL_EDIT_MODE: "ALL_VISIBLE_EXCEPT_NON_EDIT",
+  PORTAL_TOKEN_MAX_AGE_DAYS: 30,
 
   // What students can see (allowlist)
   PORTAL_VISIBLE_FIELDS: [
@@ -146,6 +167,8 @@ var SCHEMA = {
   FILE_LOG: "File_Log",
   PORTAL_LAST_UPDATE_AT: "PortalLastUpdateAt",
   PORTAL_SUBMITTED: "Portal_Submitted",
+  PORTAL_TOKEN_HASH: "PortalTokenHash",
+  PORTAL_TOKEN_ISSUED_AT: "PortalTokenIssuedAt",
 
   // Subjects + site
   SUBJECTS_CANONICAL: "Subjects_Selected_Canonical",
