@@ -181,7 +181,9 @@ function admin_getApplicantDetail(payload) {
       };
     });
 
-    return { ok: true, detail: detail };
+    var resultObject = { ok: true, detail: detail };
+    Logger.log("DETAIL RETURN SHAPE: %s", JSON.stringify(resultObject));
+    return resultObject;
   } catch (err) {
     return { ok: false, error: "admin_getApplicantDetail failed: " + (err && err.message ? err.message : String(err)) };
   }

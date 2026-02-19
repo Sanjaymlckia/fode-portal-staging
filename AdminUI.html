@@ -368,6 +368,13 @@
       document.getElementById("modalBack").style.display = "flex";
     }
 
+    function clearDocsLoading_(msg){
+      var docs = document.getElementById("docs");
+      if (!docs) return;
+      if (msg) docs.innerHTML = '<div class="muted">' + esc(msg) + '</div>';
+      else docs.innerHTML = "";
+    }
+
     function renderReviewButtonCell_(r){
       var n = Number(r && r.rowNumber || 0);
       var hasRowNumber = Number.isFinite(n) && n >= 2;
@@ -441,41 +448,42 @@
       google.script.run
         .withSuccessHandler(function(res){
           if (reqId !== lastRequestId) {
+            clearDocsLoading_("");
             setReviewButtonLoading_(triggerBtn, false);
             return;
           }
+          console.log("[AdminUI] detail response raw:", res);
+          var detail = null;
+          if (res && res.ok === true && res.detail && typeof res.detail === "object") {
+            detail = res.detail;
+          } else if (res && res.detail && typeof res.detail === "object") {
+            detail = res.detail;
+          }
 
-          handleApiResult_({
-            res: res,
-            targetId: "mMsg",
-            fallbackError: "Failed to load applicant details.",
-            onOk: function(detail){
-              if (!detail || typeof detail !== "object") {
-                var emptyMsg = "Error: Empty response from server. Debug ID: " + getDebugId_(res);
-                setMsg("mMsg", emptyMsg);
-                setMsg("msg", emptyMsg);
-                setActionButtonsEnabled(false);
-                return;
-              }
-              currentDetail = detail;
-              openModal(currentDetail);
-              setActionButtonsEnabled(!!currentRowNumber);
-              setMsg("mMsg", "");
-              setMsg("msg", "");
-            },
-            onError: function(message){
-              setMsg("mMsg", message || "Error");
-              setMsg("msg", message || "Error");
-              setActionButtonsEnabled(false);
-            },
-            onDone: function(){
-              setReviewButtonLoading_(triggerBtn, false);
-              setLinkBusy(false);
-            }
-          });
+          if (!detail) {
+            var invalidMsg = "Invalid detail response";
+            setMsg("mMsg", invalidMsg);
+            setMsg("msg", invalidMsg);
+            clearDocsLoading_("Invalid detail response");
+            console.error("Unexpected detail response shape:", res);
+            setActionButtonsEnabled(false);
+            setReviewButtonLoading_(triggerBtn, false);
+            setLinkBusy(false);
+            return;
+          }
+
+          clearDocsLoading_("");
+          currentDetail = detail;
+          openModal(currentDetail);
+          setActionButtonsEnabled(!!currentRowNumber);
+          setMsg("mMsg", "");
+          setMsg("msg", "");
+          setReviewButtonLoading_(triggerBtn, false);
+          setLinkBusy(false);
         })
         .withFailureHandler(function(err){
           if (reqId !== lastRequestId) {
+            clearDocsLoading_("");
             setReviewButtonLoading_(triggerBtn, false);
             return;
           }
@@ -483,6 +491,7 @@
           var failMsg = "Error: " + (err && err.message ? err.message : err);
           setMsg("mMsg", failMsg);
           setMsg("msg", failMsg);
+          clearDocsLoading_(failMsg);
           setReviewButtonLoading_(triggerBtn, false);
           setLinkBusy(false);
           setActionButtonsEnabled(false);
