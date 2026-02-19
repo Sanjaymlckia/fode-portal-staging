@@ -197,6 +197,16 @@ function admin_getApplicantDetail(payload) {
       };
     });
 
+    detailObj.Parent_Email_Corrected = String(detailObj.Parent_Email_Corrected || "");
+    detailObj.Payment_Verified = String(detailObj.Payment_Verified || "");
+    detailObj.Portal_Access_Status = String(detailObj.Portal_Access_Status || "");
+    detailObj.Doc_Verification_Status = String(detailObj.Doc_Verification_Status || "");
+    detailObj._docs = (detailObj._docs || []).map(function (d) {
+      d.url = asStringUrl_(d.url);
+      d.hasFile = /^https?:\/\//i.test(d.url);
+      return d;
+    });
+
     if (!detailObj) {
       return { ok: false, error: "Failed to build detail object" };
     }
@@ -523,6 +533,35 @@ function toPlainString_(v) {
     try { return String(v.getUrl() || "").trim(); } catch (e) {}
   }
   return String(v).trim();
+}
+
+function asStringUrl_(v) {
+  var out = "";
+  if (v === null || v === undefined) {
+    out = "";
+  } else if (Array.isArray(v)) {
+    var first = "";
+    for (var i = 0; i < v.length; i++) {
+      var candidate = String(v[i] === null || v[i] === undefined ? "" : v[i]).trim();
+      if (candidate) {
+        first = candidate;
+        break;
+      }
+    }
+    if (first) out = first;
+    else {
+      out = v.map(function (x) {
+        return String(x === null || x === undefined ? "" : x).trim();
+      }).filter(function (x) { return !!x; }).join(", ");
+    }
+  } else if (typeof v === "string") {
+    out = v.trim();
+  } else {
+    out = String(v).trim();
+  }
+  if (out.indexOf("[Ljava.lang.Object;") >= 0) return "";
+  if (out === "undefined" || out === "null") return "";
+  return out;
 }
 
 function toRouteStatusKey_(status) {
