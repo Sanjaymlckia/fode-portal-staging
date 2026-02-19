@@ -103,32 +103,35 @@ function admin_searchApplicants(payload) {
 }
 
 function admin_getApplicantDetail(payload) {
-  var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) return { ok: false, error: "Access denied" };
   try {
-    payload = payload || {};
-    var rowNumber = Number(payload.rowNumber || 0);
-    var applicantIdFallback = clean_(payload.applicantId || "");
-    if (!Number.isFinite(rowNumber) || rowNumber < 2 || Math.floor(rowNumber) !== rowNumber) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) {
+      return { ok: false, error: "Access denied" };
+    }
+
+    if (!payload) {
+      return { ok: false, error: "Missing payload" };
+    }
+
+    var rowNumber = Number(payload.rowNumber);
+    var applicantId = clean_(payload.applicantId || "");
+    if (!rowNumber || rowNumber < 2 || Math.floor(rowNumber) !== rowNumber) {
       return { ok: false, error: "Missing/invalid RowNumber" };
     }
 
-    var sh = openDataSheet_();
-    var lastRow = sh.getLastRow();
-    if (rowNumber > lastRow) {
-      if (applicantIdFallback) {
-        var fallbackRow = findRowByApplicantId_(sh, applicantIdFallback);
-        if (fallbackRow) rowNumber = fallbackRow;
-        else return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
-      } else {
-        return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
-      }
+    var sheet = SpreadsheetApp.openById(CONFIG.SHEET_ID).getSheetByName(CONFIG.DATA_SHEET);
+    if (!sheet) {
+      return { ok: false, error: "Data sheet not found" };
     }
 
-    var lastCol = sh.getLastColumn();
-    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-    var idx = headerIndex_(headers);
+    var lastRow = sheet.getLastRow();
+    if (rowNumber > lastRow) {
+      return { ok: false, error: "Row out of range: " + rowNumber };
+    }
 
+    var lastCol = sheet.getLastColumn();
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idx = headerIndex_(headers);
     requireHeaders_(idx, [
       "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected", "Payment_Verified",
       "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
@@ -138,9 +141,20 @@ function admin_getApplicantDetail(payload) {
       "Photo_Status", "Photo_Comment", "Receipt_Status", "Receipt_Comment"
     ]);
 
-    var row = sh.getRange(rowNumber, 1, 1, lastCol).getValues()[0];
+    var values = sheet.getRange(rowNumber, 1, 1, lastCol).getValues();
+    if (!values || !values.length) {
+      return { ok: false, error: "Row empty for RowNumber=" + rowNumber };
+    }
+
+    var row = values[0];
     var rowApplicantId = clean_(row[idx.ApplicantID - 1]);
-    if (!rowApplicantId) return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
+    if (!rowApplicantId) {
+      if (applicantId) {
+        return { ok: false, error: "Row not found for ApplicantID=" + applicantId + " RowNumber=" + rowNumber };
+      }
+      return { ok: false, error: "Row empty for RowNumber=" + rowNumber };
+    }
+
     var issuedAtRaw = row[idx.PortalTokenIssuedAt - 1];
     var issuedAtDate = issuedAtRaw ? new Date(issuedAtRaw) : null;
     var tokenAgeDays = null;
@@ -148,7 +162,8 @@ function admin_getApplicantDetail(payload) {
       tokenAgeDays = Math.floor((new Date().getTime() - issuedAtDate.getTime()) / (24 * 60 * 60 * 1000));
     }
     var tokenExpired = tokenAgeDays !== null && tokenAgeDays > Number(CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS || 0);
-    var detail = {
+
+    var detailObj = {
       _rowNumber: rowNumber,
       ApplicantID: rowApplicantId,
       First_Name: clean_(row[idx.First_Name - 1]),
@@ -166,7 +181,7 @@ function admin_getApplicantDetail(payload) {
     };
 
     var map = CONFIG.DOC_FIELDS || [];
-    detail._docs = map.map(function (m) {
+    detailObj._docs = map.map(function (m) {
       var url = clean_(row[idx[m.file] - 1]);
       return {
         label: m.label,
@@ -181,11 +196,15 @@ function admin_getApplicantDetail(payload) {
       };
     });
 
-    var resultObject = { ok: true, detail: detail };
+    if (!detailObj) {
+      return { ok: false, error: "Failed to build detail object" };
+    }
+
+    var resultObject = { ok: true, detail: detailObj };
     Logger.log("DETAIL RETURN SHAPE: %s", JSON.stringify(resultObject));
     return resultObject;
-  } catch (err) {
-    return { ok: false, error: "admin_getApplicantDetail failed: " + (err && err.message ? err.message : String(err)) };
+  } catch (e) {
+    return { ok: false, error: "admin_getApplicantDetail failed: " + (e && e.message ? e.message : String(e)) };
   }
 }
 
