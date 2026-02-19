@@ -243,6 +243,12 @@
       <div id="superTools" class="row" style="margin-top:10px;">
         <button class="btn small" onclick="backfillTokens(true)">Backfill Tokens (dry run)</button>
         <button class="btn small warn" onclick="backfillTokens(false)">Backfill Tokens (apply)</button>
+        <select id="exportScope" style="max-width:260px;">
+          <option value="auto">Export Scope: Search results first</option>
+          <option value="search">Export Scope: Search results only</option>
+          <option value="all">Export Scope: All rows</option>
+        </select>
+        <button class="btn small ok" onclick="exportPortalLinksCsv()">Export Portal Links (CSV)</button>
       </div>
 
       <div id="portalLinkBox" class="muted" style="margin-top:10px;word-break:break-all;"></div>
@@ -260,9 +266,49 @@
     let currentDetail = null;
     let isLinkBusy = false;
     let lastRequestId = 0;
+    let lastSearchResults = [];
 
-    function setMsg(id, txt){ document.getElementById(id).textContent = txt || ""; }
+    function setMsg(id, txt){
+      var el = document.getElementById(id);
+      if (!el) {
+        console.warn("[AdminUI] setMsg target missing:", id);
+        return;
+      }
+      el.textContent = txt || "";
+    }
     function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+    function isEnvelope_(res){ return !!res && typeof res === "object" && Object.prototype.hasOwnProperty.call(res, "ok"); }
+    function getErrorText_(res, fallback){
+      if (res && typeof res.error === "string" && res.error.trim()) return res.error.trim();
+      return fallback || "Server returned an error";
+    }
+    function getDebugId_(res){
+      if (res && typeof res.debugId === "string" && res.debugId.trim()) return res.debugId.trim();
+      return "(no debug id)";
+    }
+    function handleApiResult_(opts){
+      var res = opts && opts.res;
+      var targetId = (opts && opts.targetId) || "mMsg";
+      var fallbackError = (opts && opts.fallbackError) || "Server returned an error";
+      if (!isEnvelope_(res)) {
+        var invalidMsg = "Error: Invalid server response. Debug ID: " + getDebugId_(res);
+        setMsg(targetId, invalidMsg);
+        setMsg("mMsg", invalidMsg);
+        setMsg("msg", invalidMsg);
+        if (opts && typeof opts.onError === "function") opts.onError(invalidMsg, res);
+        if (opts && typeof opts.onDone === "function") opts.onDone();
+        return;
+      }
+      if (res.ok !== true) {
+        var errMsg = "Error: " + getErrorText_(res, fallbackError) + " | Debug ID: " + getDebugId_(res);
+        setMsg(targetId, errMsg);
+        if (opts && typeof opts.onError === "function") opts.onError(errMsg, res);
+        if (opts && typeof opts.onDone === "function") opts.onDone();
+        return;
+      }
+      if (opts && typeof opts.onOk === "function") opts.onOk(res.detail, res);
+      if (opts && typeof opts.onDone === "function") opts.onDone();
+    }
     function setLinkBusy(flag){
       isLinkBusy = !!flag;
       const copyBtn = document.getElementById("btnCopyLink");
@@ -297,7 +343,45 @@
       document.getElementById("qApplicantId").value = "";
       document.getElementById("qEmail").value = "";
       document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No results yet.</td></tr>`;
+      lastSearchResults = [];
       setMsg("msg","");
+    }
+
+    function setReviewButtonLoading_(btn, isLoading){
+      if (!btn) return;
+      if (isLoading) {
+        if (!btn.dataset.origText) btn.dataset.origText = btn.textContent || "Review";
+        btn.disabled = true;
+        btn.textContent = "Loading...";
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = btn.dataset.origText || "Review";
+      delete btn.dataset.origText;
+    }
+
+    function openModalLoading_(applicantId, rowNumber){
+      document.getElementById("mTitle").textContent = "Applicant Review - " + (applicantId || "Unknown");
+      document.getElementById("mSub").textContent = "RowNumber: " + String(rowNumber || "");
+      document.getElementById("docs").innerHTML = '<div class="muted">Loading...</div>';
+      document.getElementById("mMsg").textContent = "Loading...";
+      document.getElementById("modalBack").style.display = "flex";
+    }
+
+    function renderReviewButtonCell_(r){
+      var n = Number(r && r.rowNumber || 0);
+      var hasRowNumber = Number.isFinite(n) && n >= 2;
+      var applicantId = esc((r && r.applicantId) || "");
+      if (!hasRowNumber) {
+        return ''
+          + '<button class="btn small" type="button" disabled data-action="review" data-applicant-id="' + applicantId + '">Review</button>'
+          + '<div class="muted" style="font-size:11px;margin-top:4px;">RowNumber missing from server results</div>';
+      }
+      return ''
+        + '<button class="btn small accent btnReview" type="button"'
+        + ' data-action="review"'
+        + ' data-applicant-id="' + applicantId + '"'
+        + ' data-row-number="' + String(n) + '">Review</button>';
     }
 
     function search(){
@@ -308,6 +392,18 @@
       google.script.run
         .withSuccessHandler(res => {
           const rows = (res && res.rows) ? res.rows : [];
+          if (rows.length) {
+            const sample = rows[0] || {};
+            console.log("[AdminUI] rendered %s results. sample=%o", rows.length, {
+              ApplicantID: sample.applicantId || "",
+              RowNumber: sample.rowNumber
+            });
+          } else {
+            console.log("[AdminUI] rendered 0 results.");
+          }
+          lastSearchResults = rows
+            .map(function(r){ return Number(r && r.rowNumber || 0); })
+            .filter(function(n){ return Number.isFinite(n) && n > 1; });
           if (!rows.length){
             document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No matches found.</td></tr>`;
             setMsg("msg","No matches.");
@@ -321,37 +417,100 @@
               <td>${esc(r.docStatus)}</td>
               <td>${esc(r.paymentVerified)}</td>
               <td>${esc(r.portalAccess)}</td>
-              <td><button class="btn small accent" onclick="review(${r.rowNumber})">Review</button></td>
+              <td>${renderReviewButtonCell_(r)}</td>
             </tr>
           `).join("");
         })
-        .withFailureHandler(err => setMsg("msg","Error: " + (err && err.message ? err.message : err)))
+        .withFailureHandler(err => {
+          console.error("[AdminUI] admin_searchApplicants failure:", err);
+          setMsg("msg","Error: " + (err && err.message ? err.message : err));
+        })
         .admin_searchApplicants({ applicantId, email });
     }
 
-    function review(rowNumber){
+    function review(rowNumber, applicantId, triggerBtn){
       const reqId = ++lastRequestId;
       currentRowNumber = rowNumber;
       currentDetail = null;
       setActionButtonsEnabled(false);
       document.getElementById("portalLinkBox").textContent = "";
       setLinkBusy(false);
+      setReviewButtonLoading_(triggerBtn, true);
+      openModalLoading_(applicantId, rowNumber);
       setMsg("mMsg","Loading...");
       google.script.run
-        .withSuccessHandler(res => {
-          if (reqId !== lastRequestId) return;
-          currentDetail = res.detail;
-          openModal(currentDetail);
-          setActionButtonsEnabled(!!currentRowNumber);
-          setMsg("mMsg","");
+        .withSuccessHandler(function(res){
+          if (reqId !== lastRequestId) {
+            setReviewButtonLoading_(triggerBtn, false);
+            return;
+          }
+
+          handleApiResult_({
+            res: res,
+            targetId: "mMsg",
+            fallbackError: "Failed to load applicant details.",
+            onOk: function(detail){
+              if (!detail || typeof detail !== "object") {
+                var emptyMsg = "Error: Empty response from server. Debug ID: " + getDebugId_(res);
+                setMsg("mMsg", emptyMsg);
+                setMsg("msg", emptyMsg);
+                setActionButtonsEnabled(false);
+                return;
+              }
+              currentDetail = detail;
+              openModal(currentDetail);
+              setActionButtonsEnabled(!!currentRowNumber);
+              setMsg("mMsg", "");
+              setMsg("msg", "");
+            },
+            onError: function(message){
+              setMsg("mMsg", message || "Error");
+              setMsg("msg", message || "Error");
+              setActionButtonsEnabled(false);
+            },
+            onDone: function(){
+              setReviewButtonLoading_(triggerBtn, false);
+              setLinkBusy(false);
+            }
+          });
         })
-        .withFailureHandler(err => {
-          if (reqId !== lastRequestId) return;
-          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+        .withFailureHandler(function(err){
+          if (reqId !== lastRequestId) {
+            setReviewButtonLoading_(triggerBtn, false);
+            return;
+          }
+          console.error("[AdminUI] admin_getApplicantDetail failure:", err);
+          var failMsg = "Error: " + (err && err.message ? err.message : err);
+          setMsg("mMsg", failMsg);
+          setMsg("msg", failMsg);
+          setReviewButtonLoading_(triggerBtn, false);
           setLinkBusy(false);
           setActionButtonsEnabled(false);
         })
-        .admin_getApplicantDetail({ rowNumber });
+        .admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId || "" });
+    }
+
+    function onResultsClick_(ev){
+      var btn = ev.target && ev.target.closest ? ev.target.closest('[data-action="review"]') : null;
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      var applicantId = (btn.getAttribute("data-applicant-id") || "").trim();
+      var rawRow = (btn.getAttribute("data-row-number") || "").trim();
+      var rowNumber = Number(rawRow);
+      console.log("[AdminUI] Review click ApplicantID=%s RowNumber=%s", applicantId || "(blank)", rawRow || "(blank)");
+
+      if (!rawRow || !Number.isFinite(rowNumber) || rowNumber < 2) {
+        setMsg("msg", "RowNumber missing/invalid. Cannot open Review.");
+        setMsg("mMsg", "RowNumber missing from server results");
+        return;
+      }
+      if (!applicantId) {
+        setMsg("mMsg", "Review handler missing ApplicantID attribute");
+        return;
+      }
+      review(rowNumber, applicantId, btn);
     }
 
     function setRoleUi(){
@@ -581,18 +740,75 @@
     function backfillTokens(dryRun){
       if (!IS_SUPER) return;
       setMsg("mMsg", dryRun ? "Backfill dry run..." : "Backfill apply...");
-      const fn = dryRun ? "admin_backfillPortalTokensDryRun" : "admin_backfillPortalTokensApply";
-      google.script.run
-        .withSuccessHandler(res => {
-          setMsg("mMsg", "Backfill done: checked=" + (res.checked || 0) + ", updated=" + (res.updated || 0) + ", dryRun=" + String(!!res.dryRun));
+      var runner = google.script.run
+        .withSuccessHandler(function(res){
+          setMsg("mMsg",
+            "Backfill done: checked=" + (res.checked || 0)
+            + ", updated=" + (res.updated || 0)
+            + ", generated=" + (res.generatedCount || 0)
+            + ", rekeyed=" + (res.rekeyedCount || 0)
+            + ", dryRun=" + String(!!res.dryRun));
         })
-        .withFailureHandler(err => {
+        .withFailureHandler(function(err){
           setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
-        })[fn]({ limit: 0 });
+        });
+      if (dryRun) runner.admin_backfillPortalTokensDryRun({ limit: 0 });
+      else runner.admin_backfillPortalTokensApply({ limit: 0 });
+    }
+
+    function exportPortalLinksCsv(){
+      if (!IS_SUPER) return;
+      if (!STUDENT_URL_READY) {
+        setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
+        return;
+      }
+      var scope = document.getElementById("exportScope").value || "auto";
+      var payload = {};
+      if (scope === "search" || (scope === "auto" && lastSearchResults.length)) {
+        payload.rowNumbers = lastSearchResults.slice();
+      }
+
+      setMsg("mMsg", "Preparing CSV export...");
+      google.script.run
+        .withSuccessHandler(function(res){
+          handleApiResult_({
+            res: res,
+            targetId: "mMsg",
+            fallbackError: "Could not export portal links",
+            onOk: function(detail){
+              var data = detail || {};
+              var csv = String(data.csv || "");
+              var filename = String(data.filename || "portal-links.csv");
+              if (!csv) {
+                setMsg("mMsg", "Error: Empty CSV content.");
+                return;
+              }
+              var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              setMsg("mMsg",
+                "Export complete: exported=" + (data.exportedCount || 0)
+                + ", generated=" + (data.generatedCount || 0)
+                + ", rekeyed=" + (data.rekeyedCount || 0));
+            }
+          });
+        })
+        .withFailureHandler(function(err){
+          setMsg("mMsg","Error: " + (err && err.message ? err.message : err) + " | Debug ID: (no debug id)");
+        })
+        .admin_exportPortalLinksCsv(payload);
     }
 
     setRoleUi();
     setActionButtonsEnabled(false);
+    var resultsBody = document.getElementById("tbody");
+    if (resultsBody) resultsBody.addEventListener("click", onResultsClick_);
   </script>
 </body>
 </html>

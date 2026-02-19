@@ -104,68 +104,87 @@ function admin_searchApplicants(payload) {
 
 function admin_getApplicantDetail(payload) {
   var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  if (!isAdmin_(adminEmail)) return { ok: false, error: "Access denied" };
+  try {
+    payload = payload || {};
+    var rowNumber = Number(payload.rowNumber || 0);
+    var applicantIdFallback = clean_(payload.applicantId || "");
+    if (!Number.isFinite(rowNumber) || rowNumber < 2 || Math.floor(rowNumber) !== rowNumber) {
+      return { ok: false, error: "Missing/invalid RowNumber" };
+    }
 
-  payload = payload || {};
-  var rowNumber = Number(payload.rowNumber || 0);
-  if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
+    var sh = openDataSheet_();
+    var lastRow = sh.getLastRow();
+    if (rowNumber > lastRow) {
+      if (applicantIdFallback) {
+        var fallbackRow = findRowByApplicantId_(sh, applicantIdFallback);
+        if (fallbackRow) rowNumber = fallbackRow;
+        else return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
+      } else {
+        return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
+      }
+    }
 
-  var sh = openDataSheet_();
-  var lastCol = sh.getLastColumn();
-  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-  var idx = headerIndex_(headers);
+    var lastCol = sh.getLastColumn();
+    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idx = headerIndex_(headers);
 
-  requireHeaders_(idx, [
-    "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected", "Payment_Verified",
-    "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
-    "PortalTokenIssuedAt",
-    "Birth_ID_Passport_File", "Latest_School_Report_File", "Transfer_Certificate_File", "Passport_Photo_File", "Fee_Receipt_File",
-    "Birth_ID_Status", "Birth_ID_Comment", "Report_Status", "Report_Comment", "Transfer_Status", "Transfer_Comment",
-    "Photo_Status", "Photo_Comment", "Receipt_Status", "Receipt_Comment"
-  ]);
+    requireHeaders_(idx, [
+      "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected", "Payment_Verified",
+      "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
+      "PortalTokenIssuedAt",
+      "Birth_ID_Passport_File", "Latest_School_Report_File", "Transfer_Certificate_File", "Passport_Photo_File", "Fee_Receipt_File",
+      "Birth_ID_Status", "Birth_ID_Comment", "Report_Status", "Report_Comment", "Transfer_Status", "Transfer_Comment",
+      "Photo_Status", "Photo_Comment", "Receipt_Status", "Receipt_Comment"
+    ]);
 
-  var row = sh.getRange(rowNumber, 1, 1, lastCol).getValues()[0];
-  var issuedAtRaw = row[idx.PortalTokenIssuedAt - 1];
-  var issuedAtDate = issuedAtRaw ? new Date(issuedAtRaw) : null;
-  var tokenAgeDays = null;
-  if (issuedAtDate && !isNaN(issuedAtDate.getTime())) {
-    tokenAgeDays = Math.floor((new Date().getTime() - issuedAtDate.getTime()) / (24 * 60 * 60 * 1000));
-  }
-  var tokenExpired = tokenAgeDays !== null && tokenAgeDays > Number(CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS || 0);
-  var detail = {
-    _rowNumber: rowNumber,
-    ApplicantID: clean_(row[idx.ApplicantID - 1]),
-    First_Name: clean_(row[idx.First_Name - 1]),
-    Last_Name: clean_(row[idx.Last_Name - 1]),
-    Parent_Email_Corrected: clean_(row[idx.Parent_Email_Corrected - 1]),
-    Payment_Verified: clean_(row[idx.Payment_Verified - 1]),
-    Portal_Access_Status: clean_(row[idx.Portal_Access_Status - 1]) || "Open",
-    Doc_Verification_Status: clean_(row[idx.Doc_Verification_Status - 1]) || "Pending",
-    Doc_Last_Verified_At: row[idx.Doc_Last_Verified_At - 1],
-    Doc_Last_Verified_By: clean_(row[idx.Doc_Last_Verified_By - 1]),
-    PortalTokenIssuedAt: issuedAtDate && !isNaN(issuedAtDate.getTime()) ? issuedAtDate.toISOString() : "",
-    PortalTokenAgeDays: tokenAgeDays,
-    PortalTokenExpired: tokenExpired,
-    PortalTokenMaxAgeDays: Number(CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS || 0)
-  };
-
-  var map = CONFIG.DOC_FIELDS || [];
-  detail._docs = map.map(function (m) {
-    var url = clean_(row[idx[m.file] - 1]);
-    return {
-      label: m.label,
-      file: m.file,
-      statusField: m.status,
-      commentField: m.comment,
-      required: m.required !== false,
-      url: url,
-      hasFile: /^https?:\/\//i.test(url),
-      status: normalizeDocStatus_(clean_(row[idx[m.status] - 1]) || "Pending"),
-      comment: clean_(row[idx[m.comment] - 1])
+    var row = sh.getRange(rowNumber, 1, 1, lastCol).getValues()[0];
+    var rowApplicantId = clean_(row[idx.ApplicantID - 1]);
+    if (!rowApplicantId) return { ok: false, error: "Row not found for RowNumber=" + rowNumber };
+    var issuedAtRaw = row[idx.PortalTokenIssuedAt - 1];
+    var issuedAtDate = issuedAtRaw ? new Date(issuedAtRaw) : null;
+    var tokenAgeDays = null;
+    if (issuedAtDate && !isNaN(issuedAtDate.getTime())) {
+      tokenAgeDays = Math.floor((new Date().getTime() - issuedAtDate.getTime()) / (24 * 60 * 60 * 1000));
+    }
+    var tokenExpired = tokenAgeDays !== null && tokenAgeDays > Number(CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS || 0);
+    var detail = {
+      _rowNumber: rowNumber,
+      ApplicantID: rowApplicantId,
+      First_Name: clean_(row[idx.First_Name - 1]),
+      Last_Name: clean_(row[idx.Last_Name - 1]),
+      Parent_Email_Corrected: clean_(row[idx.Parent_Email_Corrected - 1]),
+      Payment_Verified: clean_(row[idx.Payment_Verified - 1]),
+      Portal_Access_Status: clean_(row[idx.Portal_Access_Status - 1]) || "Open",
+      Doc_Verification_Status: clean_(row[idx.Doc_Verification_Status - 1]) || "Pending",
+      Doc_Last_Verified_At: row[idx.Doc_Last_Verified_At - 1],
+      Doc_Last_Verified_By: clean_(row[idx.Doc_Last_Verified_By - 1]),
+      PortalTokenIssuedAt: issuedAtDate && !isNaN(issuedAtDate.getTime()) ? issuedAtDate.toISOString() : "",
+      PortalTokenAgeDays: tokenAgeDays,
+      PortalTokenExpired: tokenExpired,
+      PortalTokenMaxAgeDays: Number(CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS || 0)
     };
-  });
 
-  return { ok: true, detail: detail };
+    var map = CONFIG.DOC_FIELDS || [];
+    detail._docs = map.map(function (m) {
+      var url = clean_(row[idx[m.file] - 1]);
+      return {
+        label: m.label,
+        file: m.file,
+        statusField: m.status,
+        commentField: m.comment,
+        required: m.required !== false,
+        url: url,
+        hasFile: /^https?:\/\//i.test(url),
+        status: normalizeDocStatus_(clean_(row[idx[m.status] - 1]) || "Pending"),
+        comment: clean_(row[idx[m.comment] - 1])
+      };
+    });
+
+    return { ok: true, detail: detail };
+  } catch (err) {
+    return { ok: false, error: "admin_getApplicantDetail failed: " + (err && err.message ? err.message : String(err)) };
+  }
 }
 
 /**
@@ -212,15 +231,22 @@ function admin_resetPortalLink(payload) {
 
   var applicantId = clean_(sh.getRange(rowNumber, idx["ApplicantID"]).getValue());
   if (!applicantId) throw new Error("ApplicantID missing");
+  var rowObj = getRowObject_(sh, rowNumber);
+  var parentEmail = clean_(rowObj[SCHEMA.PARENT_EMAIL] || "");
+  var parentEmailCorrected = clean_(rowObj[SCHEMA.PARENT_EMAIL_CORRECTED] || "");
+  var fullName = (clean_(rowObj.First_Name) + " " + clean_(rowObj.Last_Name)).trim();
+  var emailForSecret = parentEmailCorrected || parentEmail;
 
   // Generate new secret and store hash + issue time
   var secret = newPortalSecret_();
+  var secretHash = hashPortalSecret_(secret);
   var patch = {};
-  patch["PortalTokenHash"] = hashPortalSecret_(secret);
+  patch["PortalTokenHash"] = secretHash;
   patch["PortalTokenIssuedAt"] = new Date();
   patch["Doc_Last_Verified_At"] = new Date();
   patch["Doc_Last_Verified_By"] = adminEmail || "admin";
   applyPatch_(sh, rowNumber, patch);
+  syncPortalSecretsActive_(applicantId, emailForSecret, fullName, secret, secretHash);
 
   var link = buildPortalLink_(applicantId, secret);
   log_(openLogSheet_(), "ADMIN_PORTAL_LINK_RESET",
@@ -230,7 +256,6 @@ function admin_resetPortalLink(payload) {
     ok: true,
     link: link,
     applicantId: applicantId,
-    secret: secret,                 // <-- REQUIRED by AdminUI
     issuedAt: new Date().toISOString(),
     warning: ""
   };
@@ -378,6 +403,70 @@ function buildPortalLink_(applicantId, secret) {
   return base + "?view=portal&id=" + encodeURIComponent(applicantId) + "&s=" + encodeURIComponent(secret);
 }
 
+function buildPortalLinkFromBase_(base, applicantId, secret) {
+  return base + "?view=portal&id=" + encodeURIComponent(applicantId) + "&s=" + encodeURIComponent(secret);
+}
+
+function buildCsvLine_(cells) {
+  return cells.map(function (cell) {
+    var v = String(cell === null || cell === undefined ? "" : cell);
+    if (/[",\n]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+    return v;
+  }).join(",");
+}
+
+function resolveExportRowNumbers_(payload, lastRow) {
+  payload = payload || {};
+  var requested = Array.isArray(payload.rowNumbers) ? payload.rowNumbers : [];
+  var out = [];
+  if (requested.length) {
+    var seen = {};
+    for (var i = 0; i < requested.length; i++) {
+      var n = Number(requested[i] || 0);
+      if (!n || n < 2 || n > lastRow || seen[n]) continue;
+      seen[n] = true;
+      out.push(n);
+    }
+    return out;
+  }
+  for (var row = 2; row <= lastRow; row++) out.push(row);
+  return out;
+}
+
+function syncPortalSecretsActive_(applicantId, email, fullName, secretPlain, secretHash) {
+  var sh = openPortalSecrets_();
+  var idx = getHeaderIndexMap_(sh);
+  var rowIndex = findPortalSecretsRowByApplicantId_(sh, applicantId);
+  var nowIso = new Date().toISOString();
+  var patch = {
+    ApplicantID: clean_(applicantId),
+    Email: clean_(email),
+    Full_Name: clean_(fullName),
+    Secret_Plain: clean_(secretPlain),
+    Secret_Hash: clean_(secretHash),
+    Last_Rotated_At: nowIso,
+    Status: "Active"
+  };
+  if (rowIndex) {
+    if (!idx.Created_At || !idx.Last_Rotated_At) throw new Error("PortalSecrets schema missing required headers");
+    var existingCreatedAt = sh.getRange(rowIndex, idx.Created_At).getValue();
+    if (!clean_(existingCreatedAt)) patch.Created_At = nowIso;
+    applyPatch_(sh, rowIndex, patch);
+    return rowIndex;
+  }
+  sh.appendRow([
+    clean_(applicantId),
+    clean_(email),
+    clean_(fullName),
+    clean_(secretPlain),
+    clean_(secretHash),
+    nowIso,
+    nowIso,
+    "Active"
+  ]);
+  return sh.getLastRow();
+}
+
 function findDocMapping_(file, statusField, commentField, docMap) {
   var i;
   if (file) {
@@ -436,46 +525,83 @@ function admin_backfillPortalTokens(payload) {
   var limit = Math.max(0, Number(payload.limit || 0));
 
   var sh = openDataSheet_();
+  var secretsSheet = openPortalSecrets_();
   ensureHeadersExist_(sh, ["PortalTokenHash", "PortalTokenIssuedAt", "Portal_Access_Status"]);
   var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
-  requireHeaders_(idx, ["ApplicantID", "PortalTokenHash", "PortalTokenIssuedAt"]);
+  requireHeaders_(idx, ["ApplicantID", "PortalTokenHash"]);
 
   var lastRow = sh.getLastRow();
   var checked = 0;
   var updated = 0;
   var updatedRows = [];
+  var skipped = 0;
+  var generatedCount = 0;
+  var rekeyedCount = 0;
+  var hashSyncedCount = 0;
 
   for (var rowNumber = 2; rowNumber <= lastRow; rowNumber++) {
-    var applicantId = clean_(sh.getRange(rowNumber, idx["ApplicantID"]).getValue());
+    var rowObj = getRowObject_(sh, rowNumber);
+    var applicantId = clean_(rowObj.ApplicantID || "");
     if (!applicantId) continue;
     checked++;
+    var admissionsHash = clean_(rowObj.PortalTokenHash || "");
+    var secretRowIndex = findPortalSecretsRowByApplicantId_(secretsSheet, applicantId);
+    var hasActiveSecret = false;
+    var activeSecretHash = "";
+    if (secretRowIndex) {
+      var rec = readPortalSecretsRecord_(secretsSheet, secretRowIndex);
+      if (clean_(rec.Status) === "Active" && clean_(rec.Secret_Hash)) {
+        hasActiveSecret = true;
+        activeSecretHash = clean_(rec.Secret_Hash);
+      }
+    }
 
-    var tokenHash = clean_(sh.getRange(rowNumber, idx["PortalTokenHash"]).getValue());
-    var issuedAt = sh.getRange(rowNumber, idx["PortalTokenIssuedAt"]).getValue();
-    if (tokenHash && issuedAt) continue;
+    if (admissionsHash && hasActiveSecret) {
+      skipped++;
+      continue;
+    }
 
     if (limit > 0 && updated >= limit) break;
-
     updated++;
     updatedRows.push(rowNumber);
-    if (!dryRun) {
-      var secret = newPortalSecret_();
-      var patch = {
-        PortalTokenHash: hashPortalSecret_(secret),
-        PortalTokenIssuedAt: new Date()
-      };
-      applyPatch_(sh, rowNumber, patch);
+
+    if (!admissionsHash && hasActiveSecret) {
+      hashSyncedCount++;
+      if (!dryRun) setPortalTokenHashForRow_(sh, rowNumber, activeSecretHash);
+      continue;
+    }
+
+    var emailForSecret = clean_(rowObj.Parent_Email_Corrected || "") || clean_(rowObj.Parent_Email || "");
+    var fullName = (clean_(rowObj.First_Name || "") + " " + clean_(rowObj.Last_Name || "")).trim();
+    var secretInfo = getOrCreateActivePortalSecret_(applicantId, emailForSecret, fullName, sh, rowNumber, {
+      dryRun: dryRun,
+      secretsSheet: secretsSheet
+    });
+    if (secretInfo.created) generatedCount++;
+    if (admissionsHash && !hasActiveSecret) {
+      rekeyedCount++;
     }
   }
 
   log_(openLogSheet_(), "ADMIN_TOKEN_BACKFILL",
-    "dryRun=" + dryRun + " checked=" + checked + " updated=" + updated + " by=" + (adminEmail || "admin"));
+    "dryRun=" + dryRun
+    + " checked=" + checked
+    + " updated=" + updated
+    + " skipped=" + skipped
+    + " generated=" + generatedCount
+    + " rekeyed=" + rekeyedCount
+    + " hashSynced=" + hashSyncedCount
+    + " by=" + (adminEmail || "admin"));
 
   return {
     ok: true,
     dryRun: dryRun,
     checked: checked,
     updated: updated,
+    skipped: skipped,
+    generatedCount: generatedCount,
+    rekeyedCount: rekeyedCount,
+    hashSyncedCount: hashSyncedCount,
     updatedRows: updatedRows
   };
 }
@@ -490,6 +616,66 @@ function admin_backfillPortalTokensApply(payload) {
   payload = payload || {};
   payload.dryRun = false;
   return admin_backfillPortalTokens(payload);
+}
+
+function admin_exportPortalLinksCsv(payload) {
+  var adminEmail = getActiveUserEmail_();
+  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  requireSuperAdmin_(adminEmail);
+  if (!isStudentUrlConfigured_()) throw new Error(getStudentUrlWarning_());
+
+  payload = payload || {};
+  var sh = openDataSheet_();
+  var secretsSheet = openPortalSecrets_();
+  var lastRow = sh.getLastRow();
+  var rows = resolveExportRowNumbers_(payload, lastRow);
+  var out = [["ApplicantID", "Email", "Full_Name", "Student_Portal_Link"]];
+  var exportedCount = 0;
+  var generatedCount = 0;
+  var rekeyedCount = 0;
+
+  for (var i = 0; i < rows.length; i++) {
+    var rowNumber = rows[i];
+    var rowObj = getRowObject_(sh, rowNumber);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) continue;
+
+    var emailCorrected = clean_(rowObj.Parent_Email_Corrected || "");
+    var emailRaw = clean_(rowObj.Parent_Email || "");
+    var email = emailCorrected || emailRaw || "";
+    var fullName = (clean_(rowObj.First_Name || "") + " " + clean_(rowObj.Last_Name || "")).trim();
+    var admissionsHash = clean_(rowObj.PortalTokenHash || "");
+    var hasSecretRecord = !!findPortalSecretsRowByApplicantId_(secretsSheet, applicantId);
+
+    var secretInfo = getOrCreateActivePortalSecret_(applicantId, email, fullName, sh, rowNumber, {
+      secretsSheet: secretsSheet
+    });
+    if (secretInfo.created) generatedCount++;
+    if (admissionsHash && !hasSecretRecord) rekeyedCount++;
+
+    var link = buildPortalLinkFromBase_(clean_(CONFIG.WEBAPP_URL_STUDENT || ""), applicantId, secretInfo.secretPlain);
+    out.push([applicantId, email, fullName, link]);
+    exportedCount++;
+  }
+
+  var lines = out.map(function (row) { return buildCsvLine_(row); });
+  var csv = lines.join("\n");
+  var fileStamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT", "yyyyMMdd_HHmmss");
+  var filename = "portal-links-" + fileStamp + ".csv";
+
+  log_(openLogSheet_(), "ADMIN_EXPORT_PORTAL_LINKS",
+    "exported=" + exportedCount + " generated=" + generatedCount + " rekeyed=" + rekeyedCount + " by=" + (adminEmail || "admin"));
+
+  return {
+    ok: true,
+    detail: {
+      csv: csv,
+      filename: filename,
+      exportedCount: exportedCount,
+      generatedCount: generatedCount,
+      rekeyedCount: rekeyedCount
+    }
+  };
 }
 
 function test_AdminAuth() {
