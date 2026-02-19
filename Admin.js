@@ -182,7 +182,8 @@ function admin_getApplicantDetail(payload) {
 
     var map = CONFIG.DOC_FIELDS || [];
     detailObj._docs = map.map(function (m) {
-      var url = clean_(row[idx[m.file] - 1]);
+      var rawUrl = row[idx[m.file] - 1];
+      var url = toPlainString_(rawUrl);
       return {
         label: m.label,
         file: m.file,
@@ -507,6 +508,21 @@ function normalizeDocStatus_(s) {
   if (v === "rejected") return "Rejected";
   if (v === "fraudulent") return "Fraudulent";
   return "Pending";
+}
+
+function toPlainString_(v) {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) {
+    return v.filter(function (x) { return !!x; }).map(function (x) {
+      return String(x).trim();
+    }).filter(function (x) { return !!x; }).join(", ");
+  }
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (v && typeof v.getUrl === "function") {
+    try { return String(v.getUrl() || "").trim(); } catch (e) {}
+  }
+  return String(v).trim();
 }
 
 function toRouteStatusKey_(status) {
