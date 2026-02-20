@@ -1,4 +1,5 @@
 /******************** ADMIN APP (REWORKED FOR HASHED PORTAL TOKENS) ********************/
+var ADMIN_DETAIL_SIG = "ADMIN_DETAIL_SIG_20260220_v1";
 
 function renderAdminApp_(e) {
   var email = getActiveUserEmail_();
@@ -104,6 +105,7 @@ function admin_searchApplicants(payload) {
 
 function admin_getApplicantDetail(payload) {
   try {
+    Logger.log("SIG admin_getApplicantDetail: %s row=%s id=%s", ADMIN_DETAIL_SIG, payload && payload.rowNumber, payload && payload.applicantId);
     var adminEmail = getActiveUserEmail_();
     if (!isAdmin_(adminEmail)) {
       return { ok: false, error: "Access denied" };
@@ -142,6 +144,7 @@ function admin_getApplicantDetail(payload) {
     ]);
 
     var values = sheet.getRange(rowNumber, 1, 1, lastCol).getValues();
+    var displayRow = sheet.getRange(rowNumber, 1, 1, lastCol).getDisplayValues()[0];
     if (!values || !values.length) {
       return { ok: false, error: "Row empty for RowNumber=" + rowNumber };
     }
@@ -182,8 +185,7 @@ function admin_getApplicantDetail(payload) {
 
     var map = CONFIG.DOC_FIELDS || [];
     detailObj._docs = map.map(function (m) {
-      var rawUrl = row[idx[m.file] - 1];
-      var url = toPlainString_(rawUrl);
+      var url = clean_(displayRow[idx[m.file] - 1]);
       return {
         label: m.label,
         file: m.file,
@@ -211,6 +213,9 @@ function admin_getApplicantDetail(payload) {
       return { ok: false, error: "Failed to build detail object" };
     }
 
+    Logger.log("DOC_URL_SAMPLE: %s", JSON.stringify(detailObj._docs.map(function (d) {
+      return { file: d.file, url: d.url, t: typeof d.url };
+    })));
     var resultObject = { ok: true, detail: detailObj };
     Logger.log("DETAIL RETURN SHAPE: %s", JSON.stringify(resultObject));
     return resultObject;
