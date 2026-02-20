@@ -284,8 +284,9 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
   applicantId = clean_(applicantId);
   secret = clean_(secret);
   fieldName = clean_(fieldName);
-  fileName = clean_(fileName) || ("upload_" + Date.now());
-  mimeType = clean_(mimeType) || "application/octet-stream";
+  var fileNames = Array.isArray(fileName) ? fileName : [fileName];
+  var mimeTypes = Array.isArray(mimeType) ? mimeType : [mimeType];
+  var base64List = Array.isArray(base64Data) ? base64Data : [base64Data];
 
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
@@ -309,32 +310,64 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
     writeBack_(sheet, found.rowNum, { Folder_Url: folder.getUrl() });
   }
 
-  // Create file from base64
-  var bytes = Utilities.base64Decode(String(base64Data || ""));
-  var blob = Utilities.newBlob(bytes, mimeType, fileName);
-  var file = folder.createFile(blob);
+  var docMeta = docMetaByField_(fieldName);
+  var isMultiple = !!(docMeta && docMeta.multiple === true);
+  if (fileNames.length !== mimeTypes.length || fileNames.length !== base64List.length) {
+    throw new Error("Upload payload mismatch.");
+  }
+  if (!fileNames.length) throw new Error("No files selected.");
 
-  // Replace mode: overwrite field with new Drive URL, log old value
-  var oldUrl = clean_(found.record[fieldName] || "");
-  var newUrl = file.getUrl();
+  var createdUrls = [];
+  for (var i = 0; i < fileNames.length; i++) {
+    var fName = clean_(fileNames[i]) || ("upload_" + Date.now() + "_" + i);
+    var fType = clean_(mimeTypes[i]) || "application/octet-stream";
+    var b64 = String(base64List[i] || "");
+    if (!b64) continue;
+    var bytes = Utilities.base64Decode(b64);
+    var blob = Utilities.newBlob(bytes, fType, fName);
+    var file = folder.createFile(blob);
+    createdUrls.push(file.getUrl());
+  }
+  if (!createdUrls.length) throw new Error("No valid files to upload.");
 
   var updates = {};
-  updates[fieldName] = newUrl;
+  var oldCell = clean_(found.record[fieldName] || "");
+  if (isMultiple) {
+    var merged = oldCell;
+    for (var j = 0; j < createdUrls.length; j++) {
+      merged = appendUrlToCell_(merged, createdUrls[j]);
+    }
+    updates[fieldName] = merged;
+  } else {
+    updates[fieldName] = createdUrls[createdUrls.length - 1];
+  }
   updates.PortalLastUpdateAt = new Date().toISOString();
   if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
 
   // If status column exists, set PENDING_REVIEW
-  var docMeta = docMetaByField_(fieldName);
   if (docMeta && hasHeader_(sheet, docMeta.status)) updates[docMeta.status] = "PENDING_REVIEW";
 
-  // File_Log append
-  var line = new Date().toISOString() + " | " + fieldName + " | replaced | old=" + (oldUrl || "-") + " | new=" + newUrl;
-  updates.File_Log = appendLog_(clean_(found.record.File_Log || ""), line);
+  var fileLog = clean_(found.record.File_Log || "");
+  for (var k = 0; k < createdUrls.length; k++) {
+    var line = new Date().toISOString()
+      + " | " + fieldName
+      + " | " + (isMultiple ? "uploaded" : "replaced")
+      + " | old=" + (oldCell || "-")
+      + " | new=" + createdUrls[k];
+    fileLog = appendLog_(fileLog, line);
+  }
+  updates.File_Log = fileLog;
 
   writeBack_(sheet, found.rowNum, updates);
-  log_(logSheet, "PORTAL UPLOAD", "ApplicantID=" + applicantId + " field=" + fieldName + " file=" + fileName);
+  log_(logSheet, "PORTAL UPLOAD", "ApplicantID=" + applicantId + " field=" + fieldName + " files=" + createdUrls.length);
 
-  return { ok: true, field: fieldName, url: newUrl };
+  return {
+    ok: true,
+    field: fieldName,
+    url: createdUrls[createdUrls.length - 1],
+    urls: createdUrls,
+    multiple: isMultiple
+  };
 }
 
 /******************** PORTAL HTML ********************/
@@ -493,17 +526,30 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     var stBadge = st ? ("<b>Status:</b> " + esc_(st)) : "<b>Status:</b> (not set)";
     var cmBlock = cm ? ("<div style='margin-top:6px;'><b>Admin comment:</b> " + esc_(cm) + "</div>") : "";
 
-    var isUrl = /^https?:\/\//i.test(cur);
-    var curLink = isUrl
-      ? ("<div style='margin-top:6px;'><b>Current file:</b> <a target='_blank' href='" + esc_(cur) + "'>Open</a></div>")
-      : "<div style='margin-top:6px;'><b>Current file:</b> (none)</div>";
+    var urlList = normalizeToUrlList_(cur);
+    var curLinks = "";
+    if (urlList.length) {
+      var linksHtml = [];
+      for (var u = 0; u < urlList.length; u++) {
+        linksHtml.push("<a target='_blank' href='" + esc_(urlList[u]) + "'>Open " + String(u + 1) + "</a>");
+      }
+      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> " + linksHtml.join(" | ") + "</div>";
+    } else {
+      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> None uploaded</div>";
+    }
+    var multipleAttr = d.multiple ? " multiple" : "";
+    var multiBadge = d.multiple ? "<div class='muted' style='font-size:12px;margin-top:4px;'>Multi-upload enabled</div>" : "";
+    var noteHtml = "";
 
     var uploadUi = locked
       ? "<div style='margin-top:10px;color:#666;'><i>Uploads disabled (locked).</i></div>"
       : "<div style='margin-top:10px;'>"
-        + "<input type='file' id='f_" + esc_(d.field) + "' /> "
-        + "<button type='button' onclick=\"uploadDoc('" + esc_(d.field) + "')\">Upload / Replace</button>"
+        + "<input type='file' id='f_" + esc_(d.field) + "'" + multipleAttr + " onchange=\"onDocFileChange('" + esc_(d.field) + "', " + (d.multiple ? "true" : "false") + ")\" /> "
+        + "<button type='button' id='btn_" + esc_(d.field) + "' onclick=\"uploadDoc('" + esc_(d.field) + "', " + (d.multiple ? "true" : "false") + ")\">Upload / Replace</button>"
+        + noteHtml
+        + "<div id='cur_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'>" + curLinks + "</div>"
         + "<div id='msg_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'></div>"
+        + multiBadge
         + "</div>";
 
     out += ""
@@ -511,7 +557,7 @@ function renderDocsSection_(id, secret, record, docs, locked) {
       + "<div><b>" + esc_(d.label) + "</b></div>"
       + "<div style='margin-top:6px;'>" + stBadge + "</div>"
       + cmBlock
-      + curLink
+      + curLinks
       + uploadUi
       + "</div>";
   }
@@ -519,26 +565,87 @@ function renderDocsSection_(id, secret, record, docs, locked) {
   // uploader script
   out += ""
     + "<script>"
-    + "function uploadDoc(fieldName){"
+    + "var PORTAL_AUTO_UPLOAD=true;"
+    + "function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#039;');}"
+    + "function setUploadBusy(fieldName,busy){"
+    + "  var input=document.getElementById('f_'+fieldName);"
+    + "  var btn=document.getElementById('btn_'+fieldName);"
+    + "  if(input) input.disabled=!!busy;"
+    + "  if(btn) btn.disabled=!!busy;"
+    + "}"
+    + "function getCurrentUrlsFromDom(fieldName){"
+    + "  var links=[].slice.call(document.querySelectorAll('#cur_'+fieldName+' a'));"
+    + "  return links.map(function(a){return a.getAttribute('href');}).filter(Boolean);"
+    + "}"
+    + "function renderCurrentUrls(fieldName, urls){"
+    + "  var box=document.getElementById('cur_'+fieldName);"
+    + "  if(!box) return;"
+    + "  if(!urls || !urls.length){ box.innerHTML='<b>Current files:</b> None uploaded'; return; }"
+    + "  var parts=urls.map(function(u,i){ return '<a target=\"_blank\" href=\"'+escHtml(u)+'\">Open '+(i+1)+'</a>';});"
+    + "  box.innerHTML='<b>Current files:</b> '+parts.join(' | ');"
+    + "}"
+    + "function readFilesAsBase64(files, done, fail){"
+    + "  var out=[];"
+    + "  var idx=0;"
+    + "  function step(){"
+    + "    if(idx>=files.length){ done(out); return; }"
+    + "    var f=files[idx++];"
+    + "    var reader=new FileReader();"
+    + "    reader.onload=function(e){"
+    + "      var data=e.target && e.target.result ? e.target.result : '';"
+    + "      out.push({name:f.name||('upload_'+Date.now()), type:f.type||'application/octet-stream', base64:String(data).split(',').pop()||''});"
+    + "      step();"
+    + "    };"
+    + "    reader.onerror=function(){ fail('Failed to read file: '+(f && f.name ? f.name : 'unknown')); };"
+    + "    reader.readAsDataURL(f);"
+    + "  }"
+    + "  step();"
+    + "}"
+    + "function onDocFileChange(fieldName, isMultiple){"
     + "  var input=document.getElementById('f_'+fieldName);"
     + "  var msg=document.getElementById('msg_'+fieldName);"
-    + "  if(!input || !input.files || !input.files.length){ msg.innerHTML='Select a file first.'; return; }"
-    + "  var file=input.files[0];"
-    + "  msg.innerHTML='Uploading...';"
-    + "  var reader=new FileReader();"
-    + "  reader.onload=function(e){"
-    + "    var data=e.target.result || '';"
-    + "    var base64=data.split(',').pop();"
+    + "  var btn=document.getElementById('btn_'+fieldName);"
+    + "  if(!input || !msg){ return; }"
+    + "  var files=[].slice.call(input.files||[]);"
+    + "  if(!files.length){ if(btn) btn.disabled=false; msg.innerHTML='Select a file first.'; return; }"
+    + "  if(!isMultiple) files=[files[0]];"
+    + "  var names=files.map(function(f){ return f.name; }).join(', ');"
+    + "  msg.innerHTML='Selected: '+escHtml(names);"
+    + "  if(btn) btn.disabled=false;"
+    + "  if(PORTAL_AUTO_UPLOAD){ uploadDoc(fieldName, isMultiple); }"
+    + "  else { msg.innerHTML += '<br/>Selecting a file does NOT upload until Upload/Replace runs.'; }"
+    + "}"
+    + "function uploadDoc(fieldName, isMultiple){"
+    + "  var input=document.getElementById('f_'+fieldName);"
+    + "  var msg=document.getElementById('msg_'+fieldName);"
+    + "  if(!input || !input.files || !input.files.length){ if(msg) msg.innerHTML='Select a file first.'; return; }"
+    + "  var files=[].slice.call(input.files||[]);"
+    + "  if(!isMultiple) files=[files[0]];"
+    + "  setUploadBusy(fieldName,true);"
+    + "  if(msg) msg.innerHTML='Uploading...';"
+    + "  readFilesAsBase64(files,function(payloads){"
+    + "    var names=payloads.map(function(p){return p.name;});"
+    + "    var types=payloads.map(function(p){return p.type;});"
+    + "    var base64s=payloads.map(function(p){return p.base64;});"
     + "    google.script.run"
     + "      .withSuccessHandler(function(res){"
-    + "        msg.innerHTML='Uploaded. Refresh page to see updated link.';"
+    + "        var uploaded=(res && res.urls && res.urls.length) ? res.urls : (res && res.url ? [res.url] : []);"
+    + "        var current=getCurrentUrlsFromDom(fieldName);"
+    + "        uploaded.forEach(function(u){ if(u && current.indexOf(u)===-1) current.push(u); });"
+    + "        renderCurrentUrls(fieldName, current);"
+    + "        if(msg) msg.innerHTML='Uploaded '+uploaded.length+' file(s).';"
+    + "        input.value='';"
+    + "        setUploadBusy(fieldName,false);"
     + "      })"
     + "      .withFailureHandler(function(err){"
-    + "        msg.innerHTML='Upload failed: '+(err && err.message ? err.message : err);"
+    + "        if(msg) msg.innerHTML='Upload failed: '+(err && err.message ? err.message : err);"
+    + "        setUploadBusy(fieldName,false);"
     + "      })"
-    + "      .uploadPortalFile('" + esc_(id) + "','" + esc_(secret) + "', fieldName, file.name, file.type, base64);"
-    + "  };"
-    + "  reader.readAsDataURL(file);"
+    + "      .uploadPortalFile('" + esc_(id) + "','" + esc_(secret) + "', fieldName, names, types, base64s);"
+    + "  }, function(readErr){"
+    + "    if(msg) msg.innerHTML='Upload failed: '+readErr;"
+    + "    setUploadBusy(fieldName,false);"
+    + "  });"
     + "}"
     + "</script>";
 
@@ -866,6 +973,17 @@ function ensurePortalTokenAtRow_(sheet, rowNum) {
   sheet.getRange(rowNum, issuedCol + 1).setValue(new Date());
 }
 
+function setPortalTokenHashForRow_(sheet, rowNumber, tokenHash) {
+  var targetRow = Number(rowNumber || 0);
+  if (!targetRow || targetRow < 2) throw new Error("Invalid rowNumber for hash write");
+  var hash = clean_(tokenHash);
+  if (!hash) throw new Error("Missing token hash");
+
+  var idx = getHeaderIndexMap_(sheet);
+  if (!idx[SCHEMA.PORTAL_TOKEN_HASH]) throw new Error("Missing header: " + SCHEMA.PORTAL_TOKEN_HASH);
+  sheet.getRange(targetRow, idx[SCHEMA.PORTAL_TOKEN_HASH]).setValue(hash);
+}
+
 function writeBack_(sheet, row, kv) {
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   for (var k in kv) {
@@ -959,7 +1077,8 @@ function docMetaByField_(fieldName) {
         label: CONFIG.DOC_FIELDS[i].label,
         field: CONFIG.DOC_FIELDS[i].file,
         status: CONFIG.DOC_FIELDS[i].status,
-        comment: CONFIG.DOC_FIELDS[i].comment
+        comment: CONFIG.DOC_FIELDS[i].comment,
+        multiple: CONFIG.DOC_FIELDS[i].multiple === true
       };
     }
   }
@@ -968,7 +1087,7 @@ function docMetaByField_(fieldName) {
 
 function getDocUiFields_() {
   return (CONFIG.DOC_FIELDS || []).map(function(d) {
-    return { label: d.label, field: d.file, status: d.status, comment: d.comment };
+    return { label: d.label, field: d.file, status: d.status, comment: d.comment, multiple: d.multiple === true };
   });
 }
 

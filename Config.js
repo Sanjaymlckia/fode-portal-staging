@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-18-PNG-STAGING-r18",
-  CHANGELOG_LAST: "r18: route student portal form POST to student deployment URL with admin fallback warning",
+  VERSION: "2026-02-19-PNG-STAGING-r20",
+  CHANGELOG_LAST: "r20: PortalSecrets active-secret integration + idempotent backfill + CSV portal-link export",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -22,6 +22,12 @@ var CONFIG = {
   // Drive root (baseline)
   ROOT_FOLDER_ID: "1vGD3DoOv1hlxYoTIfrNCZqAnrVKmghuB",
   YEAR_FOLDER: "2025",
+  
+  // Portal Secrets File
+  PORTAL_SECRETS_SHEET_ID: "1HEJPtSov-iE5YTpSWWZ89YLIQAw4Eju9DDMG46HkTRc",
+  PORTAL_SECRETS_TAB: "PortalSecrets",
+  
+
 
   // Web app URLs
   // - WEBAPP_URL_ADMIN: admin deployment (/exec), executeAs=USER_ACCESSING, access=DOMAIN
@@ -29,7 +35,7 @@ var CONFIG = {
   // WEBAPP_URL is kept for backward compatibility and mirrors WEBAPP_URL_ADMIN.
   WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
   WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
-  WEBAPP_URL_STUDENT: "",
+  WEBAPP_URL_STUDENT: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
 
   // Deployment model:
   // - Admin web app: executeAs=USER_ACCESSING, access=DOMAIN
@@ -95,7 +101,7 @@ var CONFIG = {
     "Fee_Receipt_File"
   ],
   PORTAL_EDIT_MODE: "ALL_VISIBLE_EXCEPT_NON_EDIT",
-  PORTAL_TOKEN_MAX_AGE_DAYS: 30,
+  PORTAL_TOKEN_MAX_AGE_DAYS: 90,
 
   // What students can see (allowlist)
   PORTAL_VISIBLE_FIELDS: [
@@ -138,11 +144,11 @@ var CONFIG = {
   },
 
   DOC_FIELDS: [
-    { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true },
-    { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true },
-    { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false },
-    { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true },
-    { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true }
+    { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true, multiple: false },
+    { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true, multiple: true },
+    { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false, multiple: false },
+    { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true, multiple: false },
+    { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true, multiple: false }
   ],
 
 

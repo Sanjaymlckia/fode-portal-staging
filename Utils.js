@@ -435,3 +435,31 @@ function test_PortalLogWrite() {
   }, true);
   Logger.log("Done");
 }
+
+function normalizeToUrlList_(cellValue) {
+  var raw = clean_(cellValue);
+  if (!raw) return [];
+  var parts = raw.split(/\r?\n|,/).map(function (s) {
+    return clean_(s);
+  }).filter(function (s) {
+    return !!s;
+  });
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (!/^https?:\/\//i.test(p)) continue;
+    if (seen[p]) continue;
+    seen[p] = true;
+    out.push(p);
+  }
+  return out;
+}
+
+function appendUrlToCell_(existingValue, newUrl) {
+  var url = clean_(newUrl);
+  if (!url) return clean_(existingValue);
+  var urls = normalizeToUrlList_(existingValue);
+  if (urls.indexOf(url) === -1) urls.push(url);
+  return urls.join("\n");
+}
