@@ -241,8 +241,17 @@
       </div>
 
       <div id="superTools" class="row" style="margin-top:10px;">
-        <button class="btn small" onclick="backfillTokens(true)">Backfill Tokens (dry run)</button>
-        <button class="btn small warn" onclick="backfillTokens(false)">Backfill Tokens (apply)</button>
+        <div class="field" style="max-width:130px;">
+          <label>Batch size</label>
+          <input id="bfBatchSize" type="number" min="1" step="1" value="200">
+        </div>
+        <div class="field" style="max-width:130px;">
+          <label>Start row</label>
+          <input id="bfStartRow" type="number" min="2" step="1" value="2">
+        </div>
+        <button id="btnBackfillDry" class="btn small" onclick="backfillBatch('dry')">Dry Run Batch</button>
+        <button id="btnBackfillApply" class="btn small warn" onclick="backfillBatch('apply')">Apply Batch</button>
+        <button id="btnBackfillNext" class="btn small" style="display:none;" disabled onclick="runNextBackfillBatch()">Run Next Batch</button>
         <select id="exportScope" style="max-width:260px;">
           <option value="auto">Export Scope: Search results first</option>
           <option value="search">Export Scope: Search results only</option>
@@ -267,6 +276,7 @@
     let isLinkBusy = false;
     let lastRequestId = 0;
     let lastSearchResults = [];
+    let lastBackfillMode = "dry";
 
     function setMsg(id, txt){
       var el = document.getElementById(id);
@@ -356,6 +366,40 @@
         const el = document.getElementById(id);
         if (el) el.disabled = !enabled;
       });
+    }
+
+    function getBackfillNumber_(id, fallback){
+      var el = document.getElementById(id);
+      var n = Number(el && el.value);
+      if (!Number.isFinite(n) || n < 1) return fallback;
+      return Math.floor(n);
+    }
+
+    function setBackfillLoading_(busy){
+      var dryBtn = document.getElementById("btnBackfillDry");
+      var applyBtn = document.getElementById("btnBackfillApply");
+      var nextBtn = document.getElementById("btnBackfillNext");
+      var sizeInput = document.getElementById("bfBatchSize");
+      var startInput = document.getElementById("bfStartRow");
+      if (dryBtn) dryBtn.disabled = !!busy;
+      if (applyBtn) applyBtn.disabled = !!busy;
+      if (nextBtn) nextBtn.disabled = !!busy || nextBtn.style.display === "none";
+      if (sizeInput) sizeInput.disabled = !!busy;
+      if (startInput) startInput.disabled = !!busy;
+    }
+
+    function setBackfillNextState_(nextStartRow){
+      var nextBtn = document.getElementById("btnBackfillNext");
+      var startInput = document.getElementById("bfStartRow");
+      if (!nextBtn || !startInput) return;
+      if (nextStartRow) {
+        startInput.value = String(nextStartRow);
+        nextBtn.style.display = "inline-block";
+        nextBtn.disabled = false;
+      } else {
+        nextBtn.style.display = "none";
+        nextBtn.disabled = true;
+      }
     }
 
     function clearSearch(){
@@ -781,23 +825,49 @@
       review(currentRowNumber);
     }
 
-    function backfillTokens(dryRun){
+    function backfillBatch(mode){
       if (!IS_SUPER) return;
-      setMsg("mMsg", dryRun ? "Backfill dry run..." : "Backfill apply...");
-      var runner = google.script.run
+      var dryRun = mode !== "apply";
+      lastBackfillMode = dryRun ? "dry" : "apply";
+      var limit = getBackfillNumber_("bfBatchSize", 200);
+      var startRow = Math.max(2, getBackfillNumber_("bfStartRow", 2));
+      var loadingText = dryRun ? "Backfill dry run batch..." : "Backfill apply batch...";
+      setMsg("msg", loadingText);
+      setMsg("mMsg", loadingText);
+      setBackfillLoading_(true);
+
+      google.script.run
         .withSuccessHandler(function(res){
-          setMsg("mMsg",
-            "Backfill done: checked=" + (res.checked || 0)
+          var summary = "Backfill batch done: "
+            + "start=" + (res.startRow || startRow)
+            + ", end=" + (res.endRow || "")
+            + ", checked=" + (res.checked || 0)
             + ", updated=" + (res.updated || 0)
+            + ", skipped=" + (res.skipped || 0)
             + ", generated=" + (res.generatedCount || 0)
             + ", rekeyed=" + (res.rekeyedCount || 0)
-            + ", dryRun=" + String(!!res.dryRun));
+            + ", createdSecretsRows=" + (res.createdSecretsRows || 0)
+            + ", nextStartRow=" + (res.nextStartRow || "");
+          setMsg("msg", summary);
+          setMsg("mMsg", summary);
+          setBackfillNextState_(res.nextStartRow || "");
+          setBackfillLoading_(false);
         })
         .withFailureHandler(function(err){
-          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
+          setMsg("msg", "Backfill error: " + (err && err.message ? err.message : err));
+          setMsg("mMsg", "Backfill error: " + (err && err.message ? err.message : err));
+          setBackfillLoading_(false);
+        })
+        .admin_backfillPortalTokens({
+          dryRun: dryRun,
+          startRow: startRow,
+          limit: limit
         });
-      if (dryRun) runner.admin_backfillPortalTokensDryRun({ limit: 0 });
-      else runner.admin_backfillPortalTokensApply({ limit: 0 });
+    }
+
+    function runNextBackfillBatch(){
+      var mode = lastBackfillMode === "apply" ? "apply" : "dry";
+      backfillBatch(mode);
     }
 
     function exportPortalLinksCsv(){

@@ -634,87 +634,180 @@ function admin_backfillPortalTokens(payload) {
 
   payload = payload || {};
   var dryRun = payload.dryRun !== false;
-  var limit = Math.max(0, Number(payload.limit || 0));
+  var startRow = Math.max(2, Number(payload.startRow || 2));
+  var limit = Number(payload.limit);
+  if (!limit || limit < 1) limit = 200;
 
   var sh = openDataSheet_();
-  var secretsSheet = openPortalSecrets_();
   ensureHeadersExist_(sh, ["PortalTokenHash", "PortalTokenIssuedAt", "Portal_Access_Status"]);
-  var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
-  requireHeaders_(idx, ["ApplicantID", "PortalTokenHash"]);
+  var lastCol = withSpreadsheetRetry_(function () { return sh.getLastColumn(); });
+  var headers = withSpreadsheetRetry_(function () { return sh.getRange(1, 1, 1, lastCol).getValues()[0]; });
+  var idx = headerIndex_(headers);
+  requireHeaders_(idx, ["ApplicantID", "PortalTokenHash", "PortalTokenIssuedAt"]);
 
-  var lastRow = sh.getLastRow();
+  var lastRow = withSpreadsheetRetry_(function () { return sh.getLastRow(); });
+  if (startRow > lastRow) {
+    return {
+      ok: true,
+      dryRun: dryRun,
+      startRow: startRow,
+      limit: limit,
+      endRow: startRow - 1,
+      lastRow: lastRow,
+      nextStartRow: "",
+      checked: 0,
+      updated: 0,
+      skipped: 0,
+      generatedCount: 0,
+      rekeyedCount: 0,
+      createdSecretsRows: 0
+    };
+  }
+  var endRow = Math.min(lastRow, startRow + limit - 1);
+  var batchSize = endRow - startRow + 1;
+  var batchValues = withSpreadsheetRetry_(function () {
+    return sh.getRange(startRow, 1, batchSize, lastCol).getValues();
+  });
+
+  var secretsSheet = openPortalSecrets_();
+  var secretsIndex = buildPortalSecretsIndex_(secretsSheet);
+
   var checked = 0;
   var updated = 0;
-  var updatedRows = [];
   var skipped = 0;
   var generatedCount = 0;
   var rekeyedCount = 0;
-  var hashSyncedCount = 0;
+  var createdSecretsRows = 0;
+  var admissionsTouched = false;
+  var secretsAppendRows = [];
+  var now = new Date();
+  var nowIso = now.toISOString();
 
-  for (var rowNumber = 2; rowNumber <= lastRow; rowNumber++) {
-    var rowObj = getRowObject_(sh, rowNumber);
-    var applicantId = clean_(rowObj.ApplicantID || "");
+  for (var i = 0; i < batchValues.length; i++) {
+    var rowNumber = startRow + i;
+    var row = batchValues[i];
+    var applicantId = clean_(idx.ApplicantID ? row[idx.ApplicantID - 1] : "");
     if (!applicantId) continue;
     checked++;
-    var admissionsHash = clean_(rowObj.PortalTokenHash || "");
-    var secretRowIndex = findPortalSecretsRowByApplicantId_(secretsSheet, applicantId);
-    var hasActiveSecret = false;
-    var activeSecretHash = "";
-    if (secretRowIndex) {
-      var rec = readPortalSecretsRecord_(secretsSheet, secretRowIndex);
-      if (clean_(rec.Status) === "Active" && clean_(rec.Secret_Hash)) {
-        hasActiveSecret = true;
-        activeSecretHash = clean_(rec.Secret_Hash);
+    var admissionsHash = clean_(idx.PortalTokenHash ? row[idx.PortalTokenHash - 1] : "");
+    var emailCorrected = clean_(idx.Parent_Email_Corrected ? row[idx.Parent_Email_Corrected - 1] : "");
+    var emailRaw = clean_(idx.Parent_Email ? row[idx.Parent_Email - 1] : "");
+    var emailForSecret = emailCorrected || emailRaw;
+    var firstName = clean_(idx.First_Name ? row[idx.First_Name - 1] : "");
+    var lastName = clean_(idx.Last_Name ? row[idx.Last_Name - 1] : "");
+    var fullName = (firstName + " " + lastName).trim();
+    var portalRec = secretsIndex.byApplicantId[applicantId] || null;
+    var hasSecretRecord = !!portalRec;
+    var hasActiveSecret = !!(portalRec && portalRec.status === "Active" && portalRec.secretHash);
+
+    if (!admissionsHash) {
+      var secretPlain1 = newPortalSecret_();
+      var secretHash1 = hashPortalSecret_(secretPlain1);
+      updated++;
+      generatedCount++;
+      createdSecretsRows++;
+      secretsAppendRows.push([
+        applicantId,
+        emailForSecret,
+        fullName,
+        secretPlain1,
+        secretHash1,
+        nowIso,
+        nowIso,
+        "Active"
+      ]);
+      secretsIndex.byApplicantId[applicantId] = {
+        rowIndex: (secretsIndex.lastRow || 1) + secretsAppendRows.length,
+        status: "Active",
+        secretHash: secretHash1
+      };
+      if (!dryRun) {
+        if (idx.PortalTokenHash) row[idx.PortalTokenHash - 1] = secretHash1;
+        if (idx.PortalTokenIssuedAt) row[idx.PortalTokenIssuedAt - 1] = now;
+        admissionsTouched = true;
       }
-    }
-
-    if (admissionsHash && hasActiveSecret) {
-      skipped++;
       continue;
     }
 
-    if (limit > 0 && updated >= limit) break;
-    updated++;
-    updatedRows.push(rowNumber);
-
-    if (!admissionsHash && hasActiveSecret) {
-      hashSyncedCount++;
-      if (!dryRun) setPortalTokenHashForRow_(sh, rowNumber, activeSecretHash);
-      continue;
-    }
-
-    var emailForSecret = clean_(rowObj.Parent_Email_Corrected || "") || clean_(rowObj.Parent_Email || "");
-    var fullName = (clean_(rowObj.First_Name || "") + " " + clean_(rowObj.Last_Name || "")).trim();
-    var secretInfo = getOrCreateActivePortalSecret_(applicantId, emailForSecret, fullName, sh, rowNumber, {
-      dryRun: dryRun,
-      secretsSheet: secretsSheet
-    });
-    if (secretInfo.created) generatedCount++;
-    if (admissionsHash && !hasActiveSecret) {
+    if (!hasSecretRecord) {
+      var secretPlain2 = newPortalSecret_();
+      var secretHash2 = hashPortalSecret_(secretPlain2);
+      updated++;
       rekeyedCount++;
+      createdSecretsRows++;
+      secretsAppendRows.push([
+        applicantId,
+        emailForSecret,
+        fullName,
+        secretPlain2,
+        secretHash2,
+        nowIso,
+        nowIso,
+        "Active"
+      ]);
+      secretsIndex.byApplicantId[applicantId] = {
+        rowIndex: (secretsIndex.lastRow || 1) + secretsAppendRows.length,
+        status: "Active",
+        secretHash: secretHash2
+      };
+      continue;
+    }
+
+    if (hasActiveSecret || hasSecretRecord) {
+      skipped++;
+    } else {
+      skipped++;
     }
   }
 
+  if (!dryRun) {
+    if (admissionsTouched) {
+      withSpreadsheetRetry_(function () {
+        sh.getRange(startRow, 1, batchSize, lastCol).setValues(batchValues);
+      });
+    }
+    if (secretsAppendRows.length) {
+      var startAppendRow = withSpreadsheetRetry_(function () { return secretsSheet.getLastRow(); }) + 1;
+      withSpreadsheetRetry_(function () {
+        secretsSheet.getRange(startAppendRow, 1, secretsAppendRows.length, 8).setValues(secretsAppendRows);
+      });
+    }
+  }
+
+  var nextStartRow = endRow < lastRow ? (endRow + 1) : "";
+  Logger.log(
+    "ADMIN_TOKEN_BACKFILL batch dryRun=%s start=%s end=%s limit=%s lastRow=%s nextStart=%s checked=%s updated=%s skipped=%s generated=%s rekeyed=%s createdSecretsRows=%s",
+    dryRun, startRow, endRow, limit, lastRow, nextStartRow, checked, updated, skipped, generatedCount, rekeyedCount, createdSecretsRows
+  );
   log_(openLogSheet_(), "ADMIN_TOKEN_BACKFILL",
     "dryRun=" + dryRun
+    + " startRow=" + startRow
+    + " endRow=" + endRow
+    + " limit=" + limit
+    + " lastRow=" + lastRow
+    + " nextStartRow=" + nextStartRow
     + " checked=" + checked
     + " updated=" + updated
     + " skipped=" + skipped
     + " generated=" + generatedCount
     + " rekeyed=" + rekeyedCount
-    + " hashSynced=" + hashSyncedCount
+    + " createdSecretsRows=" + createdSecretsRows
     + " by=" + (adminEmail || "admin"));
 
   return {
     ok: true,
     dryRun: dryRun,
+    startRow: startRow,
+    limit: limit,
+    endRow: endRow,
+    lastRow: lastRow,
+    nextStartRow: nextStartRow,
     checked: checked,
     updated: updated,
     skipped: skipped,
     generatedCount: generatedCount,
     rekeyedCount: rekeyedCount,
-    hashSyncedCount: hashSyncedCount,
-    updatedRows: updatedRows
+    createdSecretsRows: createdSecretsRows
   };
 }
 
