@@ -286,7 +286,24 @@
       if (res && typeof res.debugId === "string" && res.debugId.trim()) return res.debugId.trim();
       return "(no debug id)";
     }
-    function handleApiResult_(opts){
+    function handleApiResult_(opts, ctx){
+      if (arguments.length >= 2) {
+        var resLegacy = opts;
+        var context = String(ctx || "");
+        if (!isEnvelope_(resLegacy)) {
+          var invalidLegacyMsg = "Error: Invalid " + (context || "server") + " response. Debug ID: " + getDebugId_(resLegacy);
+          setModalMsg_(invalidLegacyMsg);
+          setMsg_(invalidLegacyMsg);
+          return { ok: false, error: invalidLegacyMsg };
+        }
+        if (resLegacy.ok !== true) {
+          var errLegacyMsg = "Error: " + getErrorText_(resLegacy, "Server returned an error") + " | Debug ID: " + getDebugId_(resLegacy);
+          setModalMsg_(errLegacyMsg);
+          setMsg_(errLegacyMsg);
+          return { ok: false, error: errLegacyMsg };
+        }
+        return { ok: true, detail: resLegacy.detail, res: resLegacy };
+      }
       var res = opts && opts.res;
       var targetId = (opts && opts.targetId) || "mMsg";
       var fallbackError = (opts && opts.fallbackError) || "Server returned an error";
@@ -309,6 +326,8 @@
       if (opts && typeof opts.onOk === "function") opts.onOk(res.detail, res);
       if (opts && typeof opts.onDone === "function") opts.onDone();
     }
+    function setModalMsg_(txt){ setMsg("mMsg", txt || ""); }
+    function setMsg_(txt){ setMsg("msg", txt || ""); }
     function setLinkBusy(flag){
       isLinkBusy = !!flag;
       const copyBtn = document.getElementById("btnCopyLink");
@@ -452,6 +471,7 @@
             setReviewButtonLoading_(triggerBtn, false);
             return;
           }
+          console.log("[AdminUI] SIG detail_json handler typeof=", typeof res);
           console.log("[AdminUI] detail response raw:", res);
           if (typeof res === "string") {
             try {
@@ -459,6 +479,14 @@
             } catch (e) {
               res = null;
             }
+          }
+          var apiResult = handleApiResult_(res, "detail");
+          if (!apiResult || apiResult.ok !== true) {
+            clearDocsLoading_("Invalid detail response");
+            setActionButtonsEnabled(false);
+            setReviewButtonLoading_(triggerBtn, false);
+            setLinkBusy(false);
+            return;
           }
           var detail = null;
           if (res && res.ok === true && res.detail && typeof res.detail === "object") {
@@ -494,10 +522,10 @@
             setReviewButtonLoading_(triggerBtn, false);
             return;
           }
-          console.error("[AdminUI] admin_getApplicantDetail failure:", err);
-          var failMsg = "Error: " + (err && err.message ? err.message : err);
-          setMsg("mMsg", failMsg);
-          setMsg("msg", failMsg);
+          console.error("[AdminUI] SIG detail_json failure:", err);
+          var failMsg = "Detail request failed: " + (err && err.message ? err.message : String(err));
+          setModalMsg_(failMsg);
+          setMsg_(failMsg);
           clearDocsLoading_(failMsg);
           setReviewButtonLoading_(triggerBtn, false);
           setLinkBusy(false);

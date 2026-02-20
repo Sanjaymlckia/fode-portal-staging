@@ -233,8 +233,26 @@ function safeJson_(obj) {
 }
 
 function admin_getApplicantDetail_json(payload) {
+  var SIG = "DETAIL_JSON_V1_20260220";
+  Logger.log("SIG admin_getApplicantDetail_json: %s row=%s id=%s",
+    SIG,
+    payload && payload.rowNumber,
+    payload && payload.applicantId
+  );
+
   var res = admin_getApplicantDetail(payload);
-  return safeJson_(res);
+
+  var json = JSON.stringify(res, function (k, v) {
+    if (v === undefined) return null;
+    if (v instanceof Date) return v.toISOString();
+    return v;
+  });
+
+  Logger.log("SIG admin_getApplicantDetail_json returning length=%s",
+    json ? json.length : 0
+  );
+
+  return json;
 }
 
 /**
