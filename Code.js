@@ -193,6 +193,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   var found = findPortalRowByIdSecret_(dataSheet, id, secret);
   if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
   var rowIndex = found.rowNum;
+  log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
   log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
 
   if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
@@ -207,15 +208,17 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   var editFields = getPortalEditableFields_();
 
   // Core fields from portal
-  var dob = clean_(payload.Date_Of_Birth || "");
+  var dob = clean_(payload.Date_Of_Birth || payload.field_Date_Of_Birth || "");
   if (dob) updates.Date_Of_Birth = dob;
 
-  var examSite = clean_(payload.Physical_Exam_Site || "");
+  var examSite = clean_(payload.Physical_Exam_Site || payload.field_Physical_Exam_Site || "");
   if (examSite) updates.Physical_Exam_Site = examSite;
 
   // subjects comes from hidden packed field
-  var subjectsCsv = clean_(payload.Subjects_Selected_Canonical || "");
+  var subjectsCsv = clean_(payload.Subjects_Selected_Canonical || payload.Subjects_Selected || payload.field_Subjects_Selected_Canonical || "");
   if (subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
+  var stream = clean_(payload.Upgrade_Grade_Stream || payload.field_Upgrade_Grade_Stream || "");
+  if (stream) updates.Upgrade_Grade_Stream = stream;
 
   // Do NOT overwrite Parent_Email_Corrected.
 
@@ -272,8 +275,20 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   // mark first submit time if empty
   if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
 
+  log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + Object.keys(updates).join(","));
   log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
   writeBack_(dataSheet, rowIndex, updates);
+  var verify = getRowObject_(dataSheet, rowIndex);
+  var failed = [];
+  Object.keys(updates).forEach(function (k) {
+    var expected = clean_(updates[k]);
+    var actual = clean_(verify[k]);
+    if (expected && actual !== expected) failed.push(k);
+  });
+  if (failed.length) {
+    return htmlOutput_(renderErrorHtml_("Update failed to persist for " + failed.join(", ")));
+  }
+  log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + Object.keys(updates).length);
   log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
 
   return htmlOutput_(renderSuccessHtml_(id));
@@ -368,6 +383,66 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
     urls: createdUrls,
     multiple: isMultiple
   };
+}
+
+function portal_deleteUploadedFile(payload) {
+  payload = payload || {};
+  var applicantId = clean_(payload.applicantId || "");
+  var secret = clean_(payload.secret || payload.s || "");
+  var fieldName = clean_(payload.field || "");
+  var targetUrl = clean_(payload.url || "");
+  var rowNumber = Number(payload.rowNumber || 0);
+
+  if (!applicantId || !secret || !fieldName || !targetUrl) {
+    return { ok: false, error: "Missing delete payload fields" };
+  }
+
+  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
+  var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
+  if (!found) return { ok: false, error: "Record not found." };
+  if (rowNumber >= 2 && rowNumber !== found.rowNum) return { ok: false, error: "Row mismatch." };
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return { ok: false, error: "Locked" };
+  if (isPaymentVerified_(found.record)) return { ok: false, error: "Locked" };
+
+  var docMeta = docMetaByField_(fieldName);
+  if (!docMeta) return { ok: false, error: "Invalid field." };
+  if (!docMeta.multiple) return { ok: false, error: "Delete only allowed for multi-upload fields." };
+
+  var existing = clean_(found.record[fieldName] || "");
+  var updatedCell = removeUrlFromCell_(existing, targetUrl);
+  var remainingUrls = normalizeToUrlList_(updatedCell);
+
+  var updates = {};
+  updates[fieldName] = updatedCell;
+  updates.PortalLastUpdateAt = new Date().toISOString();
+  var line = new Date().toISOString() + " | " + fieldName + ": DELETE " + targetUrl;
+  updates.File_Log = appendLog_(clean_(found.record.File_Log || ""), line);
+  writeBack_(sheet, found.rowNum, updates);
+
+  var trashed = false;
+  var warning = "";
+  var fileId = extractDriveFileId_(targetUrl);
+  if (fileId) {
+    try {
+      var file = DriveApp.getFileById(fileId);
+      var folderId = folderIdFromUrl_(clean_(found.record.Folder_Url || ""));
+      if (folderId && isFileInFolderChain_(file, folderId)) {
+        file.setTrashed(true);
+        trashed = true;
+      } else {
+        warning = "File not in applicant folder; URL removed only.";
+      }
+    } catch (e) {
+      warning = "Could not trash file: " + (e && e.message ? e.message : String(e));
+    }
+  } else {
+    warning = "Could not parse file id; URL removed only.";
+  }
+
+  log_(logSheet, "PORTAL DELETE", "ApplicantID=" + applicantId + " field=" + fieldName + " trashed=" + trashed);
+  return { ok: true, remainingUrls: remainingUrls, trashed: trashed, warning: warning };
 }
 
 /******************** PORTAL HTML ********************/
@@ -531,9 +606,12 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     if (urlList.length) {
       var linksHtml = [];
       for (var u = 0; u < urlList.length; u++) {
-        linksHtml.push("<a target='_blank' href='" + esc_(urlList[u]) + "'>Open " + String(u + 1) + "</a>");
+        var delBtn = (d.multiple && !locked)
+          ? " <button type='button' onclick=\"deleteDocUrl('" + esc_(d.field) + "','" + esc_(encodeURIComponent(urlList[u])) + "')\">Delete</button>"
+          : "";
+        linksHtml.push("<span><a target='_blank' href='" + esc_(urlList[u]) + "'>Open " + String(u + 1) + "</a>" + delBtn + "</span>");
       }
-      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> " + linksHtml.join(" | ") + "</div>";
+      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> " + linksHtml.join("<br/>") + "</div>";
     } else {
       curLinks = "<div style='margin-top:6px;'><b>Current files:</b> None uploaded</div>";
     }
@@ -566,6 +644,10 @@ function renderDocsSection_(id, secret, record, docs, locked) {
   out += ""
     + "<script>"
     + "var PORTAL_AUTO_UPLOAD=true;"
+    + "var PORTAL_LOCKED=" + (locked ? "true" : "false") + ";"
+    + "var DOC_MULTI_MAP={"
+    + (docs || []).map(function (x) { return "'" + esc_(x.field) + "':" + (x.multiple ? "true" : "false"); }).join(",")
+    + "};"
     + "function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#039;');}"
     + "function setUploadBusy(fieldName,busy){"
     + "  var input=document.getElementById('f_'+fieldName);"
@@ -581,8 +663,13 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "  var box=document.getElementById('cur_'+fieldName);"
     + "  if(!box) return;"
     + "  if(!urls || !urls.length){ box.innerHTML='<b>Current files:</b> None uploaded'; return; }"
-    + "  var parts=urls.map(function(u,i){ return '<a target=\"_blank\" href=\"'+escHtml(u)+'\">Open '+(i+1)+'</a>';});"
-    + "  box.innerHTML='<b>Current files:</b> '+parts.join(' | ');"
+    + "  var isMulti=!!DOC_MULTI_MAP[fieldName];"
+    + "  var parts=urls.map(function(u,i){"
+    + "    var line='<a target=\"_blank\" href=\"'+escHtml(u)+'\">Open '+(i+1)+'</a>';"
+    + "    if(isMulti && !PORTAL_LOCKED){ line += ' <button type=\"button\" onclick=\"deleteDocUrl(\\''+fieldName+'\\',\\''+encodeURIComponent(u)+'\\')\">Delete</button>'; }"
+    + "    return line;"
+    + "  });"
+    + "  box.innerHTML='<b>Current files:</b><br/>'+parts.join('<br/>');"
     + "}"
     + "function readFilesAsBase64(files, done, fail){"
     + "  var out=[];"
@@ -646,6 +733,30 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "    if(msg) msg.innerHTML='Upload failed: '+readErr;"
     + "    setUploadBusy(fieldName,false);"
     + "  });"
+    + "}"
+    + "function deleteDocUrl(fieldName, encodedUrl){"
+    + "  if(PORTAL_LOCKED){ return; }"
+    + "  var msg=document.getElementById('msg_'+fieldName);"
+    + "  var url=decodeURIComponent(encodedUrl||'');"
+    + "  if(!url){ if(msg) msg.innerHTML='Invalid file URL.'; return; }"
+    + "  setUploadBusy(fieldName,true);"
+    + "  if(msg) msg.innerHTML='Deleting...';"
+    + "  google.script.run"
+    + "    .withSuccessHandler(function(res){"
+    + "      if(!res || res.ok!==true){"
+    + "        if(msg) msg.innerHTML='Delete failed: '+((res&&res.error)?res.error:'Unknown error');"
+    + "        setUploadBusy(fieldName,false);"
+    + "        return;"
+    + "      }"
+    + "      renderCurrentUrls(fieldName, res.remainingUrls||[]);"
+    + "      if(msg) msg.innerHTML='Deleted.'+(res.warning?(' '+res.warning):'');"
+    + "      setUploadBusy(fieldName,false);"
+    + "    })"
+    + "    .withFailureHandler(function(err){"
+    + "      if(msg) msg.innerHTML='Delete failed: '+(err&&err.message?err.message:err);"
+    + "      setUploadBusy(fieldName,false);"
+    + "    })"
+    + "    .portal_deleteUploadedFile({ applicantId:'" + esc_(id) + "', secret:'" + esc_(secret) + "', field:fieldName, url:url });"
     + "}"
     + "</script>";
 

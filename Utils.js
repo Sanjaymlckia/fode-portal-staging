@@ -463,3 +463,37 @@ function appendUrlToCell_(existingValue, newUrl) {
   if (urls.indexOf(url) === -1) urls.push(url);
   return urls.join("\n");
 }
+
+function removeUrlFromCell_(existingValue, urlToRemove) {
+  var target = clean_(urlToRemove);
+  if (!target) return clean_(existingValue);
+  var urls = normalizeToUrlList_(existingValue).filter(function (u) {
+    return u !== target;
+  });
+  return urls.join("\n");
+}
+
+function extractDriveFileId_(url) {
+  var s = clean_(url);
+  if (!s) return "";
+  var m1 = s.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (m1 && m1[1]) return m1[1];
+  var m2 = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (m2 && m2[1]) return m2[1];
+  return "";
+}
+
+function isFileInFolderChain_(file, folderId) {
+  var target = clean_(folderId);
+  if (!file || !target) return false;
+  try {
+    var parents = file.getParents();
+    while (parents.hasNext()) {
+      var p = parents.next();
+      if (clean_(p.getId()) === target) return true;
+    }
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
