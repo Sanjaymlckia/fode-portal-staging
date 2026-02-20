@@ -453,6 +453,13 @@
             return;
           }
           console.log("[AdminUI] detail response raw:", res);
+          if (typeof res === "string") {
+            try {
+              res = JSON.parse(res);
+            } catch (e) {
+              res = null;
+            }
+          }
           var detail = null;
           if (res && res.ok === true && res.detail && typeof res.detail === "object") {
             detail = res.detail;
@@ -496,7 +503,7 @@
           setLinkBusy(false);
           setActionButtonsEnabled(false);
         })
-        .admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId || "" });
+        .admin_getApplicantDetail_json({ rowNumber: rowNumber, applicantId: applicantId || "" });
     }
 
     function onResultsClick_(ev){

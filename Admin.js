@@ -224,6 +224,19 @@ function admin_getApplicantDetail(payload) {
   }
 }
 
+function safeJson_(obj) {
+  return JSON.stringify(obj, function (key, val) {
+    if (val === undefined) return null;
+    if (val instanceof Date) return val.toISOString();
+    return val;
+  });
+}
+
+function admin_getApplicantDetail_json(payload) {
+  var res = admin_getApplicantDetail(payload);
+  return safeJson_(res);
+}
+
 /**
  * Alias maintained for UI: "Generate Portal Link"
  */
