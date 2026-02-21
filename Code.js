@@ -21,10 +21,10 @@ Sheet:
 /******************** ENTRYPOINT: POST ********************/
 function doPost(e) {
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var dataSheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var dataSheet = mustGetDataSheet_(ss);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
-  var payload = getPayload_(e);
+  var payload = parseRequestPayload_(e);
   appendPortalLog_({ route: "doPost", status: "HIT", message: "doPost called", email: payload.email || payload.Parent_Email || "", applicantId: payload.id || payload.ApplicantID || "" });
 
   var action = clean_(payload.action || payload._action || "");
@@ -61,7 +61,7 @@ function doPost(e) {
   });
   ensurePortalTokenAtRow_(dataSheet, rowNum);
 
-  return jsonOutput_({ status: "ok", ApplicantID: applicantId || "" });
+  return jsonOut_({ status: "ok", ApplicantID: applicantId || "" });
 }
 
 /******************** ENTRYPOINT: GET ********************/
@@ -70,6 +70,7 @@ function doGet(e) {
 
   // ROUTE FIRST
   if (view === "admin") return renderAdminApp_(e);
+  if (view === "diag") return respondDiag_(e);
   if (view !== "portal") return htmlOutput_(renderErrorHtml_("Missing portal link"));
 
   var id = clean_(e.parameter.id || "");
@@ -87,7 +88,7 @@ function doGet(e) {
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var sheet = mustGetDataSheet_(ss);
   var rowNum = findRowByApplicantId_(sheet, id);
   if (!rowNum) {
     var missingCount = incrementInvalidPortalAttempt_(id);
@@ -179,9 +180,23 @@ function doGet(e) {
   }));
 }
 
+function diagStatus_() {
+  return {
+    ok: true,
+    version: CONFIG.VERSION,
+    now: new Date().toISOString(),
+    scriptId: ScriptApp.getScriptId(),
+    deployment: "DEV",
+    note: "Use this endpoint to confirm deployment + runtime without clasp run"
+  };
+}
+
 
 /******************** PORTAL UPDATE HANDLER ********************/
 function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
+  if (!dataSheet || dataSheet.getName() !== CONFIG.DATA_SHEET) {
+    throw new Error("DATA_SHEET mismatch");
+  }
   log_(logSheet, "PORTAL_UPDATE payload", payloadSummary_(payload));
   var effectiveEditFields = getPortalEditableFields_().slice();
   ["Date_Of_Birth", "Physical_Exam_Site", "Subjects_Selected_Canonical"].forEach(function (f) {
@@ -193,10 +208,10 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   var secret = clean_(payload.s || "");
   var rowIndex = 0;
   try {
-    if (!id || !secret) return htmlOutput_(renderErrorHtml_("Missing portal link parameters. Please reopen your portal link."));
+    if (!id || !secret) return jsonOut_({ ok: false, error: "Missing portal link parameters. Please reopen your portal link." });
 
     var found = findPortalRowByIdSecret_(dataSheet, id, secret);
-    if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
+    if (!found) return jsonOut_({ ok: false, error: "No matching record found. Please reopen your portal link." });
     rowIndex = found.rowNum;
     log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
     log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
@@ -208,11 +223,11 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
     });
 
     if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
-      return htmlOutput_(renderErrorHtml_("Access suspended. Please contact admissions."));
+      return jsonOut_({ ok: false, error: "Access suspended. Please contact admissions." });
     }
 
     if (isPaymentVerified_(found.record)) {
-      return htmlOutput_(renderErrorHtml_("Your record is locked because payment has been verified. No further changes are allowed."));
+      return jsonOut_({ ok: false, error: "Your record is locked because payment has been verified. No further changes are allowed." });
     }
 
     var updates = {};
@@ -233,15 +248,22 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
     var stream = clean_(payload.Upgrade_Grade_Stream || payload.field_Upgrade_Grade_Stream || "");
     if (stream) updates.Upgrade_Grade_Stream = stream;
 
-    // Do NOT overwrite Parent_Email_Corrected.
-
-    // (Optional extra editable fields - currently none)
+    // Never overwrite Parent_Email directly; allow Parent_Email_Corrected only when explicitly provided.
     for (var i = 0; i < editFields.length; i++) {
       var h = editFields[i];
       if (h === "Parent_Email") continue;
-      var key = "field_" + h;
-      if (Object.prototype.hasOwnProperty.call(payload, key)) {
-        updates[h] = normalize_(payload[key]);
+      var prefixedKey = "field_" + h;
+      var rawValue;
+      var hasValue = false;
+      if (hasOwn_(payload, prefixedKey)) {
+        rawValue = payload[prefixedKey];
+        hasValue = true;
+      } else if (hasOwn_(payload, h)) {
+        rawValue = payload[h];
+        hasValue = true;
+      }
+      if (hasValue) {
+        updates[h] = normalize_(rawValue);
       }
     }
 
@@ -269,18 +291,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
       rec._SubjectsCsv = canonical || subjectsToCsv_(rec.Subjects_Selected || "");
       rec._PortalLocked = false;
 
-      var examSites = getExamSites_(ss);
-      return htmlOutput_(renderPortalHtml_({
-        id: id,
-        secret: secret,
-        record: rec,
-        subjects: CONFIG.PORTAL_SUBJECTS,
-        examSites: examSites,
-        editFields: getPortalEditableFields_(),
-        docs: getDocUiFields_(),
-        visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
-        error: "Please complete/fix: " + missing.join(", ")
-      }));
+      return jsonOut_({ ok: false, error: "Please complete/fix: " + missing.join(", ") });
     }
 
     updates.PortalLastUpdateAt = new Date().toISOString();
@@ -305,12 +316,19 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
     log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
     log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
     writeBack_(dataSheet, rowIndex, updates);
-    var verify = getRowObject_(dataSheet, rowIndex);
+    SpreadsheetApp.flush();
+    var freshRow = dataSheet.getRange(rowIndex, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+    var headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+    var verify = {};
+    for (var hr = 0; hr < headers.length; hr++) {
+      var hk = String(headers[hr] || "").trim();
+      if (hk) verify[hk] = freshRow[hr];
+    }
     var failed = [];
     updateKeys.forEach(function (k2) {
       var expected = clean_(updates[k2]);
       var actual = clean_(verify[k2]);
-      if (expected && actual !== expected) failed.push(k2);
+      if (actual !== expected) failed.push(k2);
     });
     portalDebugLog_("PORTAL_UPDATE_RESULT", {
       applicantId: id,
@@ -319,19 +337,23 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
       mismatches: failed
     });
     if (failed.length) {
-      return htmlOutput_(renderErrorHtml_("Update failed to persist for " + failed.join(", ")));
+      return jsonOut_({ ok: false, error: "Update failed to persist for " + failed.join(", ") });
     }
     log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + updateKeys.length);
     log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
 
-    return htmlOutput_(renderSuccessHtml_(id));
+    return jsonOut_({
+      ok: true,
+      applicantId: id,
+      redirectUrl: buildPortalRedirectUrl_(id, secret)
+    });
   } catch (e) {
     portalDebugLog_("PORTAL_UPDATE_ERROR", {
       applicantId: id,
       rowNumber: rowIndex,
       error: String(e && e.message ? e.message : e)
     });
-    throw e;
+    return jsonOut_({ ok: false, error: String(e && e.message ? e.message : e) });
   }
 }
 
@@ -530,9 +552,7 @@ function renderPortalHtml_(opts) {
   var csv = clean_(record.Subjects_Selected_Canonical || record._SubjectsCsv || "");
   var selected = parseSubjects_(csv);
 
-  // date input expects yyyy-mm-dd; if your sheet stores dd/mm/yyyy, keep it blank rather than breaking
-  var dobVal = esc_(clean_(record.Date_Of_Birth || ""));
-  if (dobVal && dobVal.indexOf("/") !== -1) dobVal = ""; // avoid invalid date showing wrong
+  var dobVal = esc_(toIsoDateInput_(record.Date_Of_Birth));
 
   var examVal = clean_(record.Physical_Exam_Site || "");
 
@@ -585,6 +605,7 @@ function renderPortalHtml_(opts) {
     + '<!doctype html><html><head><meta charset="utf-8" />'
     + "<title>FODE Student Portal</title>"
     + '<meta name="viewport" content="width=device-width, initial-scale=1" />'
+    + '<meta http-equiv="Cache-Control" content="no-store" />'
     + "</head>"
     + '<body style="font-family:Arial,Helvetica,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;">'
     + "<h2>FODE Student Portal</h2>"
@@ -607,7 +628,7 @@ function renderPortalHtml_(opts) {
     + "</div>"
 
     // ✅ hardcoded action URL to prevent blank screen / doPost not firing
-    + '<form method="post" action="' + esc_(actionUrl) + '" onsubmit="return packSubjects();"'
+    + '<form method="post" action="' + esc_(actionUrl) + '" onsubmit="return beforePortalSubmit(event,this);"'
     + ' style="padding:12px;border:1px solid #ddd;border-radius:10px;">'
     + '<input type="hidden" name="action" value="portal_update" />'
     + '<input type="hidden" name="id" value="' + esc_(id) + '" />'
@@ -651,6 +672,44 @@ function renderPortalHtml_(opts) {
     + "document.getElementById('Subjects_Selected_Canonical').value=vals.join(', ');"
     + "if(!vals.length){alert('Please select at least one subject.');return false;}"
     + "return true;}"
+    + "function ensurePortalFormSerialization(form){"
+    + "if(!form) return;"
+    + "var oldClones=[].slice.call(form.querySelectorAll('input[data-portal-clone=\"1\"]'));"
+    + "oldClones.forEach(function(n){ if(n && n.parentNode) n.parentNode.removeChild(n); });"
+    + "var fd=new FormData(form);"
+    + "var els=[].slice.call(form.querySelectorAll('input[name],select[name],textarea[name]'));"
+    + "els.forEach(function(el){"
+    + "  if(!el || !el.name || el.disabled) return;"
+    + "  var type=(el.type||'').toLowerCase();"
+    + "  if((type==='checkbox' || type==='radio') && !el.checked) return;"
+    + "  if(fd.has(el.name)) return;"
+    + "  if(el.name.indexOf('field_')!==0) return;"
+    + "  var hidden=document.createElement('input');"
+    + "  hidden.type='hidden';"
+    + "  hidden.name=el.name;"
+    + "  hidden.value=(el.value===undefined || el.value===null)?'':String(el.value);"
+    + "  hidden.setAttribute('data-portal-clone','1');"
+    + "  form.appendChild(hidden);"
+    + "});"
+    + "}"
+    + "function beforePortalSubmit(evt,form){"
+    + "if(evt && evt.preventDefault) evt.preventDefault();"
+    + "if(!packSubjects()) return false;"
+    + "ensurePortalFormSerialization(form);"
+    + "if(typeof fetch!=='function') return true;"
+    + "var submitBtn=form && form.querySelector ? form.querySelector('button[type=\"submit\"]') : null;"
+    + "if(submitBtn) submitBtn.disabled=true;"
+    + "var req={method:'POST',body:new FormData(form),credentials:'same-origin',cache:'no-store'};"
+    + "fetch(form.action,req).then(function(r){return r.json();}).then(function(res){"
+    + "if(res && res.ok===true && res.redirectUrl){ window.location.replace(res.redirectUrl); return; }"
+    + "if(submitBtn) submitBtn.disabled=false;"
+    + "alert((res && res.error) ? res.error : 'Update failed. Please try again.');"
+    + "}).catch(function(err){"
+    + "if(submitBtn) submitBtn.disabled=false;"
+    + "alert('Update failed: '+(err && err.message ? err.message : err));"
+    + "});"
+    + "return false;"
+    + "}"
     + "</script>"
 
     + "</body></html>";
@@ -835,13 +894,24 @@ function renderAllowlistSummary_(record, visibleFields) {
 
   for (var i = 0; i < keys.length; i++) {
     var k = keys[i];
-    var v = clean_(record[k]);
+    var rawVal = record[k];
+    var v = clean_(rawVal);
     var display = v ? v : "-";
 
     // Pretty subjects display
     if (k === "Subjects_Selected_Canonical") {
       var csv = clean_(record.Subjects_Selected_Canonical || "") || subjectsToCsv_(record.Subjects_Selected || "");
-      display = csv ? esc_(csv) : "-";
+      display = csv ? csv : "-";
+    }
+
+    // Keep DOB summary human-friendly while date input remains yyyy-mm-dd.
+    if (k === "Date_Of_Birth") {
+      if (rawVal instanceof Date && !isNaN(rawVal.getTime())) {
+        var tz = Session.getScriptTimeZone() || "Pacific/Port_Moresby";
+        display = Utilities.formatDate(rawVal, tz, "dd/MM/yyyy");
+      } else {
+        display = v || "-";
+      }
     }
 
     // make URLs clickable
@@ -910,6 +980,25 @@ function getStudentActionUrl_() {
     isStudentReady: isStudentReady,
     warning: warning
   };
+}
+
+function buildPortalRedirectUrl_(applicantId, secret) {
+  var actionMeta = getStudentActionUrl_();
+  var baseUrl = clean_(actionMeta.url || "");
+  var sep = baseUrl.indexOf("?") === -1 ? "?" : "&";
+  return baseUrl
+    + sep + "view=portal"
+    + "&id=" + encodeURIComponent(clean_(applicantId))
+    + "&s=" + encodeURIComponent(clean_(secret))
+    + "&t=" + Date.now();
+}
+
+function mustGetDataSheet_(ss) {
+  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  if (sheet.getName() !== CONFIG.DATA_SHEET) {
+    throw new Error("DATA_SHEET mismatch");
+  }
+  return sheet;
 }
 function htmlOutput_(html) {
   return HtmlService.createHtmlOutput(html)
@@ -1071,15 +1160,6 @@ function uniqCsv_(arr) {
 /******************** LOCK RULE ********************/
 function isPaymentVerified_(record) {
   return String(record.Payment_Verified || "").trim().toLowerCase() === "yes";
-}
-
-/******************** PAYLOAD ********************/
-function getPayload_(e) {
-  if (e && e.parameter && Object.keys(e.parameter).length) return e.parameter;
-  if (e && e.postData && e.postData.contents) {
-    try { return JSON.parse(e.postData.contents); } catch (err) {}
-  }
-  return {};
 }
 
 /******************** SHEET HELPERS ********************/
@@ -1310,5 +1390,5 @@ function test_LogSheetWrite() {
   Logger.log("Log sheet write successful -> " + ss.getName() + " / " + sheet.getName());
 }
 
-
+function _claspPing() { return "pong"; }
 

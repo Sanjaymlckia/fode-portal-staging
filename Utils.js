@@ -10,6 +10,42 @@ function clean_(v) {
   return (v === null || v === undefined) ? "" : String(v).trim();
 }
 
+function toIsoDateInput_(value) {
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return "";
+    var tz = Session.getScriptTimeZone() || "Pacific/Port_Moresby";
+    return Utilities.formatDate(value, tz, "yyyy-MM-dd");
+  }
+
+  var raw = clean_(value);
+  if (!raw) return "";
+
+  var ymd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) {
+    var y1 = Number(ymd[1]);
+    var m1 = Number(ymd[2]);
+    var d1 = Number(ymd[3]);
+    return isValidYmd_(y1, m1, d1) ? raw : "";
+  }
+
+  var dmy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmy) {
+    var d2 = Number(dmy[1]);
+    var m2 = Number(dmy[2]);
+    var y2 = Number(dmy[3]);
+    if (!isValidYmd_(y2, m2, d2)) return "";
+    return String(y2) + "-" + String(m2).padStart(2, "0") + "-" + String(d2).padStart(2, "0");
+  }
+
+  return "";
+}
+
+function isValidYmd_(y, m, d) {
+  if (!y || m < 1 || m > 12 || d < 1 || d > 31) return false;
+  var dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && (dt.getUTCMonth() + 1) === m && dt.getUTCDate() === d;
+}
+
 function normalize_(v) {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return JSON.stringify(v);
@@ -31,6 +67,58 @@ function payloadSummary_(p) {
     Grade: p.Grade_Applying_For,
     Intake: p.Intake_Year || p["Intake Year"] || ""
   });
+}
+
+function hasOwn_(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function normalizePayloadValue_(value) {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.map(function (item) {
+      return (typeof item === "string") ? item.trim() : item;
+    });
+  }
+  return value;
+}
+
+function parseRequestPayload_(e) {
+  var out = {};
+  var postData = (e && e.postData) ? e.postData : null;
+  var raw = postData && postData.contents ? String(postData.contents) : "";
+  var contentType = String((postData && (postData.type || postData.contentType)) || "").toLowerCase();
+  var looksJson = contentType.indexOf("json") >= 0 || /^\s*\{/.test(raw);
+
+  if (looksJson && raw) {
+    try {
+      var parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        Object.keys(parsed).forEach(function (key) {
+          out[key] = normalizePayloadValue_(parsed[key]);
+        });
+      }
+    } catch (err) {
+      // Best-effort JSON parse only; fall through to e.parameter payload.
+    }
+  }
+
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  Object.keys(params).forEach(function (key) {
+    out[key] = normalizePayloadValue_(params[key]);
+  });
+
+  return out;
+}
+
+function jsonOut_(obj) {
+  var out = jsonOutput_(obj);
+  if (out && typeof out.setHeader === "function") {
+    out
+      .setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+      .setHeader("Pragma", "no-cache");
+  }
+  return out;
 }
 
 function esc_(s) {
@@ -320,7 +408,10 @@ function getHeaderIndexMap_(sheet) {
   });
   var map = {};
   headers.forEach(function (h, i) {
-    if (h) map[h] = i + 1;
+    if (!h) return;
+    map[h] = i + 1;
+    var normalized = h.replace(/\s+/g, "_");
+    if (normalized && !map[normalized]) map[normalized] = i + 1;
   });
   return map;
 }
