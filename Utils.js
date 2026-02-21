@@ -425,6 +425,41 @@ function safePortalLog_(eventObj, throwOnFail) {
   }
 }
 
+function portalDebugLog_(tag, obj) {
+  try {
+    if (!CONFIG || CONFIG.PORTAL_DEBUG_TO_LOG_SHEET !== true) return;
+    var src = obj || {};
+    var payload = {
+      tag: clean_(tag),
+      ts: new Date().toISOString()
+    };
+    if (src.applicantId !== undefined) payload.applicantId = clean_(src.applicantId);
+    if (src.rowNumber !== undefined) payload.rowNumber = Number(src.rowNumber) || 0;
+    if (src.keys !== undefined) payload.keys = src.keys;
+    if (src.error !== undefined) payload.error = clean_(src.error);
+    if (src.email !== undefined) payload.email = clean_(src.email);
+    if (src.sheet !== undefined) payload.sheet = clean_(src.sheet);
+    if (src.fileField !== undefined) payload.fileField = clean_(src.fileField);
+    if (src.url !== undefined) payload.url = clean_(src.url);
+    if (src.removed !== undefined) payload.removed = !!src.removed;
+    if (src.trashed !== undefined) payload.trashed = !!src.trashed;
+    if (src.warning !== undefined) payload.warning = clean_(src.warning);
+    if (src.ok !== undefined) payload.ok = !!src.ok;
+    if (src.mismatches !== undefined) payload.mismatches = src.mismatches;
+    if (src.patchSample !== undefined) payload.patchSample = src.patchSample;
+
+    var msg = JSON.stringify(payload);
+    var maxBytes = Number(CONFIG.PORTAL_DEBUG_MAX_BYTES || 2500);
+    if (!(maxBytes > 0)) maxBytes = 2500;
+    if (msg.length > maxBytes) msg = msg.slice(0, maxBytes);
+
+    var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+    log_(sh, "PORTAL_DEBUG", msg);
+  } catch (e) {
+    // Best-effort only; never break portal flow.
+  }
+}
+
 function test_PortalLogWrite() {
   safePortalLog_({
     route: "test_PortalLogWrite",

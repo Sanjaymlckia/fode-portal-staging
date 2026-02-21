@@ -183,115 +183,156 @@ function doGet(e) {
 /******************** PORTAL UPDATE HANDLER ********************/
 function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
   log_(logSheet, "PORTAL_UPDATE payload", payloadSummary_(payload));
-  log_(logSheet, "PORTAL_UPDATE editFields", JSON.stringify(getPortalEditableFields_()));
+  var effectiveEditFields = getPortalEditableFields_().slice();
+  ["Date_Of_Birth", "Physical_Exam_Site", "Subjects_Selected_Canonical"].forEach(function (f) {
+    if (effectiveEditFields.indexOf(f) === -1) effectiveEditFields.push(f);
+  });
+  log_(logSheet, "PORTAL_UPDATE editFields", JSON.stringify(effectiveEditFields));
 
   var id = clean_(payload.id || "");
   var secret = clean_(payload.s || "");
+  var rowIndex = 0;
+  try {
+    if (!id || !secret) return htmlOutput_(renderErrorHtml_("Missing portal link parameters. Please reopen your portal link."));
 
-  if (!id || !secret) return htmlOutput_(renderErrorHtml_("Missing portal link parameters. Please reopen your portal link."));
+    var found = findPortalRowByIdSecret_(dataSheet, id, secret);
+    if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
+    rowIndex = found.rowNum;
+    log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
+    log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
+    portalDebugLog_("PORTAL_UPDATE_TARGET", {
+      applicantId: id,
+      rowNumber: rowIndex,
+      email: clean_(found.record.Parent_Email_Corrected || found.record.Parent_Email || ""),
+      sheet: CONFIG.DATA_SHEET
+    });
 
-  var found = findPortalRowByIdSecret_(dataSheet, id, secret);
-  if (!found) return htmlOutput_(renderErrorHtml_("No matching record found. Please reopen your portal link."));
-  var rowIndex = found.rowNum;
-  log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
-  log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
-
-  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
-    return htmlOutput_(renderErrorHtml_("Access suspended. Please contact admissions."));
-  }
-
-  if (isPaymentVerified_(found.record)) {
-    return htmlOutput_(renderErrorHtml_("Your record is locked because payment has been verified. No further changes are allowed."));
-  }
-
-  var updates = {};
-  var editFields = getPortalEditableFields_();
-
-  // Core fields from portal
-  var dob = clean_(payload.Date_Of_Birth || payload.field_Date_Of_Birth || "");
-  if (dob) updates.Date_Of_Birth = dob;
-
-  var examSite = clean_(payload.Physical_Exam_Site || payload.field_Physical_Exam_Site || "");
-  if (examSite) updates.Physical_Exam_Site = examSite;
-
-  // subjects comes from hidden packed field
-  var subjectsCsv = clean_(payload.Subjects_Selected_Canonical || payload.Subjects_Selected || payload.field_Subjects_Selected_Canonical || "");
-  if (subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
-  var stream = clean_(payload.Upgrade_Grade_Stream || payload.field_Upgrade_Grade_Stream || "");
-  if (stream) updates.Upgrade_Grade_Stream = stream;
-
-  // Do NOT overwrite Parent_Email_Corrected.
-
-  // (Optional extra editable fields - currently none)
-  for (var i = 0; i < editFields.length; i++) {
-    var h = editFields[i];
-    if (h === "Parent_Email") continue;
-    var key = "field_" + h;
-    if (Object.prototype.hasOwnProperty.call(payload, key)) {
-      updates[h] = normalize_(payload[key]);
+    if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+      return htmlOutput_(renderErrorHtml_("Access suspended. Please contact admissions."));
     }
+
+    if (isPaymentVerified_(found.record)) {
+      return htmlOutput_(renderErrorHtml_("Your record is locked because payment has been verified. No further changes are allowed."));
+    }
+
+    var updates = {};
+    var editFields = effectiveEditFields;
+
+    // Core fields from portal
+    var dob = clean_(payload.Date_Of_Birth || payload.field_Date_Of_Birth || "");
+    if (dob) updates.Date_Of_Birth = dob;
+
+    var examSite = clean_(payload.Physical_Exam_Site || payload.field_Physical_Exam_Site || "");
+    if (examSite) updates.Physical_Exam_Site = examSite;
+
+    // Subjects canonical is authoritative; normalize legacy/raw payloads if canonical is absent.
+    var subjectsCanonical = clean_(payload.Subjects_Selected_Canonical || payload.field_Subjects_Selected_Canonical || "");
+    var subjectsLegacyRaw = payload.Subjects_Selected || payload.field_Subjects_Selected || "";
+    var subjectsCsv = subjectsCanonical || subjectsToCsv_(subjectsLegacyRaw);
+    if (subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
+    var stream = clean_(payload.Upgrade_Grade_Stream || payload.field_Upgrade_Grade_Stream || "");
+    if (stream) updates.Upgrade_Grade_Stream = stream;
+
+    // Do NOT overwrite Parent_Email_Corrected.
+
+    // (Optional extra editable fields - currently none)
+    for (var i = 0; i < editFields.length; i++) {
+      var h = editFields[i];
+      if (h === "Parent_Email") continue;
+      var key = "field_" + h;
+      if (Object.prototype.hasOwnProperty.call(payload, key)) {
+        updates[h] = normalize_(payload[key]);
+      }
+    }
+
+    // Validation
+    var missing = [];
+
+    var effectiveDob = updates.Date_Of_Birth || clean_(found.record.Date_Of_Birth || "");
+    if (!effectiveDob) missing.push("Date of Birth");
+
+    var effectiveSubjects =
+      updates.Subjects_Selected_Canonical ||
+      clean_(found.record.Subjects_Selected_Canonical || "") ||
+      subjectsToCsv_(found.record.Subjects_Selected || "");
+    if (!effectiveSubjects) missing.push("Subjects");
+
+    var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
+    if (!effectiveSite) missing.push("Physical Exam Site");
+
+    if (missing.length) {
+      // re-render with typed values
+      var rec = shallowCopy_(found.record);
+      for (var k in updates) rec[k] = updates[k];
+
+      var canonical = clean_(rec.Subjects_Selected_Canonical || "");
+      rec._SubjectsCsv = canonical || subjectsToCsv_(rec.Subjects_Selected || "");
+      rec._PortalLocked = false;
+
+      var examSites = getExamSites_(ss);
+      return htmlOutput_(renderPortalHtml_({
+        id: id,
+        secret: secret,
+        record: rec,
+        subjects: CONFIG.PORTAL_SUBJECTS,
+        examSites: examSites,
+        editFields: getPortalEditableFields_(),
+        docs: getDocUiFields_(),
+        visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
+        error: "Please complete/fix: " + missing.join(", ")
+      }));
+    }
+
+    updates.PortalLastUpdateAt = new Date().toISOString();
+
+    // mark first submit time if empty
+    if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
+
+    var updateKeys = Object.keys(updates);
+    var patchSample = {};
+    for (var ps = 0; ps < updateKeys.length && ps < 5; ps++) {
+      var patchKey = updateKeys[ps];
+      var patchVal = clean_(updates[patchKey]);
+      patchSample[patchKey] = patchVal.length > 120 ? patchVal.slice(0, 120) : patchVal;
+    }
+    portalDebugLog_("PORTAL_UPDATE_PATCH", {
+      applicantId: id,
+      rowNumber: rowIndex,
+      keys: updateKeys,
+      patchSample: patchSample
+    });
+
+    log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
+    log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+    writeBack_(dataSheet, rowIndex, updates);
+    var verify = getRowObject_(dataSheet, rowIndex);
+    var failed = [];
+    updateKeys.forEach(function (k2) {
+      var expected = clean_(updates[k2]);
+      var actual = clean_(verify[k2]);
+      if (expected && actual !== expected) failed.push(k2);
+    });
+    portalDebugLog_("PORTAL_UPDATE_RESULT", {
+      applicantId: id,
+      rowNumber: rowIndex,
+      ok: failed.length === 0,
+      mismatches: failed
+    });
+    if (failed.length) {
+      return htmlOutput_(renderErrorHtml_("Update failed to persist for " + failed.join(", ")));
+    }
+    log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + updateKeys.length);
+    log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
+
+    return htmlOutput_(renderSuccessHtml_(id));
+  } catch (e) {
+    portalDebugLog_("PORTAL_UPDATE_ERROR", {
+      applicantId: id,
+      rowNumber: rowIndex,
+      error: String(e && e.message ? e.message : e)
+    });
+    throw e;
   }
-
-  // Validation
-  var missing = [];
-
-  var effectiveDob = updates.Date_Of_Birth || clean_(found.record.Date_Of_Birth || "");
-  if (!effectiveDob) missing.push("Date of Birth");
-
-  var effectiveSubjects =
-    updates.Subjects_Selected_Canonical ||
-    clean_(found.record.Subjects_Selected_Canonical || "") ||
-    subjectsToCsv_(found.record.Subjects_Selected || "");
-  if (!effectiveSubjects) missing.push("Subjects");
-
-  var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
-  if (!effectiveSite) missing.push("Physical Exam Site");
-
-  if (missing.length) {
-    // re-render with typed values
-    var rec = shallowCopy_(found.record);
-    for (var k in updates) rec[k] = updates[k];
-
-    var canonical = clean_(rec.Subjects_Selected_Canonical || "");
-    rec._SubjectsCsv = canonical || subjectsToCsv_(rec.Subjects_Selected || "");
-    rec._PortalLocked = false;
-
-    var examSites = getExamSites_(ss);
-    return htmlOutput_(renderPortalHtml_({
-      id: id,
-      secret: secret,
-      record: rec,
-      subjects: CONFIG.PORTAL_SUBJECTS,
-      examSites: examSites,
-      editFields: getPortalEditableFields_(),
-      docs: getDocUiFields_(),
-      visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
-      error: "Please complete/fix: " + missing.join(", ")
-    }));
-  }
-
-  updates.PortalLastUpdateAt = new Date().toISOString();
-
-  // mark first submit time if empty
-  if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
-
-  log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + Object.keys(updates).join(","));
-  log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
-  writeBack_(dataSheet, rowIndex, updates);
-  var verify = getRowObject_(dataSheet, rowIndex);
-  var failed = [];
-  Object.keys(updates).forEach(function (k) {
-    var expected = clean_(updates[k]);
-    var actual = clean_(verify[k]);
-    if (expected && actual !== expected) failed.push(k);
-  });
-  if (failed.length) {
-    return htmlOutput_(renderErrorHtml_("Update failed to persist for " + failed.join(", ")));
-  }
-  log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + Object.keys(updates).length);
-  log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
-
-  return htmlOutput_(renderSuccessHtml_(id));
 }
 
 /******************** DRIVE UPLOAD (called via google.script.run) ********************/
@@ -403,46 +444,71 @@ function portal_deleteUploadedFile(payload) {
   var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
   if (!found) return { ok: false, error: "Record not found." };
   if (rowNumber >= 2 && rowNumber !== found.rowNum) return { ok: false, error: "Row mismatch." };
+  portalDebugLog_("PORTAL_DELETE_TARGET", {
+    applicantId: applicantId,
+    rowNumber: found.rowNum,
+    fileField: fieldName,
+    url: targetUrl
+  });
   if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return { ok: false, error: "Locked" };
   if (isPaymentVerified_(found.record)) return { ok: false, error: "Locked" };
 
-  var docMeta = docMetaByField_(fieldName);
-  if (!docMeta) return { ok: false, error: "Invalid field." };
-  if (!docMeta.multiple) return { ok: false, error: "Delete only allowed for multi-upload fields." };
+  try {
+    var docMeta = docMetaByField_(fieldName);
+    if (!docMeta) return { ok: false, error: "Invalid field." };
+    if (!docMeta.multiple) return { ok: false, error: "Delete only allowed for multi-upload fields." };
 
-  var existing = clean_(found.record[fieldName] || "");
-  var updatedCell = removeUrlFromCell_(existing, targetUrl);
-  var remainingUrls = normalizeToUrlList_(updatedCell);
+    var existing = clean_(found.record[fieldName] || "");
+    var updatedCell = removeUrlFromCell_(existing, targetUrl);
+    var remainingUrls = normalizeToUrlList_(updatedCell);
+    var removed = existing !== updatedCell;
 
-  var updates = {};
-  updates[fieldName] = updatedCell;
-  updates.PortalLastUpdateAt = new Date().toISOString();
-  var line = new Date().toISOString() + " | " + fieldName + ": DELETE " + targetUrl;
-  updates.File_Log = appendLog_(clean_(found.record.File_Log || ""), line);
-  writeBack_(sheet, found.rowNum, updates);
+    var updates = {};
+    updates[fieldName] = updatedCell;
+    updates.PortalLastUpdateAt = new Date().toISOString();
+    var line = new Date().toISOString() + " | " + fieldName + ": DELETE " + targetUrl;
+    updates.File_Log = appendLog_(clean_(found.record.File_Log || ""), line);
+    writeBack_(sheet, found.rowNum, updates);
 
-  var trashed = false;
-  var warning = "";
-  var fileId = extractDriveFileId_(targetUrl);
-  if (fileId) {
-    try {
-      var file = DriveApp.getFileById(fileId);
-      var folderId = folderIdFromUrl_(clean_(found.record.Folder_Url || ""));
-      if (folderId && isFileInFolderChain_(file, folderId)) {
-        file.setTrashed(true);
-        trashed = true;
-      } else {
-        warning = "File not in applicant folder; URL removed only.";
+    var trashed = false;
+    var warning = "";
+    var fileId = extractDriveFileId_(targetUrl);
+    if (fileId) {
+      try {
+        var file = DriveApp.getFileById(fileId);
+        var folderId = folderIdFromUrl_(clean_(found.record.Folder_Url || ""));
+        if (folderId && isFileInFolderChain_(file, folderId)) {
+          file.setTrashed(true);
+          trashed = true;
+        } else {
+          warning = "File not in applicant folder; URL removed only.";
+        }
+      } catch (e) {
+        warning = "Could not trash file: " + (e && e.message ? e.message : String(e));
       }
-    } catch (e) {
-      warning = "Could not trash file: " + (e && e.message ? e.message : String(e));
+    } else {
+      warning = "Could not parse file id; URL removed only.";
     }
-  } else {
-    warning = "Could not parse file id; URL removed only.";
-  }
 
-  log_(logSheet, "PORTAL DELETE", "ApplicantID=" + applicantId + " field=" + fieldName + " trashed=" + trashed);
-  return { ok: true, remainingUrls: remainingUrls, trashed: trashed, warning: warning };
+    portalDebugLog_("PORTAL_DELETE_RESULT", {
+      applicantId: applicantId,
+      rowNumber: found.rowNum,
+      fileField: fieldName,
+      removed: removed,
+      trashed: trashed,
+      warning: warning
+    });
+    log_(logSheet, "PORTAL DELETE", "ApplicantID=" + applicantId + " field=" + fieldName + " trashed=" + trashed);
+    return { ok: true, remainingUrls: remainingUrls, trashed: trashed, warning: warning };
+  } catch (e2) {
+    portalDebugLog_("PORTAL_DELETE_ERROR", {
+      applicantId: applicantId,
+      rowNumber: found.rowNum,
+      fileField: fieldName,
+      error: String(e2 && e2.message ? e2.message : e2)
+    });
+    return { ok: false, error: String(e2 && e2.message ? e2.message : e2) };
+  }
 }
 
 /******************** PORTAL HTML ********************/
