@@ -7,8 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-19-PNG-STAGING-r20",
-  CHANGELOG_LAST: "r20: PortalSecrets active-secret integration + idempotent backfill + CSV portal-link export",
+  VERSION: "2026-02-21-PNG-STAGING-r22",
+  CHANGELOG_LAST: "r22: CIS-30 add build stamp + no-cache for portal HTML (CIS-29 deployed @66)",
+  BUILD_LABEL: "CIS-29 form POST + server redirect for portal_update (clasp version 66, student deploy @66)",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -36,6 +37,9 @@ var CONFIG = {
   WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
   WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
   WEBAPP_URL_STUDENT: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
+  WEBAPP_URL_STUDENT_EXEC: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
+  SCRIPT_ID: "1NwyKK4NV27SD7WaXlpgn_1cCMJ9ezX0erLjvMBB6DDGq9VDt12y5qtcK",
+  DEPLOYMENT_ID_STUDENT: "AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN",
 
   // Deployment model:
   // - Admin web app: executeAs=USER_ACCESSING, access=DOMAIN
@@ -102,6 +106,8 @@ var CONFIG = {
   ],
   PORTAL_EDIT_MODE: "ALL_VISIBLE_EXCEPT_NON_EDIT",
   PORTAL_TOKEN_MAX_AGE_DAYS: 90,
+  DEBUG_PORTAL_POST: true,
+  DEBUG_PORTAL_SHOW_ON_PAGE: true,
   PORTAL_DEBUG_TO_LOG_SHEET: true,
   PORTAL_DEBUG_MAX_BYTES: 2500,
 

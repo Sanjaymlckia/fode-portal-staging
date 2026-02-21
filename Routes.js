@@ -6,6 +6,10 @@ ADMIN DOCUMENT VERIFICATION (MINIMAL AUDIT MODEL)
   (Transfer_Certificate is optional by default)
 ************************************************************/
 
+function respondDiag_(e) {
+  return jsonOut_(diagStatus_());
+}
+
 function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comment) {
   applicantId = clean_(applicantId);
   fieldName = clean_(fieldName);

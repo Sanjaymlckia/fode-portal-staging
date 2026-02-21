@@ -10,6 +10,31 @@ function clean_(v) {
   return (v === null || v === undefined) ? "" : String(v).trim();
 }
 
+function redactToken_(s) {
+  var t = clean_(s);
+  if (!t) return "";
+  if (t.length <= 10) return t;
+  return t.slice(0, 6) + "..." + t.slice(-4);
+}
+
+function makeReqId_() {
+  return Utilities.getUuid().slice(0, 8);
+}
+
+function newDebugId_() {
+  return "DBG-" + Utilities.getUuid();
+}
+
+function getCurrentWebAppUrl_() {
+  try {
+    var svc = ScriptApp.getService();
+    if (!svc || typeof svc.getUrl !== "function") return "";
+    return clean_(svc.getUrl() || "");
+  } catch (e) {
+    return "";
+  }
+}
+
 function toIsoDateInput_(value) {
   if (value instanceof Date) {
     if (isNaN(value.getTime())) return "";

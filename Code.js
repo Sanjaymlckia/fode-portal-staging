@@ -20,23 +20,202 @@ Sheet:
 
 /******************** ENTRYPOINT: POST ********************/
 function doPost(e) {
+  var reqId = makeReqId_();
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var paramKeys = Object.keys(params);
+  var rawPostData = (e && e.postData) ? e.postData : null;
+  var postType = clean_(rawPostData && (rawPostData.type || rawPostData.contentType) || "");
+  var postLen = rawPostData && rawPostData.contents ? String(rawPostData.contents).length : 0;
+  var payload;
+  try {
+    payload = parseRequestPayload_(e);
+  } catch (err) {
+    var dbgFromParams = clean_(params.dbg || "") === "1";
+    logPortalPostEvent_("PORTAL_POST_START", {
+      reqId: reqId,
+      keys: paramKeys,
+      view: clean_(params.view || ""),
+      action: clean_(params.action || params._action || params.route || ""),
+      id: clean_(params.id || params.ApplicantID || ""),
+      s: redactToken_(params.s || params.secret || ""),
+      postDataType: postType,
+      postDataLength: postLen,
+      parseError: String(err && err.message ? err.message : err)
+    });
+    var dbgBadPayload = newDebugId_();
+    var badPayloadResult = {
+      ok: false,
+      debugId: dbgBadPayload,
+      applicantId: "",
+      error: { message: "Invalid request payload.", code: "BAD_PAYLOAD" }
+    };
+    var badPayloadRedirect = buildPortalRedirectUrl_("", "", { error: true, dbg: dbgBadPayload });
+    logPortalPostEvent_("PORTAL_POST_REDIRECT", {
+      reqId: reqId,
+      redirectUrl: badPayloadRedirect,
+      id: "",
+      s: "",
+      saved: false
+    });
+    return returnPortalRedirectOutput_(badPayloadRedirect, {
+      debug: CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && dbgFromParams,
+      reqId: reqId,
+      applicantId: "",
+      secret: "",
+      redirectUrl: badPayloadRedirect,
+      tokenValidationPassed: false,
+      result: badPayloadResult,
+      debugId: dbgBadPayload
+    });
+  }
+  var action = clean_(payload.action || payload._action || payload.route || "");
+  payload.__reqId = reqId;
+  payload.__paramKeys = paramKeys.slice();
+  var debugPost = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && clean_(payload.dbg || params.dbg || "") === "1";
+  logPortalPostEvent_("PORTAL_POST_START", {
+    reqId: reqId,
+    keys: paramKeys,
+    view: clean_(params.view || ""),
+    action: action,
+    id: clean_(payload.id || payload.ApplicantID || params.id || ""),
+    s: redactToken_(payload.s || payload.secret || params.s || ""),
+    postDataType: postType,
+    postDataLength: postLen
+  });
+
+  if (action === "portal_update") {
+    var debugId = newDebugId_();
+    var applicantId = clean_(payload.id || payload.ApplicantID || "");
+    var secret = clean_(payload.s || payload.secret || "");
+    try {
+      if (hasOwn_(payload, "payload")) {
+        payload = mergePortalPayload_(payload, parsePortalPayloadField_(payload.payload));
+        applicantId = clean_(payload.id || payload.ApplicantID || applicantId);
+        secret = clean_(payload.s || payload.secret || secret);
+      }
+      if (!applicantId || !secret) {
+        try {
+          var ssMissing = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+          var logSheetMissing = mustGetSheet_(ssMissing, CONFIG.LOG_SHEET);
+          log_(logSheetMissing, "PORTAL_UPDATE_FATAL", debugId + " Missing portal token (id/s)");
+        } catch (logErr0) {}
+        var missRedirect = buildPortalRedirectUrl_(applicantId, secret, {
+          error: true,
+          dbg: debugId
+        });
+        var missResult = {
+          ok: false,
+          debugId: debugId,
+          applicantId: applicantId,
+          error: { message: "Missing portal token (id/s).", code: "MISSING_TOKEN" }
+        };
+        logPortalPostEvent_("PORTAL_POST_REDIRECT", {
+          reqId: reqId,
+          redirectUrl: missRedirect,
+          id: applicantId,
+          s: redactToken_(secret),
+          saved: false
+        });
+        return returnPortalRedirectOutput_(missRedirect, {
+          debug: debugPost,
+          reqId: reqId,
+          applicantId: applicantId,
+          secret: secret,
+          redirectUrl: missRedirect,
+          tokenValidationPassed: false,
+          result: missResult,
+          debugId: debugId
+        });
+      }
+      var ssPortal = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+      var dataSheetPortal = mustGetDataSheet_(ssPortal);
+      var logSheetPortal = mustGetSheet_(ssPortal, CONFIG.LOG_SHEET);
+      log_(logSheetPortal, "PORTAL_UPDATE_DEBUG", debugId + " " + applicantId);
+      var resultObj = handlePortalUpdate_(ssPortal, dataSheetPortal, logSheetPortal, payload, params, debugId);
+      resultObj = outputToJsonObject_(resultObj) || {};
+      if (resultObj.ok === true) {
+        var okRedirect = buildPortalRedirectUrl_(clean_(resultObj.applicantId || applicantId), secret, { saved: true });
+        logPortalPostEvent_("PORTAL_POST_REDIRECT", {
+          reqId: reqId,
+          redirectUrl: okRedirect,
+          id: applicantId,
+          s: redactToken_(secret),
+          saved: okRedirect.indexOf("saved=1") >= 0
+        });
+        return returnPortalRedirectOutput_(okRedirect, {
+          debug: debugPost,
+          reqId: reqId,
+          applicantId: applicantId,
+          secret: secret,
+          redirectUrl: okRedirect,
+          tokenValidationPassed: true,
+          result: resultObj,
+          debugId: clean_(resultObj.debugId || debugId)
+        });
+      }
+      var failDbgId = clean_(resultObj.debugId || debugId) || debugId;
+      var failRedirect = buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: failDbgId });
+      logPortalPostEvent_("PORTAL_POST_REDIRECT", {
+        reqId: reqId,
+        redirectUrl: failRedirect,
+        id: applicantId,
+        s: redactToken_(secret),
+        saved: false
+      });
+      return returnPortalRedirectOutput_(failRedirect, {
+        debug: debugPost,
+        reqId: reqId,
+        applicantId: applicantId,
+        secret: secret,
+        redirectUrl: failRedirect,
+        tokenValidationPassed: false,
+        result: resultObj,
+        debugId: failDbgId
+      });
+    } catch (errPortal) {
+      try {
+        var ssLog = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+        var logSheetFatal = mustGetSheet_(ssLog, CONFIG.LOG_SHEET);
+        log_(logSheetFatal, "PORTAL_UPDATE_FATAL", debugId + " " + String(errPortal && errPortal.message ? errPortal.message : errPortal));
+      } catch (logErr) {}
+      var excResult = {
+        ok: false,
+        debugId: debugId,
+        applicantId: applicantId,
+        error: {
+          code: "PORTAL_UPDATE_EXCEPTION",
+          message: String(errPortal && errPortal.message ? errPortal.message : errPortal)
+        }
+      };
+      var excRedirect = buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: debugId });
+      logPortalPostEvent_("PORTAL_POST_REDIRECT", {
+        reqId: reqId,
+        redirectUrl: excRedirect,
+        id: applicantId,
+        s: redactToken_(secret),
+        saved: false
+      });
+      return returnPortalRedirectOutput_(excRedirect, {
+        debug: debugPost,
+        reqId: reqId,
+        applicantId: applicantId,
+        secret: secret,
+        redirectUrl: excRedirect,
+        tokenValidationPassed: false,
+        result: excResult,
+        debugId: debugId
+      });
+    }
+  }
+
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   var dataSheet = mustGetDataSheet_(ss);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
-
-  var payload = parseRequestPayload_(e);
   appendPortalLog_({ route: "doPost", status: "HIT", message: "doPost called", email: payload.email || payload.Parent_Email || "", applicantId: payload.id || payload.ApplicantID || "" });
-
-  var action = clean_(payload.action || payload._action || "");
 
 
   log_(logSheet, "doPost HIT", payloadSummary_(payload));
   log_(logSheet, "ACTION", action || "(blank)");
-
-  // Portal update (normal fields)
-  if (action === "portal_update") {
-    return handlePortalUpdate_(ss, dataSheet, logSheet, payload);
-  }
 
   // Intake webhook (FormDesigner)
   log_(logSheet, "POST HIT", payloadSummary_(payload));
@@ -75,6 +254,11 @@ function doGet(e) {
 
   var id = clean_(e.parameter.id || "");
   var secret = clean_(e.parameter.s || "");
+  var saved = clean_(e.parameter.saved || "") === "1";
+  var errorFlag = clean_(e.parameter.error || "") === "1";
+  var dbg = clean_(e.parameter.dbg || "");
+  var reqId = makeReqId_();
+  var debugPage = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && dbg === "1";
   var reqMeta = getPortalRequestMeta_(e);
   if (!id || !secret) {
     safePortalLog_({
@@ -84,7 +268,12 @@ function doGet(e) {
       status: "invalid_token",
       message: "missing_params | ua=" + (reqMeta.ua || "")
     }, false);
-    return htmlOutput_(renderErrorHtml_("Missing portal link parameters"));
+    var msg = "Missing portal link parameters";
+    if (errorFlag) {
+      msg = "Missing portal token (id/s). Please reopen your portal link.";
+      if (dbg) msg += " Debug: " + dbg;
+    }
+    return htmlOutput_(renderErrorHtml_(msg));
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
@@ -171,6 +360,11 @@ function doGet(e) {
   return htmlOutput_(renderPortalHtml_({
     id: id,
     secret: secret,
+    reqId: reqId,
+    debugPage: debugPage,
+    saved: saved,
+    errorFlag: errorFlag,
+    dbg: dbg,
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
@@ -193,7 +387,7 @@ function diagStatus_() {
 
 
 /******************** PORTAL UPDATE HANDLER ********************/
-function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
+function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debugId) {
   if (!dataSheet || dataSheet.getName() !== CONFIG.DATA_SHEET) {
     throw new Error("DATA_SHEET mismatch");
   }
@@ -206,155 +400,173 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload) {
 
   var id = clean_(payload.id || "");
   var secret = clean_(payload.s || "");
+  var safeDebugId = clean_(debugId || newDebugId_()) || newDebugId_();
   var rowIndex = 0;
-  try {
-    if (!id || !secret) return jsonOut_({ ok: false, error: "Missing portal link parameters. Please reopen your portal link." });
-
-    var found = findPortalRowByIdSecret_(dataSheet, id, secret);
-    if (!found) return jsonOut_({ ok: false, error: "No matching record found. Please reopen your portal link." });
-    rowIndex = found.rowNum;
-    log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
-    log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
-    portalDebugLog_("PORTAL_UPDATE_TARGET", {
+  var failResult = function (message, code) {
+    return {
+      ok: false,
+      debugId: safeDebugId,
       applicantId: id,
-      rowNumber: rowIndex,
-      email: clean_(found.record.Parent_Email_Corrected || found.record.Parent_Email || ""),
-      sheet: CONFIG.DATA_SHEET
-    });
+      error: {
+        message: clean_(message || "Portal update failed."),
+        code: clean_(code || "PORTAL_UPDATE_FAILED")
+      }
+    };
+  };
+  if (!id || !secret) {
+    return failResult("Missing portal link parameters. Please reopen your portal link.", "MISSING_TOKEN");
+  }
 
-    if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
-      return jsonOut_({ ok: false, error: "Access suspended. Please contact admissions." });
-    }
+  var found = findPortalRowByIdSecret_(dataSheet, id, secret);
+  if (!found) {
+    return failResult("No matching record found. Please reopen your portal link.", "ROW_NOT_FOUND");
+  }
+  rowIndex = found.rowNum;
+  log_(logSheet, "PORTAL_UPDATE_TARGET", "row=" + rowIndex + " applicantId=" + id);
+  log_(logSheet, "PORTAL_UPDATE rowIndex", String(rowIndex));
+  portalDebugLog_("PORTAL_UPDATE_TARGET", {
+    applicantId: id,
+    rowNumber: rowIndex,
+    email: clean_(found.record.Parent_Email_Corrected || found.record.Parent_Email || ""),
+    sheet: CONFIG.DATA_SHEET
+  });
 
-    if (isPaymentVerified_(found.record)) {
-      return jsonOut_({ ok: false, error: "Your record is locked because payment has been verified. No further changes are allowed." });
-    }
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+    return failResult("Access suspended. Please contact admissions.", "ACCESS_LOCKED");
+  }
 
-    var updates = {};
-    var editFields = effectiveEditFields;
+  if (isPaymentVerified_(found.record)) {
+    return failResult("Your record is locked because payment has been verified. No further changes are allowed.", "PAYMENT_VERIFIED_LOCK");
+  }
+
+  var posted = (postParams && typeof postParams === "object") ? postParams : {};
+  var postKeys = Object.keys(posted || {}).sort();
+  if (!postKeys.length && payload.__paramKeys && Array.isArray(payload.__paramKeys)) {
+    postKeys = payload.__paramKeys.slice().sort();
+  }
+  logPortalPostEvent_("PORTAL_POST_KEYS", {
+    reqId: clean_(payload.__reqId || ""),
+    applicantId: id,
+    keys: postKeys
+  });
+  var postedSample = function (key) {
+    if (hasOwn_(posted, key)) return clean_(posted[key]);
+    return clean_(payload[key] || "");
+  };
+  logPortalPostEvent_("PORTAL_POST_SAMPLE", {
+    reqId: clean_(payload.__reqId || ""),
+    applicantId: id,
+    Gender: postedSample("Gender"),
+    Date_Of_Birth: postedSample("Date_Of_Birth"),
+    Grade_Applying_For: postedSample("Grade_Applying_For"),
+    Parent_Phone: postedSample("Parent_Phone"),
+    Subjects_Selected_Canonical: postedSample("Subjects_Selected_Canonical"),
+    dbg: postedSample("dbg"),
+    id: postedSample("id") || clean_(payload.ApplicantID || ""),
+    s: redactToken_(hasOwn_(posted, "s") ? posted.s : (payload.s || payload.secret || ""))
+  });
+
+  var updates = {};
+  var editFields = effectiveEditFields;
+  var sourceFields = postKeys.length ? posted : payload;
 
     // Core fields from portal
-    var dob = clean_(payload.Date_Of_Birth || payload.field_Date_Of_Birth || "");
-    if (dob) updates.Date_Of_Birth = dob;
+  if (hasOwn_(sourceFields, "Date_Of_Birth")) {
+    updates.Date_Of_Birth = normalize_(sourceFields.Date_Of_Birth);
+  }
 
-    var examSite = clean_(payload.Physical_Exam_Site || payload.field_Physical_Exam_Site || "");
-    if (examSite) updates.Physical_Exam_Site = examSite;
+  if (hasOwn_(sourceFields, "Physical_Exam_Site")) {
+    updates.Physical_Exam_Site = normalize_(sourceFields.Physical_Exam_Site);
+  }
 
     // Subjects canonical is authoritative; normalize legacy/raw payloads if canonical is absent.
-    var subjectsCanonical = clean_(payload.Subjects_Selected_Canonical || payload.field_Subjects_Selected_Canonical || "");
-    var subjectsLegacyRaw = payload.Subjects_Selected || payload.field_Subjects_Selected || "";
-    var subjectsCsv = subjectsCanonical || subjectsToCsv_(subjectsLegacyRaw);
-    if (subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
-    var stream = clean_(payload.Upgrade_Grade_Stream || payload.field_Upgrade_Grade_Stream || "");
-    if (stream) updates.Upgrade_Grade_Stream = stream;
+  var subjectsCanonical = hasOwn_(sourceFields, "Subjects_Selected_Canonical")
+    ? clean_(sourceFields.Subjects_Selected_Canonical)
+    : "";
+  var subjectsLegacyRaw = hasOwn_(sourceFields, "Subjects_Selected")
+    ? sourceFields.Subjects_Selected
+    : (payload.Subjects_Selected || payload.field_Subjects_Selected || "");
+  var subjectsCsv = subjectsCanonical || subjectsToCsv_(subjectsLegacyRaw);
+  if (subjectsCanonical || subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
+  if (hasOwn_(sourceFields, "Upgrade_Grade_Stream")) {
+    updates.Upgrade_Grade_Stream = normalize_(sourceFields.Upgrade_Grade_Stream);
+  }
 
     // Never overwrite Parent_Email directly; allow Parent_Email_Corrected only when explicitly provided.
-    for (var i = 0; i < editFields.length; i++) {
-      var h = editFields[i];
-      if (h === "Parent_Email") continue;
-      var prefixedKey = "field_" + h;
-      var rawValue;
-      var hasValue = false;
-      if (hasOwn_(payload, prefixedKey)) {
-        rawValue = payload[prefixedKey];
-        hasValue = true;
-      } else if (hasOwn_(payload, h)) {
-        rawValue = payload[h];
-        hasValue = true;
-      }
-      if (hasValue) {
-        updates[h] = normalize_(rawValue);
-      }
-    }
+    // Read editable values directly from posted keys that match sheet headers.
+  for (var i = 0; i < editFields.length; i++) {
+    var h = editFields[i];
+    if (h === "Parent_Email") continue;
+    if (!hasOwn_(sourceFields, h)) continue;
+    updates[h] = normalize_(sourceFields[h]);
+  }
 
     // Validation
-    var missing = [];
+  var missing = [];
 
-    var effectiveDob = updates.Date_Of_Birth || clean_(found.record.Date_Of_Birth || "");
-    if (!effectiveDob) missing.push("Date of Birth");
+  var effectiveDob = updates.Date_Of_Birth || clean_(found.record.Date_Of_Birth || "");
+  if (!effectiveDob) missing.push("Date of Birth");
 
-    var effectiveSubjects =
-      updates.Subjects_Selected_Canonical ||
-      clean_(found.record.Subjects_Selected_Canonical || "") ||
-      subjectsToCsv_(found.record.Subjects_Selected || "");
-    if (!effectiveSubjects) missing.push("Subjects");
+  var effectiveSubjects =
+    updates.Subjects_Selected_Canonical ||
+    clean_(found.record.Subjects_Selected_Canonical || "") ||
+    subjectsToCsv_(found.record.Subjects_Selected || "");
+  if (!effectiveSubjects) missing.push("Subjects");
 
-    var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
-    if (!effectiveSite) missing.push("Physical Exam Site");
+  var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
+  if (!effectiveSite) missing.push("Physical Exam Site");
 
-    if (missing.length) {
-      // re-render with typed values
-      var rec = shallowCopy_(found.record);
-      for (var k in updates) rec[k] = updates[k];
+  if (missing.length) {
+    return failResult("Please complete/fix: " + missing.join(", "), "VALIDATION_FAILED");
+  }
 
-      var canonical = clean_(rec.Subjects_Selected_Canonical || "");
-      rec._SubjectsCsv = canonical || subjectsToCsv_(rec.Subjects_Selected || "");
-      rec._PortalLocked = false;
-
-      return jsonOut_({ ok: false, error: "Please complete/fix: " + missing.join(", ") });
-    }
-
-    updates.PortalLastUpdateAt = new Date().toISOString();
+  updates.PortalLastUpdateAt = new Date().toISOString();
 
     // mark first submit time if empty
-    if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
+  if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
 
-    var updateKeys = Object.keys(updates);
-    var patchSample = {};
-    for (var ps = 0; ps < updateKeys.length && ps < 5; ps++) {
-      var patchKey = updateKeys[ps];
-      var patchVal = clean_(updates[patchKey]);
-      patchSample[patchKey] = patchVal.length > 120 ? patchVal.slice(0, 120) : patchVal;
-    }
-    portalDebugLog_("PORTAL_UPDATE_PATCH", {
-      applicantId: id,
-      rowNumber: rowIndex,
-      keys: updateKeys,
-      patchSample: patchSample
-    });
+  var updateKeys = Object.keys(updates);
+  var patchSample = {};
+  for (var ps = 0; ps < updateKeys.length && ps < 5; ps++) {
+    var patchKey = updateKeys[ps];
+    var patchVal = clean_(updates[patchKey]);
+    patchSample[patchKey] = patchVal.length > 120 ? patchVal.slice(0, 120) : patchVal;
+  }
+  portalDebugLog_("PORTAL_UPDATE_PATCH", {
+    applicantId: id,
+    rowNumber: rowIndex,
+    keys: updateKeys,
+    patchSample: patchSample
+  });
 
-    log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
-    log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+  log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
+  log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+  try {
     writeBack_(dataSheet, rowIndex, updates);
     SpreadsheetApp.flush();
-    var freshRow = dataSheet.getRange(rowIndex, 1, 1, dataSheet.getLastColumn()).getValues()[0];
-    var headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
-    var verify = {};
-    for (var hr = 0; hr < headers.length; hr++) {
-      var hk = String(headers[hr] || "").trim();
-      if (hk) verify[hk] = freshRow[hr];
-    }
-    var failed = [];
-    updateKeys.forEach(function (k2) {
-      var expected = clean_(updates[k2]);
-      var actual = clean_(verify[k2]);
-      if (actual !== expected) failed.push(k2);
-    });
-    portalDebugLog_("PORTAL_UPDATE_RESULT", {
-      applicantId: id,
-      rowNumber: rowIndex,
-      ok: failed.length === 0,
-      mismatches: failed
-    });
-    if (failed.length) {
-      return jsonOut_({ ok: false, error: "Update failed to persist for " + failed.join(", ") });
-    }
-    log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + updateKeys.length);
-    log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
-
-    return jsonOut_({
-      ok: true,
-      applicantId: id,
-      redirectUrl: buildPortalRedirectUrl_(id, secret)
-    });
   } catch (e) {
     portalDebugLog_("PORTAL_UPDATE_ERROR", {
       applicantId: id,
       rowNumber: rowIndex,
       error: String(e && e.message ? e.message : e)
     });
-    return jsonOut_({ ok: false, error: String(e && e.message ? e.message : e) });
+    return failResult(String(e && e.message ? e.message : e), "WRITE_FAILED");
   }
+  portalDebugLog_("PORTAL_UPDATE_RESULT", {
+    applicantId: id,
+    rowNumber: rowIndex,
+    ok: true,
+    saved: 1
+  });
+  log_(logSheet, "PORTAL_UPDATE_RESULT", "updated=" + updateKeys.length);
+  log_(logSheet, "PORTAL UPDATE", "ApplicantID=" + id + " viaSecret=yes");
+  return {
+    ok: true,
+    debugId: safeDebugId,
+    applicantId: id,
+    rowNumber: rowIndex,
+    saved: 1
+  };
 }
 
 /******************** DRIVE UPLOAD (called via google.script.run) ********************/
@@ -536,17 +748,29 @@ function portal_deleteUploadedFile(payload) {
 /******************** PORTAL HTML ********************/
 function renderPortalHtml_(opts) {
   var id = opts.id, secret = opts.secret, record = opts.record;
+  var reqId = clean_(opts.reqId || "");
+  var debugPage = opts.debugPage === true;
+  var saved = opts.saved === true;
+  var hasErr = opts.errorFlag === true;
+  var dbg = clean_(opts.dbg || "");
   var subjects = opts.subjects || [];
   var examSites = opts.examSites || [];
   var editFields = opts.editFields || [];
   var docs = opts.docs || [];
   var visibleFields = opts.visibleFields || [];
   var error = opts.error || "";
-  var actionMeta = getStudentActionUrl_();
-  var actionUrl = actionMeta.url;
+  var actionUrl = canonicalStudentExecBase_() + "?view=portal";
+  var actionWarn = actionUrl ? "" : "Student URL not configured. Saving may not work for external users.";
+  var scriptId = clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId());
+  var deploymentId = clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "");
+  var actionUrlShort = actionUrl.length > 140 ? (actionUrl.slice(0, 137) + "...") : actionUrl;
+  var buildVersion = clean_(CONFIG.VERSION || "");
+  var buildLabel = clean_(CONFIG.BUILD_LABEL || "");
+  var redactedSecret = redactToken_(secret);
 
   var locked = record._PortalLocked === true;
   var dis = locked ? "disabled" : "";
+  var ro = locked ? "readonly" : "";
 
   // subject selections: canonical preferred, else fallback
   var csv = clean_(record.Subjects_Selected_Canonical || record._SubjectsCsv || "");
@@ -584,8 +808,32 @@ function renderPortalHtml_(opts) {
   var lockedBlock = locked
     ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Locked:</b> Payment has been verified. No further changes are allowed.</div>'
     : "";
-  var actionWarnBlock = actionMeta.warning
-    ? '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Warning:</b> ' + esc_(actionMeta.warning) + "</div>"
+  var actionWarnBlock = actionWarn
+    ? '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Warning:</b> ' + esc_(actionWarn) + "</div>"
+    : "";
+  var savedBlock = saved
+    ? '<div id="savedBanner" style="background:#eaf7ea;border:1px solid #2e7d32;padding:8px;margin-bottom:12px;color:#000;">Saved. Your updates are now shown below.</div>'
+    : "";
+  var errBlock = hasErr
+    ? '<div style="background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;">Portal update failed.' + (dbg ? (" Debug: " + esc_(dbg)) : "") + "</div>"
+    : "";
+  var debugComment = debugPage
+    ? '<!-- DEBUG_PORTAL_GET reqId=' + esc_(reqId) + ' id=' + esc_(id) + ' s(redacted)=' + esc_(redactedSecret) + ' -->'
+    : "";
+  var debugFooter = debugPage
+    ? '<div id="debugPortalFooter" style="margin-top:10px;padding:8px;border:1px dashed #999;color:#000;font-size:12px;">'
+      + "<div><b>DEBUG_PORTAL_RENDER</b></div>"
+      + "<div>reqId: " + esc_(reqId) + "</div>"
+      + "<div>applicantId: " + esc_(id) + "</div>"
+      + "<div>form.action: " + esc_(actionUrl) + "</div>"
+      + "<div>hidden id: " + esc_(id) + "</div>"
+      + "<div>hidden s(redacted): " + esc_(redactedSecret) + "</div>"
+      + "<div>form named elements count: <span id='dbgFormNameCount'>(loading...)</span></div>"
+      + "<div>form field names (first 10): <span id='dbgFormNameList'>(loading...)</span></div>"
+      + "<div>cleanup ran: <span id='dbgCleanupRan'>(loading...)</span></div>"
+      + "<div>current URL (after cleanup): <span id='dbgHrefAfterCleanup'>(loading...)</span></div>"
+      + "<div>window.location.href: <span id='dbgCurrentHref'>(loading...)</span></div>"
+      + "</div>"
     : "";
 
   // allowlist-only summary
@@ -603,12 +851,20 @@ function renderPortalHtml_(opts) {
 
   return ''
     + '<!doctype html><html><head><meta charset="utf-8" />'
+    + debugComment
+    + '<!-- BUILD: ' + esc_(buildVersion) + " | " + esc_(buildLabel) + " -->"
     + "<title>FODE Student Portal</title>"
+    + '<base target="_top" />'
     + '<meta name="viewport" content="width=device-width, initial-scale=1" />'
-    + '<meta http-equiv="Cache-Control" content="no-store" />'
+    + '<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />'
+    + '<meta http-equiv="Pragma" content="no-cache" />'
+    + '<meta http-equiv="Expires" content="0" />'
     + "</head>"
     + '<body style="font-family:Arial,Helvetica,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;">'
     + "<h2>FODE Student Portal</h2>"
+    + '<div id="portalFlashMount"></div>'
+    + savedBlock
+    + errBlock
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + "<div><b>Applicant ID:</b> " + esc_(id) + "</div>"
     + "<div><b>Secure Link:</b> verified</div>"
@@ -628,18 +884,21 @@ function renderPortalHtml_(opts) {
     + "</div>"
 
     // ✅ hardcoded action URL to prevent blank screen / doPost not firing
-    + '<form method="post" action="' + esc_(actionUrl) + '" onsubmit="return beforePortalSubmit(event,this);"'
+    + '<form id="portalForm" method="post" target="_top" action="' + esc_(actionUrl) + '" onsubmit="return beforePortalSubmit(event,this);"'
     + ' style="padding:12px;border:1px solid #ddd;border-radius:10px;">'
     + '<input type="hidden" name="action" value="portal_update" />'
+    + '<input type="hidden" name="route" value="portal_update" />'
     + '<input type="hidden" name="id" value="' + esc_(id) + '" />'
     + '<input type="hidden" name="s" value="' + esc_(secret) + '" />'
+    + (CONFIG.DEBUG_PORTAL_POST === true ? '<input type="hidden" name="dbg" value="1" />' : "")
+    + '<input type="hidden" id="portal_payload" name="payload" value="" />'
     + '<input type="hidden" id="Subjects_Selected_Canonical" name="Subjects_Selected_Canonical" value="" />'
 
     + '<h3 style="margin-top:0;">Update / Confirm Information</h3>'
 
     + '<div style="margin:12px 0;">'
     + "<label><b>Date of Birth (mandatory):</b></label><br/>"
-    + '<input type="date" name="Date_Of_Birth" value="' + dobVal + '" style="padding:8px;width:260px;" ' + dis + " />"
+    + '<input type="date" name="Date_Of_Birth" value="' + dobVal + '" style="padding:8px;width:260px;" ' + ro + " />"
     + "</div>"
 
     + '<div style="margin:12px 0;">'
@@ -648,6 +907,7 @@ function renderPortalHtml_(opts) {
     + '<option value="">-- Select Exam Site --</option>'
     + examOptions
     + "</select>"
+    + (locked ? ('<input type="hidden" name="Physical_Exam_Site" value="' + esc_(examVal) + '" />') : "")
     + "</div>"
 
     + '<div style="margin:12px 0;">'
@@ -664,8 +924,13 @@ function renderPortalHtml_(opts) {
 
     + saveButton
     + "</form>"
+    + debugFooter
+    + '<div id="buildStamp" style="margin-top:16px;color:#000;">Version: ' + esc_(buildVersion) + " | " + esc_(buildLabel) + "</div>"
+    + '<div style="margin-top:8px;color:#000;">Version: ' + esc_(CONFIG.VERSION) + " | Script ID: " + esc_(scriptId) + " | Deployment: " + esc_(deploymentId || "-") + " | View: portal</div>"
+    + '<div style="margin-top:8px;color:#666;font-size:12px;">URL: ' + esc_(actionUrlShort) + "</div>"
 
     + "<script>"
+    + "console.log('PORTAL BUILD:', " + JSON.stringify(buildVersion) + ", '|', " + JSON.stringify(buildLabel) + ");"
     + "function packSubjects(){"
     + "var boxes=[].slice.call(document.querySelectorAll('input[name=\"subj\"]:checked'));"
     + "var vals=boxes.map(function(b){return b.value;}).filter(Boolean);"
@@ -683,7 +948,6 @@ function renderPortalHtml_(opts) {
     + "  var type=(el.type||'').toLowerCase();"
     + "  if((type==='checkbox' || type==='radio') && !el.checked) return;"
     + "  if(fd.has(el.name)) return;"
-    + "  if(el.name.indexOf('field_')!==0) return;"
     + "  var hidden=document.createElement('input');"
     + "  hidden.type='hidden';"
     + "  hidden.name=el.name;"
@@ -693,22 +957,87 @@ function renderPortalHtml_(opts) {
     + "});"
     + "}"
     + "function beforePortalSubmit(evt,form){"
-    + "if(evt && evt.preventDefault) evt.preventDefault();"
     + "if(!packSubjects()) return false;"
     + "ensurePortalFormSerialization(form);"
-    + "if(typeof fetch!=='function') return true;"
+    + "var fd=new FormData(form);"
+    + "var obj={};"
+    + "fd.forEach(function(v,k){"
+    + "  if(k==='payload' || k==='subj') return;"
+    + "  if(Object.prototype.hasOwnProperty.call(obj,k)){"
+    + "    if(Array.isArray(obj[k])) obj[k].push(v);"
+    + "    else obj[k]=[obj[k],v];"
+    + "  } else obj[k]=v;"
+    + "});"
+    + "var p=document.getElementById('portal_payload');"
+    + "if(p) p.value=JSON.stringify(obj);"
     + "var submitBtn=form && form.querySelector ? form.querySelector('button[type=\"submit\"]') : null;"
     + "if(submitBtn) submitBtn.disabled=true;"
-    + "var req={method:'POST',body:new FormData(form),credentials:'same-origin',cache:'no-store'};"
-    + "fetch(form.action,req).then(function(r){return r.json();}).then(function(res){"
-    + "if(res && res.ok===true && res.redirectUrl){ window.location.replace(res.redirectUrl); return; }"
-    + "if(submitBtn) submitBtn.disabled=false;"
-    + "alert((res && res.error) ? res.error : 'Update failed. Please try again.');"
-    + "}).catch(function(err){"
-    + "if(submitBtn) submitBtn.disabled=false;"
-    + "alert('Update failed: '+(err && err.message ? err.message : err));"
-    + "});"
-    + "return false;"
+    + "return true;"
+    + "}"
+    + "function escText(v){"
+    + "return String(v===undefined||v===null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#039;');"
+    + "}"
+    + "function renderPortalFlash(type,dbg){"
+    + "var mount=document.getElementById('portalFlashMount');"
+    + "if(!mount) return;"
+    + "if(type==='success'){"
+    + "mount.innerHTML='<div id=\"portalFlashBanner\" style=\"background:#eaf7ea;border:1px solid #2e7d32;padding:8px;margin-bottom:12px;color:#000;\">Saved. Your updates are now shown below.</div>';"
+    + "return;"
+    + "}"
+    + "if(type==='error'){"
+    + "var d=dbg?(' Debug: '+escText(dbg)):'';"
+    + "mount.innerHTML='<div id=\"portalFlashBanner\" style=\"background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;\">Portal update failed.'+d+'</div>';"
+    + "}"
+    + "}"
+    + "function initPortalFlashAndCleanup(){"
+    + "var cleanupRan=false;"
+    + "var hasSaved=false;"
+    + "var hasError=false;"
+    + "try{"
+    + "var url=new URL(window.location.href);"
+    + "var params=url.searchParams;"
+    + "hasSaved=(params.get('saved')==='1');"
+    + "hasError=(params.get('error')==='1');"
+    + "var dbgQ=params.get('dbg')||'';"
+    + "if(hasSaved){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'success',ts:Date.now()})); }"
+    + "if(hasError){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,ts:Date.now()})); }"
+    + "if(params.has('id') || params.has('s')){"
+    + "params.delete('id');"
+    + "params.delete('s');"
+    + "var q=params.toString();"
+    + "var newUrl=url.pathname + (q?('?'+q):'') + url.hash;"
+    + "history.replaceState(null,'',newUrl);"
+    + "cleanupRan=true;"
+    + "}"
+    + "}catch(e){}"
+    + "if(!hasSaved && !hasError){"
+    + "try{"
+    + "var raw=sessionStorage.getItem('portalFlash');"
+    + "if(raw){"
+    + "var flash=JSON.parse(raw);"
+    + "var age=Date.now()-Number((flash&&flash.ts)||0);"
+    + "if(age>=0 && age<=120000){"
+    + "renderPortalFlash(String(flash.type||''), String((flash&&flash.dbg)||''));"
+    + "}"
+    + "sessionStorage.removeItem('portalFlash');"
+    + "}"
+    + "}catch(e2){"
+    + "try{sessionStorage.removeItem('portalFlash');}catch(e3){}"
+    + "}"
+    + "}"
+    + "var dbgCleanupEl=document.getElementById('dbgCleanupRan'); if(dbgCleanupEl){ dbgCleanupEl.textContent=cleanupRan ? 'true' : 'false'; }"
+    + "var dbgAfterEl=document.getElementById('dbgHrefAfterCleanup'); if(dbgAfterEl){ dbgAfterEl.textContent=window.location.href; }"
+    + "var dbgHrefEl=document.getElementById('dbgCurrentHref'); if(dbgHrefEl){ dbgHrefEl.textContent=window.location.href; }"
+    + "}"
+    + "if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', initPortalFlashAndCleanup); } else { initPortalFlashAndCleanup(); }"
+    + "setTimeout(function(){var b=document.getElementById('savedBanner');if(b){b.style.display='none';}},5000);"
+    + "var dbgForm=document.getElementById('portalForm');"
+    + "if(dbgForm){"
+    + "  var named=[].slice.call(dbgForm.querySelectorAll('[name]'));"
+    + "  var c=document.getElementById('dbgFormNameCount');"
+    + "  var l=document.getElementById('dbgFormNameList');"
+    + "  if(c) c.textContent=String(named.length);"
+    + "  if(l) l.textContent=named.map(function(n){return n.name;}).slice(0,10).join(', ');"
     + "}"
     + "</script>"
 
@@ -932,6 +1261,7 @@ function renderAllowlistSummary_(record, visibleFields) {
 
 function renderEditableFields_(record, editFields, dis) {
   var out = "";
+  var ro = (dis === "disabled") ? "readonly" : "";
   for (var i = 0; i < editFields.length; i++) {
     var h = editFields[i];
     var val = clean_(record[h] || "");
@@ -939,7 +1269,7 @@ function renderEditableFields_(record, editFields, dis) {
     var linkHtml = isUrl ? (" <a target='_blank' rel='noopener' href='" + esc_(val) + "'>Open</a>") : "";
     out += "<div style='margin:10px 0;'>"
       + "<label><b>" + esc_(h) + ":</b></label><br/>"
-      + "<input type='text' name='field_" + esc_(h) + "' value='" + esc_(val) + "' style='padding:8px;width:520px;' " + dis + " />"
+      + "<input type='text' name='" + esc_(h) + "' value='" + esc_(val) + "' style='padding:8px;width:520px;' " + ro + " />"
       + linkHtml
       + "</div>";
   }
@@ -970,6 +1300,9 @@ function renderSuccessHtml_(applicantId) {
 }
 
 function getStudentActionUrl_() {
+  var studentExec = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  var hasStudentExec = /^https:\/\/script\.google\.com\//i.test(studentExec);
+  if (hasStudentExec) return { url: studentExec, isStudentReady: true, warning: "" };
   var studentUrl = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
   var adminUrl = clean_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
   var isStudentReady = /^https:\/\/script\.google\.com\//i.test(studentUrl);
@@ -983,14 +1316,135 @@ function getStudentActionUrl_() {
 }
 
 function buildPortalRedirectUrl_(applicantId, secret) {
-  var actionMeta = getStudentActionUrl_();
-  var baseUrl = clean_(actionMeta.url || "");
+  var baseUrl = canonicalStudentExecBase_();
+  var opts = (arguments.length > 2 && arguments[2]) ? arguments[2] : {};
   var sep = baseUrl.indexOf("?") === -1 ? "?" : "&";
-  return baseUrl
-    + sep + "view=portal"
-    + "&id=" + encodeURIComponent(clean_(applicantId))
-    + "&s=" + encodeURIComponent(clean_(secret))
-    + "&t=" + Date.now();
+  var url = baseUrl
+    + sep + "view=portal";
+  var idNorm = clean_(applicantId);
+  var secretNorm = clean_(secret);
+  if (idNorm) url += "&id=" + encodeURIComponent(idNorm);
+  if (secretNorm) url += "&s=" + encodeURIComponent(secretNorm);
+  if (opts.saved === true) url += "&saved=1";
+  var hasError = opts.error === true || opts.err === true;
+  if (hasError) url += "&error=1";
+  if (opts.dbg) url += "&dbg=" + encodeURIComponent(clean_(opts.dbg));
+  return url;
+}
+
+function returnPortalRedirectOutput_(url) {
+  var opts = (arguments.length > 1 && arguments[1]) ? arguments[1] : {};
+  var u = canonicalizePortalRedirectUrl_(url);
+  if (!u) return htmlOutput_(renderErrorHtml_("Missing redirect URL"));
+  var showDebugBlock = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && opts.debug === true;
+  var debugBlock = showDebugBlock
+    ? '<div style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:12px auto;padding:8px;border:1px dashed #999;color:#000;font-size:12px;">'
+      + "<div><b>DEBUG_PORTAL_POST</b></div>"
+      + "<div>reqId: " + esc_(clean_(opts.reqId || "")) + "</div>"
+      + "<div>received id: " + esc_(clean_(opts.applicantId || "")) + "</div>"
+      + "<div>received s(redacted): " + esc_(redactToken_(opts.secret || "")) + "</div>"
+      + "<div>result.ok: " + (opts.result && opts.result.ok === true ? "true" : "false") + "</div>"
+      + "<div>debugId: " + esc_(clean_(opts.debugId || (opts.result && opts.result.debugId) || "")) + "</div>"
+      + "<div>redirectUrl: " + esc_(clean_(opts.redirectUrl || u)) + "</div>"
+      + "<div>token validation passed: " + (opts.tokenValidationPassed === true ? "true" : "false") + "</div>"
+      + "</div>"
+    : "";
+  var html = '<!doctype html><html><head>'
+    + '<meta charset="utf-8" />'
+    + '<base target="_top" />'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1" />'
+    + '<meta http-equiv="refresh" content="0;url=' + esc_(u) + '" />'
+    + '<title>Redirecting</title>'
+    + '</head><body>'
+    + debugBlock
+    + '<div style="font-family:Arial,Helvetica,sans-serif;max-width:720px;margin:24px auto;padding:0 16px;">'
+    + '<h3>Redirecting...</h3>'
+    + '<p>If you are not redirected, click <a href="' + esc_(u) + '" target="_top">Continue</a>.</p>'
+    + "</div>"
+    + "<script>"
+    + "(function(){"
+    + "var t=" + JSON.stringify(u) + ";"
+    + "try{ if(window.top && window.top.location){ window.top.location.replace(t); return; } }catch(e){}"
+    + "window.location.replace(t);"
+    + "})();"
+    + "</script>"
+    + '<noscript><p><a href="' + esc_(u) + '" target="_top">Continue</a></p></noscript>'
+    + "</body></html>";
+  return HtmlService.createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function canonicalizePortalRedirectUrl_(url) {
+  var raw = clean_(url);
+  if (!raw) return "";
+  var canonicalBase = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  var qIndex = raw.indexOf("?");
+  var query = qIndex >= 0 ? raw.slice(qIndex) : "";
+  if (/^https:\/\/script\.google\.com\/a\//i.test(raw)) {
+    if (canonicalBase) return canonicalBase + query;
+    return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\//i, "https://script.google.com/");
+  }
+  if (canonicalBase && /^https:\/\/script\.google\.com\//i.test(raw)) {
+    return canonicalBase + query;
+  }
+  return raw;
+}
+
+function canonicalStudentExecBase_() {
+  var raw = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  if (!raw) raw = clean_(CONFIG.WEBAPP_URL_STUDENT || getStudentActionUrl_().url || "");
+  if (!raw) return "";
+  if (/^https:\/\/script\.google\.com\/a\//i.test(raw)) {
+    return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\//i, "https://script.google.com/");
+  }
+  return raw;
+}
+
+function parsePortalPayloadField_(raw) {
+  var txt = clean_(raw);
+  if (!txt) return {};
+  try {
+    var parsed = JSON.parse(txt);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("payload must be object");
+    }
+    return parsed;
+  } catch (e) {
+    throw new Error("Invalid payload JSON");
+  }
+}
+
+function mergePortalPayload_(basePayload, payloadObj) {
+  var out = {};
+  var src = basePayload || {};
+  Object.keys(src).forEach(function (k) { out[k] = src[k]; });
+  Object.keys(payloadObj || {}).forEach(function (k2) { out[k2] = payloadObj[k2]; });
+  return out;
+}
+
+function outputToJsonObject_(res) {
+  if (!res) return null;
+  if (typeof res.getContent === "function") {
+    var txt = clean_(res.getContent());
+    if (!txt) return null;
+    try {
+      return JSON.parse(txt);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (typeof res === "object") return res;
+  return null;
+}
+
+function logPortalPostEvent_(label, payload) {
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+    var sh = mustGetSheet_(ss, CONFIG.LOG_SHEET);
+    log_(sh, label, JSON.stringify(payload || {}));
+  } catch (e) {
+    // Diagnostic logging must never break request flow.
+  }
 }
 
 function mustGetDataSheet_(ss) {
