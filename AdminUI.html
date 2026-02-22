@@ -251,9 +251,13 @@
 
       <div class="kv">
         <div class="box">
-          <div class="k">Overall Doc Verification</div>
+          <div class="k">Doc Verification (Computed)</div>
           <div class="v" id="mOverall">—</div>
           <div id="mOverallOverride" class="overrideTag hidden" title="Stored overall differs from computed; super admin override in effect.">Overridden</div>
+        </div>
+        <div class="box">
+          <div class="k">Overall (Computed)</div>
+          <div class="v" id="mOverallComputed">-</div>
         </div>
         <div class="box">
           <div class="k">Payment Status</div>
@@ -509,6 +513,7 @@
         const el = document.getElementById(id);
         if (el) el.disabled = !enabled;
       });
+      applyPortalLockControls_(currentDetail);
       updateDirtyGuardUi_();
     }
 
@@ -519,6 +524,22 @@
         return;
       }
       setActionButtonsEnabled(!!currentRowNumber);
+      applyPortalLockControls_(currentDetail);
+    }
+
+    function applyPortalLockControls_(detail){
+      const btnUnlock = document.getElementById("btnUnlockPortal");
+      const btnLock = document.getElementById("btnLockPortal");
+      const d = detail || currentDetail || null;
+      if (!btnUnlock || !btnLock || !d) return;
+      const paymentBadge = d.Payment_Badge || (d.Payment_Verified_Bool ? "Verified" : "Pending");
+      const paymentLocked = paymentBadge === "Verified";
+      if (paymentLocked) {
+        btnUnlock.disabled = true;
+        btnUnlock.title = "Locked after payment verification.";
+      } else {
+        btnUnlock.title = "";
+      }
     }
 
     function normalizeDetailResponse_(res){
@@ -842,6 +863,8 @@
       var docComputed = d.Doc_Verification_Status_Computed || d.Doc_Verification_Status || "Pending";
       var paymentBadge = d.Payment_Badge || (d.Payment_Verified_Bool ? "Verified" : "Pending");
       document.getElementById("mOverall").textContent = String(docComputed || "Pending");
+      var overallComputedEl = document.getElementById("mOverallComputed");
+      if (overallComputedEl) overallComputedEl.textContent = String(overallComputed || "Pending");
       document.getElementById("mPayment").textContent = paymentBadge === "Verified"
         ? "Payment Verified"
         : (paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending");
@@ -853,7 +876,8 @@
           ? ("Stored overall differs from computed; super admin override in effect. Stored: " + String(d.Overall_OverrideValue || d.Overall_Status_Stored || ""))
           : "Stored overall differs from computed; super admin override in effect.";
       }
-      document.getElementById("mPortal").textContent = d.Portal_Access_Status || "Open";
+      var portalLockState = d.Portal_Locked_Computed ? "Form Locked" : "Form Open";
+      document.getElementById("mPortal").textContent = (d.Portal_Access_Status || "Open") + " | " + portalLockState;
       if (d.PortalTokenAgeDays === null || d.PortalTokenAgeDays === undefined || d.PortalTokenAgeDays === "") {
         document.getElementById("mTokenAge").textContent = "Not issued";
       } else {
@@ -868,6 +892,7 @@
       document.getElementById("overallStatus").value = d.Overall_Status_Stored || overallComputed || "Pending";
       document.getElementById("overallReason").value = "";
       document.getElementById("portalLinkBox").textContent = "";
+      applyPortalLockControls_(d);
 
       const docs = Array.isArray(d._docs) ? d._docs : [];
       document.getElementById("docs").innerHTML = docs.map((x, i) => `
@@ -996,8 +1021,11 @@
       run_("admin_setOverallStatus", { rowNumber: currentRowNumber, action, reason }, function(res){
           var finalStatus = (res && res.overallStatus) ? res.overallStatus : action;
           var docComputed = (res && res.docVerificationStatusComputed) ? res.docVerificationStatusComputed : "";
+          var overallComputed = (res && (res.overallStatusComputed || res.computed)) ? (res.overallStatusComputed || res.computed) : "";
           setMsg("mMsg","Saved overall status: " + finalStatus + ".");
           document.getElementById("mOverall").textContent = docComputed || document.getElementById("mOverall").textContent || "Pending";
+          var overallComputedEl = document.getElementById("mOverallComputed");
+          if (overallComputedEl && overallComputed) overallComputedEl.textContent = overallComputed;
           if (res && res.paymentBadge) {
             document.getElementById("mPayment").textContent = res.paymentBadge === "Verified"
               ? "Payment Verified"
@@ -1020,16 +1048,18 @@
 
     function setPortal(status){
       if (!currentRowNumber) return;
-      setMsg("mMsg","Updating portal access...");
-      google.script.run
-        .withSuccessHandler(res => {
+      run_("admin_setPortalAccess", { rowNumber: currentRowNumber, status }, function(res){
           setMsg("mMsg","Portal set to: " + status + ".");
-          document.getElementById("mPortal").textContent = status;
+          var freshDetail = res && res.detail;
+          if (freshDetail) {
+            currentDetail = freshDetail;
+            openModal(currentDetail);
+          } else {
+            refreshDetails();
+          }
           applyAuditNow();
           search();
-        })
-        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
-        .admin_setPortalAccess({ rowNumber: currentRowNumber, status });
+      }, { message: "Updating portal access..." });
     }
 
     function copyPortalLink(){
@@ -1071,10 +1101,24 @@
         return;
       }
       run_("admin_resetPortalSecret", { rowNumber: currentRowNumber }, function(res){
-          const link = (res && res.link) ? res.link : "";
+          const link = (res && (res.portalUrl || res.newPortalUrl || res.link)) ? (res.portalUrl || res.newPortalUrl || res.link) : "";
           document.getElementById("portalLinkBox").textContent = link || "";
-          if (res && res.warning) setMsg("mMsg", res.warning);
-          else setMsg("mMsg","Portal link reset.");
+          function afterCopy_(copied){
+            if (res && res.secretIssuedAt) {
+              var tokenAgeEl = document.getElementById("mTokenAge");
+              if (tokenAgeEl) tokenAgeEl.textContent = "0 day(s)";
+            }
+            if (res && res.warning) {
+              setMsg("mMsg", res.warning);
+            } else {
+              setMsg("mMsg", copied ? "Portal link reset. New link copied." : "Portal link reset. New link generated.");
+            }
+          }
+          if (link && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(link).then(function(){ afterCopy_(true); }).catch(function(){ afterCopy_(false); });
+          } else {
+            afterCopy_(false);
+          }
       }, { message: "Resetting portal link...", linkBusy: true });
     }
 
@@ -1147,60 +1191,54 @@
         setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
         return;
       }
-      var scope = document.getElementById("exportScope").value || "auto";
+      var scopeValue = document.getElementById("exportScope").value || "auto";
       var startRow = Math.max(2, getBackfillNumber_("bfStartRow", 2));
       var batchSize = Math.max(1, getBackfillNumber_("bfBatchSize", 200));
+      var scope = (scopeValue === "search")
+        ? "search_only"
+        : (scopeValue === "all" ? "all" : "search_first");
       var payload = {
         scope: scope,
         startRow: startRow,
-        batchSize: batchSize
+        batchSize: batchSize,
+        currentSearchRowNumbers: lastSearchResults.slice()
       };
-      if (scope === "search") {
+      if (scope === "search_only") {
         if (!lastSearchResults.length) {
           setMsg("mMsg", "No current search results to export.");
           return;
         }
-        payload.rowNumbers = lastSearchResults.slice();
-      } else if (scope === "auto" && lastSearchResults.length) {
-        payload.rowNumbers = lastSearchResults.slice(0, batchSize);
-        payload.maxRows = batchSize;
       }
 
-      setMsg("mMsg", "Preparing CSV export...");
-      google.script.run
-        .withSuccessHandler(function(res){
-          handleApiResult_({
-            res: res,
-            targetId: "mMsg",
-            fallbackError: "Could not export portal links",
-            onOk: function(detail){
-              var data = detail || {};
-              var csv = String(data.csv || "");
-              var filename = String(data.filename || "portal-links.csv");
-              if (!csv) {
-                setMsg("mMsg", "Error: Empty CSV content.");
-                return;
-              }
-              var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-              var url = URL.createObjectURL(blob);
-              var a = document.createElement("a");
-              a.href = url;
-              a.download = filename;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-              setMsg("mMsg",
-                "Export complete: exported=" + (data.exportedCount || 0)
-                + ", generated=" + (data.generatedCount || 0)
-                + ", rekeyed=" + (data.rekeyedCount || 0));
+      run_("admin_exportPortalLinksCsv", payload, function(res){
+        handleApiResult_({
+          res: res,
+          targetId: "mMsg",
+          fallbackError: "Could not export portal links",
+          onOk: function(detail){
+            var data = detail || {};
+            var csv = String(data.csv || "");
+            var filename = String(data.filename || "portal-links.csv");
+            if (!csv) {
+              setMsg("mMsg", "Error: Empty CSV content.");
+              return;
             }
-          });
-        })
-        .withFailureHandler(function(err){
-          setMsg("mMsg","Error: " + (err && err.message ? err.message : err) + " | Debug ID: (no debug id)");
-        })
-        .admin_exportPortalLinksCsv(payload);
+            var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            setMsg("mMsg",
+              "Export complete: exported=" + (data.exportedCount || 0)
+              + ", generated=" + (data.generatedCount || 0)
+              + ", rekeyed=" + (data.rekeyedCount || 0));
+          }
+        });
+      }, { message: "Preparing CSV export..." });
     }
 
     setRoleUi();
@@ -1222,3 +1260,4 @@
   </script>
 </body>
 </html>
+

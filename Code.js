@@ -356,7 +356,8 @@ function doGet(e) {
     return htmlOutput_(renderErrorHtml_("Access suspended"));
   }
 
-  record._PortalLocked = isPaymentVerified_(record) || String(record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked";
+  record._PortalLockReason = getPortalLockReason_(record);
+  record._PortalLocked = isPortalLocked_(record);
   safePortalLog_({
     route: "doGet:portal",
     applicantId: id,
@@ -456,7 +457,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
     return failResult("Access suspended. Please contact admissions.", "ACCESS_LOCKED");
   }
 
-  if (isPaymentVerified_(found.record)) {
+  if (isPortalLocked_(found.record)) {
     return failResult("Your record is locked because payment has been verified. No further changes are allowed.", "PAYMENT_VERIFIED_LOCK");
   }
 
@@ -608,7 +609,7 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
     var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
     if (!found) throw new Error("Record not found.");
     if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") throw new Error("Access suspended.");
-    if (isPaymentVerified_(found.record)) throw new Error("Record locked (payment verified).");
+    if (isPortalLocked_(found.record)) throw new Error("Record locked.");
 
     var docMeta = docMetaByField_(fieldName);
     var isMultiple = !!(docMeta && docMeta.multiple === true);
@@ -745,7 +746,7 @@ function portal_deleteUploadedFile(payload) {
     url: targetUrl
   });
   if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return { ok: false, debugId: dbgId, error: "Locked", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
-  if (isPaymentVerified_(found.record)) return { ok: false, debugId: dbgId, error: "Locked", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
+  if (isPortalLocked_(found.record)) return { ok: false, debugId: dbgId, error: "Locked", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
 
   try {
     var docMeta = docMetaByField_(fieldName);
@@ -885,8 +886,12 @@ function renderPortalHtml_(opts) {
     ? '<div style="background:#ffecec;border:1px solid #ffb3b3;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Action required:</b> ' + esc_(error) + "</div>"
     : "";
 
+  var lockReason = clean_(record._PortalLockReason || "");
+  var lockedMsg = (lockReason === "portal_access_locked")
+    ? "Portal access is locked. Please contact admissions."
+    : "Payment has been verified. No further changes are allowed.";
   var lockedBlock = locked
-    ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Locked:</b> Payment has been verified. No further changes are allowed.</div>'
+    ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Locked:</b> ' + esc_(lockedMsg) + "</div>"
     : "";
   var actionWarnBlock = actionWarn
     ? '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Warning:</b> ' + esc_(actionWarn) + "</div>"
@@ -1785,6 +1790,19 @@ function uniqCsv_(arr) {
 }
 
 /******************** LOCK RULE ********************/
+function getPortalLockReason_(record) {
+  var row = record || {};
+  if (derivePaymentBadge_(row) === "Verified") return "payment_verified";
+  if (clean_(row.Payment_Verified).toLowerCase() === "yes") return "payment_verified_compat";
+  if (String(row[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return "portal_access_locked";
+  if (row._PortalHardLocked === true) return "hard_locked";
+  return "";
+}
+
+function isPortalLocked_(record) {
+  return !!getPortalLockReason_(record);
+}
+
 function isPaymentVerified_(record) {
   return derivePaymentVerified_(record) === true;
 }

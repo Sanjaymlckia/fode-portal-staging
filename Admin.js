@@ -235,9 +235,14 @@ function admin_getApplicantDetail(payload) {
     detailObj.Payment_Badge = paymentBadge;
     detailObj.Doc_Verification_Status_Computed = docStageComputed;
     detailObj.Overall_Status_Computed = overallComputed;
+    detailObj.Portal_Locked_Computed = isPortalLocked_(detailObj);
+    detailObj.Portal_Lock_Reason = getPortalLockReason_(detailObj);
     detailObj.Overall_Status_Stored = overallStored;
     detailObj.Overall_IsOverridden = isOverridden;
     detailObj.Overall_OverrideValue = isOverridden ? overallStored : "";
+    detailObj.overallComputed = overallComputed;
+    detailObj.overallStored = overallStored;
+    detailObj.isOverridden = isOverridden;
     detailObj.Doc_Verification_Status = docStageComputed;
     detailObj.Portal_Access_Status = String(detailObj.Portal_Access_Status || "");
     detailObj.Doc_Verification_Status = String(detailObj.Doc_Verification_Status || "Pending");
@@ -346,14 +351,21 @@ function admin_resetPortalLink(payload) {
   // Generate new secret and store hash + issue time
   var secret = newPortalSecret_();
   var secretHash = hashPortalSecret_(secret);
+  var issuedAt = new Date();
   var patch = {};
   patch["PortalTokenHash"] = secretHash;
-  patch["PortalTokenIssuedAt"] = new Date();
+  patch["PortalTokenIssuedAt"] = issuedAt;
   patch["Doc_Last_Verified_At"] = new Date();
   patch["Doc_Last_Verified_By"] = adminEmail || "admin";
   applyPatch_(sh, rowNumber, patch);
   syncPortalSecretsActive_(applicantId, emailForSecret, fullName, secret, secretHash);
 
+  var refreshedRow = getRowObject_(sh, rowNumber);
+  var issuedAtRef = refreshedRow.PortalTokenIssuedAt ? new Date(refreshedRow.PortalTokenIssuedAt) : issuedAt;
+  var tokenAgeDays = 0;
+  if (issuedAtRef && !isNaN(issuedAtRef.getTime())) {
+    tokenAgeDays = Math.floor((new Date().getTime() - issuedAtRef.getTime()) / (24 * 60 * 60 * 1000));
+  }
   var link = buildPortalLink_(applicantId, secret);
   log_(openLogSheet_(), "ADMIN_PORTAL_LINK_RESET",
     "row=" + rowNumber + " applicantId=" + applicantId + " by=" + (adminEmail || "admin"));
@@ -361,8 +373,13 @@ function admin_resetPortalLink(payload) {
   return {
     ok: true,
     link: link,
+    portalUrl: link,
+    newPortalUrl: link,
+    newSecret: secret,
     applicantId: applicantId,
-    issuedAt: new Date().toISOString(),
+    issuedAt: issuedAtRef && !isNaN(issuedAtRef.getTime()) ? issuedAtRef.toISOString() : issuedAt.toISOString(),
+    secretIssuedAt: issuedAtRef && !isNaN(issuedAtRef.getTime()) ? issuedAtRef.toISOString() : issuedAt.toISOString(),
+    tokenAgeDays: tokenAgeDays,
     warning: ""
   };
 
@@ -508,11 +525,14 @@ function admin_setOverallStatus(payload) {
     ok: true,
     overallStatus: finalStatus,
     overallStatusComputed: computed,
+    overallComputed: computed,
+    overallStored: finalStatus,
     docVerificationStatusComputed: docStage,
     paymentBadge: paymentBadge,
     computed: computed,
     overridden: !!(canOverride && requested !== computed),
     overallIsOverridden: !!(canOverride && requested !== computed),
+    isOverridden: !!(canOverride && requested !== computed),
     overallOverrideValue: !!(canOverride && requested !== computed) ? finalStatus : "",
     paymentVerified: paymentVerified ? "Yes" : ""
   };
@@ -532,13 +552,26 @@ function admin_setPortalAccess(payload) {
   var sh = openDataSheet_();
   var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
   requireHeaders_(idx, ["Portal_Access_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By"]);
+  var rowObj = getRowObject_(sh, rowNumber);
+  var paymentBadge = derivePaymentBadge_(rowObj);
+  if (status === "Open" && paymentBadge === "Verified") {
+    throw new Error("Cannot unlock after payment verification.");
+  }
 
   setCell_(sh, rowNumber, idx, "Portal_Access_Status", status);
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
 
   log_(openLogSheet_(), "ADMIN_PORTAL_ACCESS", "row=" + rowNumber + " status=" + status + " by=" + (adminEmail || "admin"));
-  return { ok: true };
+  var refreshed = getRowObject_(sh, rowNumber);
+  var applicantId = clean_(refreshed.ApplicantID || "");
+  var detailRes = applicantId ? admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId }) : null;
+  return {
+    ok: true,
+    paymentBadge: derivePaymentBadge_(refreshed),
+    portalAccessStatus: clean_(refreshed.Portal_Access_Status || status),
+    detail: (detailRes && detailRes.ok === true) ? detailRes.detail : null
+  };
 }
 
 function admin_verifyPayment(payload) {
@@ -751,11 +784,33 @@ function buildCsvLine_(cells) {
 
 function resolveExportRowNumbers_(payload, lastRow) {
   payload = payload || {};
-  var requested = Array.isArray(payload.rowNumbers) ? payload.rowNumbers : [];
+  var scope = clean_(payload.scope || "");
+  if (scope === "auto") scope = "search_first";
+  if (scope === "search") scope = "search_only";
+  var requested = Array.isArray(payload.currentSearchRowNumbers)
+    ? payload.currentSearchRowNumbers
+    : (Array.isArray(payload.rowNumbers) ? payload.rowNumbers : []);
   var out = [];
-  if (requested.length) {
+  var emptySearchAllowed = scope === "search_only";
+  var startRow = Math.max(2, Number(payload.startRow || 2));
+  var batchSize = Math.max(1, Number(payload.batchSize || payload.maxRows || payload.limit || 200));
+  var maxRows = Math.max(0, Number(payload.maxRows || payload.batchSize || payload.limit || 0));
+
+  if (scope === "search_only" || scope === "search_first") {
+    var seenSearch = {};
+    for (var s = 0; s < requested.length; s++) {
+      var ns = Number(requested[s] || 0);
+      if (!ns || ns < 2 || ns > lastRow || seenSearch[ns]) continue;
+      seenSearch[ns] = true;
+      out.push(ns);
+      if (scope === "search_first" && out.length >= batchSize) break;
+    }
+    if (out.length || emptySearchAllowed) return out;
+    // search_first fallback when no current search results
+  }
+
+  if (requested.length && scope !== "all") {
     var seen = {};
-    var maxRows = Math.max(0, Number(payload.maxRows || payload.batchSize || payload.limit || 0));
     for (var i = 0; i < requested.length; i++) {
       var n = Number(requested[i] || 0);
       if (!n || n < 2 || n > lastRow || seen[n]) continue;
@@ -765,8 +820,6 @@ function resolveExportRowNumbers_(payload, lastRow) {
     }
     return out;
   }
-  var startRow = Math.max(2, Number(payload.startRow || 2));
-  var batchSize = Math.max(1, Number(payload.batchSize || payload.limit || Math.max(0, lastRow - 1) || 1));
   var endRow = Math.min(lastRow, startRow + batchSize - 1);
   for (var row = startRow; row <= endRow; row++) out.push(row);
   return out;
