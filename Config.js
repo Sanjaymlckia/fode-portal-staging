@@ -7,7 +7,7 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-22-PNG-STAGING-r8",
+  VERSION: "2026-02-22-PNG-STAGING-r87";
   CHANGELOG_LAST: "r22: CIS-30 add build stamp + no-cache for portal HTML (CIS-29 deployed @66)",
   BUILD_LABEL: "CIS-29 form POST + server redirect for portal_update (clasp version 66, student deploy @66)",
 
