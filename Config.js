@@ -7,7 +7,7 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-21-PNG-STAGING-r22",
+  VERSION: "2026-02-22-PNG-STAGING-r8",
   CHANGELOG_LAST: "r22: CIS-30 add build stamp + no-cache for portal HTML (CIS-29 deployed @66)",
   BUILD_LABEL: "CIS-29 form POST + server redirect for portal_update (clasp version 66, student deploy @66)",
 
@@ -40,6 +40,10 @@ var CONFIG = {
   WEBAPP_URL_STUDENT_EXEC: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
   SCRIPT_ID: "1NwyKK4NV27SD7WaXlpgn_1cCMJ9ezX0erLjvMBB6DDGq9VDt12y5qtcK",
   DEPLOYMENT_ID_STUDENT: "AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN",
+  ZOHO_API_BASE: "https://www.zohoapis.com/crm/v2",
+  ZOHO_OAUTH_BASE: "https://accounts.zoho.com/oauth/v2",
+  DEAL_STAGE: "Qualification",
+  DEAL_DUPLICATE_FIELD: "FormID",
 
   // Deployment model:
   // - Admin web app: executeAs=USER_ACCESSING, access=DOMAIN
@@ -60,6 +64,12 @@ var CONFIG = {
     "operations@minervacenters.com": "VERIFIER",
     "mlccorporate@minervacenters.com": "VERIFIER"
   },
+  SUPER_ADMIN_EMAILS: [
+    "sanjay@minervacenters.com"
+  ],
+  ELEVATED_OVERRIDE_EMAILS: [
+    // Super Admin may add delegate emails here
+  ],
 
   // ApplicantID
   APPLICANT_ID_HEADER: "ApplicantID",

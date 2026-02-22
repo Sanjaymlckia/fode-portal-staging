@@ -2,6 +2,9 @@
 <html>
 <head>
   <base target="_top">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <style>
     :root{
       --bg: <?= BRAND.bg ?>;
@@ -31,6 +34,18 @@
     }
     .brand h1{ margin:0; font-size:18px; }
     .sub{ font-size:12px; color:var(--muted); margin-top:4px; }
+    .verBadge{
+      display:inline-block;
+      margin-left:8px;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:800;
+      color:#e2e8f0;
+      background: rgba(14,165,164,.20);
+      border:1px solid rgba(14,165,164,.35);
+      vertical-align:middle;
+    }
     .card{
       background: rgba(17,26,46,.85);
       border: 1px solid rgba(148,163,184,.18);
@@ -111,6 +126,51 @@
       align-items:start;
     }
     .docTitle{ font-weight:800; font-size:13px; }
+    .docWarn{ margin-top:6px; font-size:12px; opacity:.85; color:var(--warn); }
+    .overrideTag{
+      display:inline-block;
+      margin-top:6px;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:700;
+      color:#fde68a;
+      background:rgba(120,53,15,.35);
+      border:1px solid rgba(217,119,6,.45);
+    }
+    .dirtyWarn{
+      margin-top:6px;
+      font-size:12px;
+      color:#fbbf24;
+      font-weight:700;
+    }
+    .hidden{ display:none !important; }
+    .docPreviewBack{
+      position:fixed; inset:0; z-index:9999;
+      background: rgba(0,0,0,.6);
+      display:flex; align-items:center; justify-content:center;
+      padding:16px;
+    }
+    .docPreviewPanel{
+      width:min(90vw, 1200px);
+      height:min(90vh, 900px);
+      border-radius:16px;
+      overflow:hidden;
+      border: 1px solid rgba(148,163,184,.18);
+      background: rgba(17,26,46,.98);
+      display:flex; flex-direction:column;
+    }
+    .docPreviewHead{
+      display:flex; align-items:center; justify-content:space-between;
+      gap:10px; padding:10px 12px;
+      border-bottom:1px solid rgba(148,163,184,.18);
+    }
+    .docPreviewFrame{
+      flex:1 1 auto;
+      width:100%;
+      border:0;
+      background:#000;
+    }
     @media (max-width: 900px){
       .kv{ grid-template-columns:1fr; }
       .doc{ grid-template-columns:1fr; }
@@ -125,7 +185,10 @@
         <h1>FODE Admin — Document Verification</h1>
         <div class="sub">Signed in as: <?= USER_EMAIL ?></div>
       </div>
-      <div class="sub">WebApp: <?= WEBAPP_URL ?></div>
+      <div class="sub" title="Script ID: <?= BUILD_SCRIPT_ID ?>">
+        <div>WebApp: <?= WEBAPP_URL ?> <span id="versionBadge" class="verBadge"></span></div>
+        <div>Build: <?= BUILD_VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
+      </div>
     </div>
     <div id="studentUrlWarn" class="card" style="display:none;border-color: rgba(245,158,11,.45);">
       <div style="color:#f59e0b;font-weight:700;">Student URL warning</div>
@@ -190,9 +253,10 @@
         <div class="box">
           <div class="k">Overall Doc Verification</div>
           <div class="v" id="mOverall">—</div>
+          <div id="mOverallOverride" class="overrideTag hidden" title="Stored overall differs from computed; super admin override in effect.">Overridden</div>
         </div>
         <div class="box">
-          <div class="k">Payment Verified</div>
+          <div class="k">Payment Status</div>
           <div class="v" id="mPayment">—</div>
         </div>
         <div class="box">
@@ -208,6 +272,7 @@
       <div class="box">
         <div class="k">Audit</div>
         <div class="v" id="mAudit">—</div>
+        <div id="dirtyWarn" class="dirtyWarn hidden">⚠ Unsaved changes — click "Save Document Statuses"</div>
       </div>
 
       <div style="margin-top:12px; font-weight:900;">Documents (status + comment)</div>
@@ -218,6 +283,7 @@
           <label>Set Overall Status</label>
           <select id="overallStatus">
             <option>Pending</option>
+            <option>Docs_Verified</option>
             <option>Verified</option>
             <option>Rejected</option>
             <option>Fraudulent</option>
@@ -265,15 +331,39 @@
     </div>
   </div>
 
+  <div id="docPreviewBack" class="docPreviewBack hidden" onclick="if(event.target===this) closeDocPreview_();">
+    <div class="docPreviewPanel">
+      <div class="docPreviewHead">
+        <div id="docPreviewTitle" style="font-weight:800;font-size:14px;">Document Preview</div>
+        <button type="button" class="btn small" onclick="closeDocPreview_()">Close</button>
+      </div>
+      <iframe id="docPreviewFrame" class="docPreviewFrame" title="Document Preview" src=""></iframe>
+    </div>
+  </div>
+
   <script>
     const ADMIN_ROLE = "<?= ADMIN_ROLE ?>";
     const IS_SUPER = "<?= IS_SUPER ?>".toLowerCase() === "true";
+    const CAN_OVERRIDE = "<?= CAN_OVERRIDE ?>".toLowerCase() === "true";
     const ADMIN_EMAIL = "<?= USER_EMAIL ?>";
     const STUDENT_URL_READY = "<?= STUDENT_URL_READY ?>".toLowerCase() === "true";
     const STUDENT_URL_WARNING = "<?= STUDENT_URL_WARNING ?>";
+    const VERSION = <?!= JSON.stringify(String((CONFIG && CONFIG.VERSION) || "")) ?>;
+    const VERSION_SHORT = <?!= JSON.stringify((function(v){
+      v = String(v || "");
+      var tail = v.split("-").pop();
+      if (/^r\d+$/i.test(tail)) return tail;
+      var m = v.match(/-r(\d+)\b/i);
+      return m ? ("r" + m[1]) : "r?";
+    })((CONFIG && CONFIG.VERSION) || "")) ?>;
+    const BUILD_VERSION = "<?= BUILD_VERSION ?>";
+    const BUILD_RENDERED_AT = "<?= BUILD_RENDERED_AT ?>";
+    const BUILD_SCRIPT_ID = "<?= BUILD_SCRIPT_ID ?>";
     let currentRowNumber = null;
     let currentDetail = null;
     let isLinkBusy = false;
+    let isUiBusy = false;
+    let isDirty = false;
     let lastRequestId = 0;
     let lastSearchResults = [];
     let lastBackfillMode = "dry";
@@ -287,6 +377,44 @@
       el.textContent = txt || "";
     }
     function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
+    function extractDriveFileId_(url){
+      var raw = String(url || "").trim();
+      if (!raw) return "";
+      var m = raw.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
+      if (m && m[1]) return m[1];
+      try {
+        var parsed = new URL(raw);
+        var id = parsed.searchParams.get("id");
+        if (id && /^[a-zA-Z0-9_-]+$/.test(id)) return id;
+      } catch (e) {}
+      m = raw.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
+      if (m && m[1]) return m[1];
+      return "";
+    }
+    function drivePreviewUrl_(url){
+      var id = extractDriveFileId_(url);
+      return id ? ("https://drive.google.com/file/d/" + id + "/preview") : "";
+    }
+    function openDocPreview_(label, url){
+      var previewUrl = drivePreviewUrl_(url);
+      if (!previewUrl) {
+        alert("No preview available");
+        return;
+      }
+      var back = document.getElementById("docPreviewBack");
+      var title = document.getElementById("docPreviewTitle");
+      var frame = document.getElementById("docPreviewFrame");
+      if (!back || !title || !frame) return;
+      title.textContent = label ? ("Preview: " + String(label)) : "Document Preview";
+      frame.src = previewUrl;
+      back.classList.remove("hidden");
+    }
+    function closeDocPreview_(){
+      var back = document.getElementById("docPreviewBack");
+      var frame = document.getElementById("docPreviewFrame");
+      if (frame) frame.src = "";
+      if (back) back.classList.add("hidden");
+    }
     function isEnvelope_(res){ return !!res && typeof res === "object" && Object.prototype.hasOwnProperty.call(res, "ok"); }
     function getErrorText_(res, fallback){
       if (res && typeof res.error === "string" && res.error.trim()) return res.error.trim();
@@ -338,18 +466,33 @@
     }
     function setModalMsg_(txt){ setMsg("mMsg", txt || ""); }
     function setMsg_(txt){ setMsg("msg", txt || ""); }
+    function updateDirtyGuardUi_(){
+      const copyBtn = document.getElementById("btnCopyLink");
+      const resetBtn = document.getElementById("btnResetLink");
+      const refreshBtn = document.getElementById("btnRefreshDetails");
+      if (copyBtn) copyBtn.disabled = copyBtn.disabled || isDirty || isLinkBusy;
+      if (resetBtn) resetBtn.disabled = resetBtn.disabled || isDirty || isLinkBusy;
+      if (refreshBtn) refreshBtn.disabled = refreshBtn.disabled || isDirty;
+      var warn = document.getElementById("dirtyWarn");
+      if (warn) warn.classList.toggle("hidden", !isDirty);
+    }
+    function setDirty_(flag){
+      isDirty = !!flag;
+      updateDirtyGuardUi_();
+    }
     function setLinkBusy(flag){
       isLinkBusy = !!flag;
       const copyBtn = document.getElementById("btnCopyLink");
       const resetBtn = document.getElementById("btnResetLink");
       if (copyBtn) {
-        copyBtn.disabled = isLinkBusy;
+        copyBtn.disabled = isLinkBusy || isDirty;
         copyBtn.textContent = isLinkBusy ? "Working..." : "Copy Portal Link";
       }
       if (resetBtn) {
-        resetBtn.disabled = isLinkBusy;
+        resetBtn.disabled = isLinkBusy || isDirty;
         resetBtn.textContent = isLinkBusy ? "Resetting..." : "Reset Link";
       }
+      updateDirtyGuardUi_();
     }
 
     function setActionButtonsEnabled(enabled){
@@ -366,6 +509,58 @@
         const el = document.getElementById(id);
         if (el) el.disabled = !enabled;
       });
+      updateDirtyGuardUi_();
+    }
+
+    function setUiBusy_(flag){
+      isUiBusy = !!flag;
+      if (isUiBusy) {
+        setActionButtonsEnabled(false);
+        return;
+      }
+      setActionButtonsEnabled(!!currentRowNumber);
+    }
+
+    function normalizeDetailResponse_(res){
+      var raw = res;
+      if (typeof raw === "string") {
+        try { raw = JSON.parse(raw); } catch (e) { raw = null; }
+      }
+      if (!raw || raw.ok !== true || !raw.detail || typeof raw.detail !== "object") return null;
+      return raw.detail;
+    }
+
+    function run_(fnName, args, onOk, opts){
+      opts = opts || {};
+      var reqId = ++lastRequestId;
+      if (opts.linkBusy) setLinkBusy(true);
+      setUiBusy_(true);
+      if (opts.message) setMsg("mMsg", opts.message);
+      var runner = google.script.run
+        .withSuccessHandler(function(res){
+          if (reqId !== lastRequestId) return;
+          try {
+            if (typeof onOk === "function") onOk(res);
+          } catch (e) {
+            setMsg("mMsg", "Error: " + (e && e.message ? e.message : e));
+          } finally {
+            if (opts.linkBusy) setLinkBusy(false);
+            setUiBusy_(false);
+          }
+        })
+        .withFailureHandler(function(err){
+          if (reqId !== lastRequestId) return;
+          setMsg("mMsg", "Error: " + (err && err.message ? err.message : err));
+          if (opts.linkBusy) setLinkBusy(false);
+          setUiBusy_(false);
+        });
+      if (!runner || typeof runner[fnName] !== "function") {
+        if (opts.linkBusy) setLinkBusy(false);
+        setUiBusy_(false);
+        setMsg("mMsg", "Error: Unknown action " + String(fnName || ""));
+        return;
+      }
+      runner[fnName](args || {});
     }
 
     function getBackfillNumber_(id, fallback){
@@ -607,10 +802,19 @@
       const btnReset = document.getElementById("btnResetLink");
       const btnLock = document.getElementById("btnLockPortal");
       const btnUnlock = document.getElementById("btnUnlockPortal");
+      const overallStatusEl = document.getElementById("overallStatus");
       if (superTools) superTools.style.display = showSuper ? "flex" : "none";
       if (btnReset) btnReset.style.display = showSuper ? "inline-block" : "none";
       if (btnLock) btnLock.style.display = showSuper ? "inline-block" : "none";
       if (btnUnlock) btnUnlock.style.display = showSuper ? "inline-block" : "none";
+      if (overallStatusEl) {
+        overallStatusEl.disabled = !CAN_OVERRIDE;
+        if (!CAN_OVERRIDE) {
+          overallStatusEl.title = "Computed automatically based on document and payment status";
+        } else {
+          overallStatusEl.title = "";
+        }
+      }
       const warn = document.getElementById("studentUrlWarn");
       const warnText = document.getElementById("studentUrlWarnText");
       if (warn && warnText) {
@@ -626,6 +830,7 @@
 
     function openModal(d){
       setRoleUi();
+      setDirty_(false);
       setLinkBusy(false);
       setActionButtonsEnabled(!!currentRowNumber);
       setMsg("mMsg","");
@@ -633,8 +838,21 @@
       document.getElementById("mTitle").textContent = "Applicant Review — " + (d.ApplicantID || "Unknown");
       document.getElementById("mSub").textContent = "Name: " + ((d.First_Name||"") + " " + (d.Last_Name||"")).trim();
 
-      document.getElementById("mOverall").textContent = d.Doc_Verification_Status || "Pending";
-      document.getElementById("mPayment").textContent = d.Payment_Verified || "";
+      var overallComputed = d.Overall_Status_Computed || d.Doc_Verification_Status_Computed || d.Doc_Verification_Status || "Pending";
+      var docComputed = d.Doc_Verification_Status_Computed || d.Doc_Verification_Status || "Pending";
+      var paymentBadge = d.Payment_Badge || (d.Payment_Verified_Bool ? "Verified" : "Pending");
+      document.getElementById("mOverall").textContent = String(docComputed || "Pending");
+      document.getElementById("mPayment").textContent = paymentBadge === "Verified"
+        ? "Payment Verified"
+        : (paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending");
+      var overrideTag = document.getElementById("mOverallOverride");
+      if (overrideTag) {
+        var overridden = d.Overall_IsOverridden === true;
+        overrideTag.classList.toggle("hidden", !overridden);
+        overrideTag.title = overridden
+          ? ("Stored overall differs from computed; super admin override in effect. Stored: " + String(d.Overall_OverrideValue || d.Overall_Status_Stored || ""))
+          : "Stored overall differs from computed; super admin override in effect.";
+      }
       document.getElementById("mPortal").textContent = d.Portal_Access_Status || "Open";
       if (d.PortalTokenAgeDays === null || d.PortalTokenAgeDays === undefined || d.PortalTokenAgeDays === "") {
         document.getElementById("mTokenAge").textContent = "Not issued";
@@ -647,7 +865,7 @@
       document.getElementById("mAudit").textContent = "Last: " + (d.Doc_Last_Verified_At ? String(d.Doc_Last_Verified_At) : "—")
         + " | By: " + (d.Doc_Last_Verified_By || "—");
 
-      document.getElementById("overallStatus").value = d.Doc_Verification_Status || "Pending";
+      document.getElementById("overallStatus").value = d.Overall_Status_Stored || overallComputed || "Pending";
       document.getElementById("overallReason").value = "";
       document.getElementById("portalLinkBox").textContent = "";
 
@@ -657,14 +875,22 @@
           <div>
             <div class="docTitle">${esc(x.label)}</div>
             <div class="muted" style="font-size:12px; margin-top:4px;">
-              ${x.hasFile ? `<a href="${esc(x.url)}" target="_blank">View uploaded file</a>` : `Not uploaded`}
+              ${x.hasFile
+                ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">Open</a>
+                   <button type="button" class="btn small docPreviewBtn" data-label="${esc(x.label)}" data-url="${esc(x.url)}">Preview</button>`
+                : `Not uploaded`}
             </div>
+            ${!x.hasFile ? `<div class="docWarn">Cannot verify: no file uploaded.</div>` : ``}
           </div>
           <div>
             <label>Status</label>
-            <select class="docStatus">
-              ${["Pending","Verified","Rejected","Fraudulent"].map(s => `<option ${s===x.status?"selected":""}>${s}</option>`).join("")}
+            <select class="docStatus" data-has-file="${x.hasFile ? "1" : "0"}">
+              ${["Pending","Verified","Rejected","Fraudulent"].map(s => {
+                const isDisabled = (s === "Verified" && !x.hasFile) ? "disabled" : "";
+                return `<option value="${s}" ${s===x.status?"selected":""} ${isDisabled}>${s}</option>`;
+              }).join("")}
             </select>
+            ${x.statusField === "Receipt_Status" ? '<div class="muted" style="font-size:12px;margin-top:6px;">Payment is confirmed when Receipt status is set to Verified.</div>' : ''}
           </div>
           <div>
             <label>Comment</label>
@@ -678,6 +904,35 @@
           </div>
         </div>
       `).join("");
+      const statusEls = Array.from(document.querySelectorAll(".docStatus"));
+      statusEls.forEach(function(sel){
+        sel.dataset.prev = sel.value;
+        sel.addEventListener("focus", function(){
+          this.dataset.prev = this.value;
+        });
+        sel.addEventListener("change", function(){
+          var hasFile = this.getAttribute("data-has-file") === "1";
+          if (this.value === "Verified" && !hasFile) {
+            alert("Cannot verify: no file uploaded.");
+            this.value = this.dataset.prev || "Pending";
+            return;
+          }
+          this.dataset.prev = this.value;
+          setDirty_(true);
+        });
+      });
+      const commentEls = Array.from(document.querySelectorAll(".docComment"));
+      commentEls.forEach(function(txt){
+        txt.addEventListener("input", function(){
+          setDirty_(true);
+        });
+      });
+      const previewEls = Array.from(document.querySelectorAll(".docPreviewBtn"));
+      previewEls.forEach(function(btn){
+        btn.addEventListener("click", function(){
+          openDocPreview_(this.getAttribute("data-label") || "", this.getAttribute("data-url") || "");
+        });
+      });
 
       document.getElementById("modalBack").style.display = "flex";
     }
@@ -686,6 +941,7 @@
       document.getElementById("modalBack").style.display = "none";
       currentRowNumber = null;
       currentDetail = null;
+      setDirty_(false);
       setLinkBusy(false);
       setActionButtonsEnabled(false);
       setMsg("mMsg","");
@@ -706,22 +962,28 @@
         };
       });
 
-      setMsg("mMsg","Saving document statuses...");
-      google.script.run
-        .withSuccessHandler(res => {
+      run_("admin_updateDocStatuses", { rowNumber: currentRowNumber, docs }, function(res){
           setMsg("mMsg","Saved document statuses.");
           applyAuditNow();
-          if (res && res.overallStatus) {
-            document.getElementById("mOverall").textContent = res.overallStatus;
+          setDirty_(false);
+          var freshDetail = res && (res.detail || res.freshDetail);
+          if (freshDetail) {
+            currentDetail = freshDetail;
+            openModal(currentDetail);
+          } else {
+            refreshDetails();
           }
+          if (res && res.savedSnapshot) console.log("[AdminUI] savedSnapshot", res.savedSnapshot);
           search();
-        })
-        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
-        .admin_updateDocStatuses({ rowNumber: currentRowNumber, docs });
+      }, { message: "Saving document statuses..." });
     }
 
     function saveOverall(){
       if (!currentRowNumber) return;
+      if (!CAN_OVERRIDE) {
+        setMsg("mMsg","Overall status is computed automatically based on document and payment status.");
+        return;
+      }
 
       const action = document.getElementById("overallStatus").value;
       const reason = document.getElementById("overallReason").value.trim();
@@ -731,17 +993,29 @@
         return;
       }
 
-      setMsg("mMsg","Saving overall status...");
-      google.script.run
-        .withSuccessHandler(res => {
-          setMsg("mMsg","Saved overall status: " + action + ".");
-          document.getElementById("mOverall").textContent = action;
-          if (action === "Fraudulent") document.getElementById("mPortal").textContent = "Locked";
+      run_("admin_setOverallStatus", { rowNumber: currentRowNumber, action, reason }, function(res){
+          var finalStatus = (res && res.overallStatus) ? res.overallStatus : action;
+          var docComputed = (res && res.docVerificationStatusComputed) ? res.docVerificationStatusComputed : "";
+          setMsg("mMsg","Saved overall status: " + finalStatus + ".");
+          document.getElementById("mOverall").textContent = docComputed || document.getElementById("mOverall").textContent || "Pending";
+          if (res && res.paymentBadge) {
+            document.getElementById("mPayment").textContent = res.paymentBadge === "Verified"
+              ? "Payment Verified"
+              : (res.paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending");
+          }
+          var overrideTag = document.getElementById("mOverallOverride");
+          if (overrideTag) {
+            var overridden = !!(res && (res.overallIsOverridden || res.overridden));
+            overrideTag.classList.toggle("hidden", !overridden);
+            if (overridden) {
+              overrideTag.title = "Stored overall differs from computed; super admin override in effect.";
+            }
+          }
+          if (finalStatus === "Fraudulent") document.getElementById("mPortal").textContent = "Locked";
           applyAuditNow();
           search();
-        })
-        .withFailureHandler(err => setMsg("mMsg","Error: " + (err && err.message ? err.message : err)))
-        .admin_setOverallStatus({ rowNumber: currentRowNumber, action, reason });
+          refreshDetails();
+      }, { message: "Saving overall status..." });
     }
 
     function setPortal(status){
@@ -761,16 +1035,15 @@
     function copyPortalLink(){
       if (!currentRowNumber) return;
       if (isLinkBusy) return;
+      if (isDirty) {
+        setMsg("mMsg", "Unsaved changes detected. Click \"Save Document Statuses\" first.");
+        return;
+      }
       if (!STUDENT_URL_READY) {
         setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
         return;
       }
-      const reqId = ++lastRequestId;
-      setLinkBusy(true);
-      setMsg("mMsg","Generating portal link...");
-      google.script.run
-        .withSuccessHandler(res => {
-          if (reqId !== lastRequestId) return;
+      run_("admin_generatePortalLink", { rowNumber: currentRowNumber }, function(res){
           const link = (res && res.link) ? res.link : "";
           document.getElementById("portalLinkBox").textContent = link || "";
           if (res && res.warning) setMsg("mMsg", res.warning);
@@ -783,46 +1056,44 @@
           } else {
             if (!res.warning) setMsg("mMsg","Portal link generated.");
           }
-          setLinkBusy(false);
-        })
-        .withFailureHandler(err => {
-          if (reqId !== lastRequestId) return;
-          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
-          setLinkBusy(false);
-        })
-        .admin_generatePortalLink({ rowNumber: currentRowNumber });
+      }, { message: "Generating portal link...", linkBusy: true });
     }
 
     function resetPortalLink(){
       if (!currentRowNumber) return;
       if (isLinkBusy) return;
+      if (isDirty) {
+        setMsg("mMsg", "Unsaved changes detected. Click \"Save Document Statuses\" first.");
+        return;
+      }
       if (!STUDENT_URL_READY) {
         setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
         return;
       }
-      const reqId = ++lastRequestId;
-      setLinkBusy(true);
-      setMsg("mMsg","Resetting portal link...");
-      google.script.run
-        .withSuccessHandler(res => {
-          if (reqId !== lastRequestId) return;
+      run_("admin_resetPortalSecret", { rowNumber: currentRowNumber }, function(res){
           const link = (res && res.link) ? res.link : "";
           document.getElementById("portalLinkBox").textContent = link || "";
           if (res && res.warning) setMsg("mMsg", res.warning);
           else setMsg("mMsg","Portal link reset.");
-          setLinkBusy(false);
-        })
-        .withFailureHandler(err => {
-          if (reqId !== lastRequestId) return;
-          setMsg("mMsg","Error: " + (err && err.message ? err.message : err));
-          setLinkBusy(false);
-        })
-        .admin_resetPortalSecret({ rowNumber: currentRowNumber });
+      }, { message: "Resetting portal link...", linkBusy: true });
     }
 
     function refreshDetails(){
       if (!currentRowNumber) return;
-      review(currentRowNumber);
+      if (isDirty) {
+        setMsg("mMsg", "Unsaved changes detected. Click \"Save Document Statuses\" first.");
+        return;
+      }
+      run_("admin_getApplicantDetail_json", { rowNumber: currentRowNumber, applicantId: (currentDetail && currentDetail.ApplicantID) || "" }, function(res){
+        var detail = normalizeDetailResponse_(res);
+        if (!detail) {
+          setMsg("mMsg", "Error: Invalid detail response.");
+          return;
+        }
+        currentDetail = detail;
+        openModal(currentDetail);
+        setMsg("mMsg", "");
+      }, { message: "Refreshing details..." });
     }
 
     function backfillBatch(mode){
@@ -877,9 +1148,22 @@
         return;
       }
       var scope = document.getElementById("exportScope").value || "auto";
-      var payload = {};
-      if (scope === "search" || (scope === "auto" && lastSearchResults.length)) {
+      var startRow = Math.max(2, getBackfillNumber_("bfStartRow", 2));
+      var batchSize = Math.max(1, getBackfillNumber_("bfBatchSize", 200));
+      var payload = {
+        scope: scope,
+        startRow: startRow,
+        batchSize: batchSize
+      };
+      if (scope === "search") {
+        if (!lastSearchResults.length) {
+          setMsg("mMsg", "No current search results to export.");
+          return;
+        }
         payload.rowNumbers = lastSearchResults.slice();
+      } else if (scope === "auto" && lastSearchResults.length) {
+        payload.rowNumbers = lastSearchResults.slice(0, batchSize);
+        payload.maxRows = batchSize;
       }
 
       setMsg("mMsg", "Preparing CSV export...");
@@ -920,6 +1204,18 @@
     }
 
     setRoleUi();
+    function initVersionBadge_() {
+      var badge = document.getElementById("versionBadge");
+      if (badge) {
+        badge.textContent = VERSION_SHORT;
+        badge.title = VERSION;
+      }
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initVersionBadge_);
+    } else {
+      initVersionBadge_();
+    }
     setActionButtonsEnabled(false);
     var resultsBody = document.getElementById("tbody");
     if (resultsBody) resultsBody.addEventListener("click", onResultsClick_);

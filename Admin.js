@@ -14,6 +14,13 @@ function renderAdminApp_(e) {
   t.WEBAPP_URL = CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL;
   t.ADMIN_ROLE = getAdminRole_(email);
   t.IS_SUPER = getAdminRole_(email) === "SUPER";
+  t.CAN_OVERRIDE = canOverrideOverall_(email);
+  t.PAYMENT_BADGE = "Payment Pending";
+  t.PAYMENT_VERIFIED_BOOL = false;
+  t.OVERALL_DOC_STATUS = "Pending";
+  t.BUILD_VERSION = CONFIG.VERSION;
+  t.BUILD_RENDERED_AT = new Date().toISOString();
+  t.BUILD_SCRIPT_ID = ScriptApp.getScriptId();
   t.STUDENT_URL_READY = isStudentUrlConfigured_();
   t.STUDENT_URL_WARNING = getStudentUrlWarning_();
   return t.evaluate()
@@ -74,7 +81,7 @@ function admin_searchApplicants(payload) {
   var idx = headerIndex_(headers);
   requireHeaders_(idx, [
     "ApplicantID", "First_Name", "Last_Name",
-    "Doc_Verification_Status", "Payment_Verified", "Portal_Access_Status"
+    "Doc_Verification_Status", "Receipt_Status", "Portal_Access_Status"
   ]);
   var hasParentEmail = !!idx.Parent_Email;
   var hasParentEmailCorrected = !!idx.Parent_Email_Corrected;
@@ -88,14 +95,24 @@ function admin_searchApplicants(payload) {
     var effectiveEmail = correctedEmail || parentEmail;
     var match = (applicantId && rid === applicantId) || (email && effectiveEmail === email);
     if (!match) continue;
+    var statusRow = {
+      Birth_ID_Status: idx.Birth_ID_Status ? clean_(row[idx.Birth_ID_Status - 1]) : "",
+      Birth_Status: idx.Birth_Status ? clean_(row[idx.Birth_Status - 1]) : "",
+      Report_Status: idx.Report_Status ? clean_(row[idx.Report_Status - 1]) : "",
+      Photo_Status: idx.Photo_Status ? clean_(row[idx.Photo_Status - 1]) : "",
+      Transfer_Status: idx.Transfer_Status ? clean_(row[idx.Transfer_Status - 1]) : "",
+      Receipt_Status: idx.Receipt_Status ? clean_(row[idx.Receipt_Status - 1]) : ""
+    };
+    var paymentBadge = derivePaymentBadge_(statusRow);
+    var docStage = computeDocVerificationStatus_(statusRow);
 
     out.push({
       rowNumber: r + 1,
       applicantId: rid,
       name: (clean_(row[idx.First_Name - 1]) + " " + clean_(row[idx.Last_Name - 1])).trim(),
       email: effectiveEmail,
-      docStatus: clean_(row[idx.Doc_Verification_Status - 1]) || "Pending",
-      paymentVerified: clean_(row[idx.Payment_Verified - 1]),
+      docStatus: docStage,
+      paymentVerified: paymentBadge === "Verified" ? "Payment Verified" : (paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending"),
       portalAccess: clean_(row[idx.Portal_Access_Status - 1]) || "Open"
     });
   }
@@ -135,7 +152,7 @@ function admin_getApplicantDetail(payload) {
     var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     var idx = headerIndex_(headers);
     requireHeaders_(idx, [
-      "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected", "Payment_Verified",
+      "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected",
       "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
       "PortalTokenIssuedAt",
       "Birth_ID_Passport_File", "Latest_School_Report_File", "Transfer_Certificate_File", "Passport_Photo_File", "Fee_Receipt_File",
@@ -172,7 +189,13 @@ function admin_getApplicantDetail(payload) {
       First_Name: clean_(row[idx.First_Name - 1]),
       Last_Name: clean_(row[idx.Last_Name - 1]),
       Parent_Email_Corrected: clean_(row[idx.Parent_Email_Corrected - 1]),
-      Payment_Verified: clean_(row[idx.Payment_Verified - 1]),
+      Birth_ID_Status: idx.Birth_ID_Status ? clean_(row[idx.Birth_ID_Status - 1]) : "",
+      Birth_Status: idx.Birth_Status ? clean_(row[idx.Birth_Status - 1]) : "",
+      Report_Status: clean_(row[idx.Report_Status - 1]),
+      Photo_Status: clean_(row[idx.Photo_Status - 1]),
+      Transfer_Status: clean_(row[idx.Transfer_Status - 1]),
+      Receipt_Status: clean_(row[idx.Receipt_Status - 1]),
+      Payment_Verified: idx.Payment_Verified ? clean_(row[idx.Payment_Verified - 1]) : "",
       Portal_Access_Status: clean_(row[idx.Portal_Access_Status - 1]) || "Open",
       Doc_Verification_Status: clean_(row[idx.Doc_Verification_Status - 1]) || "Pending",
       Doc_Last_Verified_At: row[idx.Doc_Last_Verified_At - 1],
@@ -200,9 +223,24 @@ function admin_getApplicantDetail(payload) {
     });
 
     detailObj.Parent_Email_Corrected = String(detailObj.Parent_Email_Corrected || "");
-    detailObj.Payment_Verified = String(detailObj.Payment_Verified || "");
+    var docStageComputed = computeDocVerificationStatus_(detailObj);
+    var paymentBadge = derivePaymentBadge_(detailObj);
+    var overallComputed = computeOverallStatus_(detailObj);
+    var paymentVerifiedBool = paymentBadge === "Verified";
+    var overallStored = idx.Overall_Status ? clean_(row[idx.Overall_Status - 1]) : "";
+    var canOverride = canOverrideOverall_(adminEmail);
+    var isOverridden = !!(canOverride && overallStored && overallStored !== overallComputed);
+    detailObj.Payment_Verified = paymentVerifiedBool ? "Yes" : "";
+    detailObj.Payment_Verified_Bool = paymentVerifiedBool;
+    detailObj.Payment_Badge = paymentBadge;
+    detailObj.Doc_Verification_Status_Computed = docStageComputed;
+    detailObj.Overall_Status_Computed = overallComputed;
+    detailObj.Overall_Status_Stored = overallStored;
+    detailObj.Overall_IsOverridden = isOverridden;
+    detailObj.Overall_OverrideValue = isOverridden ? overallStored : "";
+    detailObj.Doc_Verification_Status = docStageComputed;
     detailObj.Portal_Access_Status = String(detailObj.Portal_Access_Status || "");
-    detailObj.Doc_Verification_Status = String(detailObj.Doc_Verification_Status || "");
+    detailObj.Doc_Verification_Status = String(detailObj.Doc_Verification_Status || "Pending");
     detailObj._docs = (detailObj._docs || []).map(function (d) {
       d.url = asStringUrl_(d.url);
       d.hasFile = /^https?:\/\//i.test(d.url);
@@ -341,30 +379,84 @@ function admin_updateDocStatuses(payload) {
   if (!Array.isArray(docs)) throw new Error("Invalid docs payload");
 
   var sh = openDataSheet_();
-  var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
+  var lastCol = sh.getLastColumn();
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idx = headerIndex_(headers);
+  var cols = resolveStatusCols_(idx);
+  var displayRow = sh.getRange(rowNumber, 1, 1, lastCol).getDisplayValues()[0];
   requireHeaders_(idx, ["ApplicantID", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By", "Portal_Access_Status"]);
   var applicantId = clean_(sh.getRange(rowNumber, idx.ApplicantID).getValue());
   if (!applicantId) throw new Error("Missing ApplicantID in target row.");
+  if (!cols.receipt) {
+    var missingReceiptDbg = newDebugId_();
+    throw new Error("Missing Receipt_Status column mapping. Debug: " + missingReceiptDbg);
+  }
+  var dbgId = newDebugId_();
+  function hasUploadedFileForMapping_(mapping) {
+    if (!mapping || !mapping.file) return false;
+    if (!idx[mapping.file]) return false;
+    var url = clean_(displayRow[idx[mapping.file] - 1]);
+    return /^https?:\/\//i.test(url);
+  }
 
   var docMap = CONFIG.DOC_FIELDS || [];
+  var prepared = [];
   for (var i = 0; i < docs.length; i++) {
     var d = docs[i] || {};
     var file = clean_(d.file || "");
     var mapping = findDocMapping_(file, d.statusField, d.commentField, docMap);
     if (!mapping) throw new Error("Invalid document mapping.");
     var status = normalizeDocStatus_(d.status);
+    if (status === "Verified" && !hasUploadedFileForMapping_(mapping)) {
+      throw new Error("Cannot set Verified: " + (mapping.label || mapping.file) + " has no uploaded file.");
+    }
     var comment = clean_(d.comment || "");
-    adminVerifyDocument(applicantId, mapping.file, toRouteStatusKey_(status), adminEmail || "admin", comment);
+    prepared.push({
+      mapping: mapping,
+      status: status,
+      comment: comment
+    });
   }
 
-  var overall = recomputeOverallDocStatus_(sh, rowNumber, idx, docMap);
-  setCell_(sh, rowNumber, idx, "Doc_Verification_Status", overall);
-  if (overall === "Fraudulent") setCell_(sh, rowNumber, idx, "Portal_Access_Status", "Locked");
+  for (var p = 0; p < prepared.length; p++) {
+    var item = prepared[p];
+    adminVerifyDocument(applicantId, item.mapping.file, toRouteStatusKey_(item.status), adminEmail || "admin", item.comment);
+  }
+
+  var refreshedRow = getRowObject_(sh, rowNumber);
+  var docStage = computeDocVerificationStatus_(refreshedRow);
+  var paymentBadge = derivePaymentBadge_(refreshedRow);
+  var paymentVerified = paymentBadge === "Verified";
+  var overallComputed = computeOverallStatus_(refreshedRow);
+  if (cols.paymentCompat) setCell_(sh, rowNumber, idx, cols.paymentCompat, paymentVerified ? "Yes" : "");
+  if (cols.docStage) setCell_(sh, rowNumber, idx, cols.docStage, docStage);
+  if (cols.overall) setCell_(sh, rowNumber, idx, cols.overall, overallComputed);
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
 
-  log_(openLogSheet_(), "ADMIN_DOC_UPDATE", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " overall=" + overall);
-  return { ok: true, overallStatus: overall };
+  var savedSnapshot = readRowSnapshot_(applicantId);
+  var freshDetailRes = admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId });
+  var freshDetail = (freshDetailRes && freshDetailRes.ok === true && freshDetailRes.detail) ? freshDetailRes.detail : null;
+
+  log_(openLogSheet_(), "ADMIN_DOC_UPDATE", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " docStage=" + docStage + " payment=" + paymentBadge + " overall=" + overallComputed);
+  log_(openLogSheet_(), "DOC_STATUS_SAVE", JSON.stringify({
+    applicantId: applicantId,
+    receiptStatus: clean_(refreshedRow.Receipt_Status || ""),
+    docStageComputed: docStage,
+    overallComputed: overallComputed,
+    dbgId: dbgId
+  }));
+  return {
+    ok: true,
+    debugId: dbgId,
+    docVerificationStatusComputed: docStage,
+    paymentBadge: paymentBadge,
+    paymentVerified: paymentVerified ? "Yes" : "",
+    overallStatusComputed: overallComputed,
+    overallStatus: overallComputed,
+    detail: freshDetail,
+    savedSnapshot: savedSnapshot
+  };
 }
 
 function admin_setOverallStatus(payload) {
@@ -373,26 +465,57 @@ function admin_setOverallStatus(payload) {
 
   payload = payload || {};
   var rowNumber = Number(payload.rowNumber || 0);
-  var action = normalizeDocStatus_(payload.action);
+  var requested = clean_(payload.action || "");
   var reason = clean_(payload.reason || "");
   if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
-  if (["Pending", "Verified", "Rejected", "Fraudulent"].indexOf(action) === -1) throw new Error("Invalid action");
-  if ((action === "Rejected" || action === "Fraudulent") && !reason) throw new Error("Reason required");
+  if (["Pending", "Docs_Verified", "Verified", "Rejected", "Fraudulent"].indexOf(requested) === -1) throw new Error("Invalid action");
+  if ((requested === "Rejected" || requested === "Fraudulent") && !reason) throw new Error("Reason required");
 
   var sh = openDataSheet_();
   var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
   requireHeaders_(idx, ["Doc_Verification_Status", "Portal_Access_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By"]);
+  var cols = resolveStatusCols_(idx);
+  var rowObj = getRowObject_(sh, rowNumber);
+  var docStage = computeDocVerificationStatus_(rowObj);
+  var paymentBadge = derivePaymentBadge_(rowObj);
+  var paymentVerified = paymentBadge === "Verified";
+  var computed = computeOverallStatus_(rowObj);
+  var canOverride = canOverrideOverall_(adminEmail);
+  var finalStatus = canOverride ? requested : computed;
+
+  if (canOverride && requested !== computed) {
+    logAudit_("OVERRIDE_OVERALL", {
+      user: adminEmail,
+      rowNumber: rowNumber,
+      computed: computed,
+      forced: requested
+    });
+  }
+
   var patch = {};
-  patch[SCHEMA.DOC_VERIFICATION_STATUS] = action;
-  if (action === "Fraudulent") {
+  if (cols.paymentCompat) patch[cols.paymentCompat] = paymentVerified ? "Yes" : "";
+  if (cols.docStage) patch[cols.docStage] = docStage;
+  if (cols.overall) patch[cols.overall] = finalStatus;
+  if (finalStatus === "Fraudulent") {
     patch[SCHEMA.PORTAL_ACCESS_STATUS] = "Locked";
   }
   patch[SCHEMA.DOC_LAST_VERIFIED_AT] = new Date();
   patch[SCHEMA.DOC_LAST_VERIFIED_BY] = adminEmail || "admin";
   applyPatch_(sh, rowNumber, patch);
 
-  log_(openLogSheet_(), "ADMIN_OVERALL_STATUS", "row=" + rowNumber + " action=" + action + " by=" + (adminEmail || "admin") + " reason=" + (reason || "-"));
-  return { ok: true };
+  log_(openLogSheet_(), "ADMIN_OVERALL_STATUS", "row=" + rowNumber + " action=" + finalStatus + " requested=" + requested + " by=" + (adminEmail || "admin") + " reason=" + (reason || "-"));
+  return {
+    ok: true,
+    overallStatus: finalStatus,
+    overallStatusComputed: computed,
+    docVerificationStatusComputed: docStage,
+    paymentBadge: paymentBadge,
+    computed: computed,
+    overridden: !!(canOverride && requested !== computed),
+    overallIsOverridden: !!(canOverride && requested !== computed),
+    overallOverrideValue: !!(canOverride && requested !== computed) ? finalStatus : "",
+    paymentVerified: paymentVerified ? "Yes" : ""
+  };
 }
 
 function admin_setPortalAccess(payload) {
@@ -418,6 +541,127 @@ function admin_setPortalAccess(payload) {
   return { ok: true };
 }
 
+function admin_verifyPayment(payload) {
+  return admin_setPaymentVerified(payload);
+}
+
+function admin_setPaymentVerified(payload) {
+  var adminEmail = getActiveUserEmail_();
+  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  requireSuperAdmin_(adminEmail);
+
+  payload = payload || {};
+  var rowNumber = Number(payload.rowNumber || 0);
+  if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
+  var note = clean_(payload.comment || payload.reason || "");
+
+  var sh = openDataSheet_();
+  var lastCol = sh.getLastColumn();
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idx = headerIndex_(headers);
+  requireHeaders_(idx, ["ApplicantID", "Receipt_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By"]);
+  var cols = resolveStatusCols_(idx);
+  if (!cols.receipt) {
+    var missingReceiptDbg = newDebugId_();
+    throw new Error("Missing Receipt_Status column mapping. Debug: " + missingReceiptDbg);
+  }
+
+  var beforeRow = getRowObject_(sh, rowNumber);
+  var wasPaymentVerified = derivePaymentBadge_(beforeRow) === "Verified";
+
+  // Legacy endpoint is mapped to receipt verification only.
+  setCell_(sh, rowNumber, idx, "Receipt_Status", "Verified");
+  if (idx.Receipt_Comment && note) setCell_(sh, rowNumber, idx, "Receipt_Comment", note);
+
+  var refreshedRow = getRowObject_(sh, rowNumber);
+  var docStage = computeDocVerificationStatus_(refreshedRow);
+  var paymentBadge = derivePaymentBadge_(refreshedRow);
+  var paymentVerified = paymentBadge === "Verified";
+  var computedOverall = computeOverallStatus_(refreshedRow);
+  if (cols.paymentCompat) setCell_(sh, rowNumber, idx, cols.paymentCompat, paymentVerified ? "Yes" : "");
+  if (cols.docStage) setCell_(sh, rowNumber, idx, cols.docStage, docStage);
+  if (cols.overall) setCell_(sh, rowNumber, idx, cols.overall, computedOverall);
+  setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
+  setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
+
+  var transitionToYes = !wasPaymentVerified && paymentVerified;
+  var crm = { attempted: false, ok: true, debugId: "" };
+  if (transitionToYes) {
+    crm = crm_syncOnPaymentVerified_(rowNumber, sh, idx);
+  }
+
+  log_(openLogSheet_(), "ADMIN_PAYMENT_VERIFIED", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " via=Receipt_Status transitionToYes=" + (transitionToYes ? "1" : "0"));
+  var applicantId = clean_(refreshedRow.ApplicantID || "");
+  var savedSnapshot = applicantId ? readRowSnapshot_(applicantId) : null;
+  var freshDetailRes = applicantId ? admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId }) : null;
+  var freshDetail = (freshDetailRes && freshDetailRes.ok === true && freshDetailRes.detail) ? freshDetailRes.detail : null;
+  return {
+    ok: true,
+    paymentVerified: paymentVerified ? "Yes" : "",
+    paymentBadge: paymentBadge,
+    docVerificationStatusComputed: docStage,
+    overallStatusComputed: computedOverall,
+    overallStatus: computedOverall,
+    detail: freshDetail,
+    savedSnapshot: savedSnapshot,
+    crm: crm
+  };
+}
+
+function crm_syncOnPaymentVerified_(rowNumber, sh, idx) {
+  var dbgId = newDebugId_();
+  var sheet = sh || openDataSheet_();
+  var map = idx || headerIndex_(sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]);
+  var rowObj = getRowObject_(sheet, rowNumber);
+  var applicantId = clean_(rowObj.ApplicantID || "");
+  try {
+    var stableFormId = ensureStableFormId_(rowObj, sheet, rowNumber, map);
+    if (stableFormId) rowObj.FormID = stableFormId;
+    var payload = buildCrmPayloadFromRow_(rowObj);
+    payload.formId = clean_(stableFormId || payload.formId || "");
+
+    var token = getZohoToken_();
+    var contactRes = upsertZohoContact_(token, payload);
+    var dealRes = upsertZohoDeal_(token, payload, payload.folderUrl || "", contactRes.id);
+
+    var patch = {};
+    if (map.Contact_ID) patch.Contact_ID = clean_(contactRes.id || "");
+    if (map.Deal_ID) patch.Deal_ID = clean_(dealRes.id || "");
+    var crmResponseObj = {
+      ok: true,
+      dbgId: dbgId,
+      formId: payload.formId || "",
+      contactId: clean_(contactRes.id || ""),
+      dealId: clean_(dealRes.id || "")
+    };
+    if (map.CRM_Response) patch.CRM_Response = JSON.stringify(crmResponseObj);
+    if (Object.keys(patch).length) applyPatch_(sheet, rowNumber, patch);
+
+    log_(openLogSheet_(), "ZOHO_OK", JSON.stringify({
+      dbgId: dbgId,
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      contactId: clean_(contactRes.id || ""),
+      dealId: clean_(dealRes.id || "")
+    }));
+    return { attempted: true, ok: true, debugId: dbgId, contactId: clean_(contactRes.id || ""), dealId: clean_(dealRes.id || "") };
+  } catch (e) {
+    var errMsg = "ERROR: " + String(e && e.message ? e.message : e);
+    try {
+      if (map.CRM_Response) {
+        applyPatch_(sheet, rowNumber, { CRM_Response: errMsg });
+      }
+    } catch (writeErr) {}
+    log_(openLogSheet_(), "ZOHO_ERROR", JSON.stringify({
+      dbgId: dbgId,
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      message: String(e && e.message ? e.message : e)
+    }));
+    return { attempted: true, ok: false, debugId: dbgId, error: errMsg };
+  }
+}
+
 /******************** ADMIN HELPERS ********************/
 
 function openDataSheet_() {
@@ -428,6 +672,28 @@ function openDataSheet_() {
 function openLogSheet_() {
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   return mustGetSheet_(ss, CONFIG.LOG_SHEET);
+}
+
+function logAudit_(label, payload) {
+  log_(openLogSheet_(), clean_(label || "AUDIT"), JSON.stringify(payload || {}));
+}
+
+function getCol_(idx, candidates) {
+  var names = Array.isArray(candidates) ? candidates : [candidates];
+  for (var i = 0; i < names.length; i++) {
+    var k = clean_(names[i]);
+    if (k && idx[k]) return k;
+  }
+  return "";
+}
+
+function resolveStatusCols_(idx) {
+  return {
+    docStage: getCol_(idx, ["Doc_Verification_Status"]),
+    overall: getCol_(idx, ["Overall_Status"]),
+    paymentCompat: getCol_(idx, ["Payment_Verified"]),
+    receipt: getCol_(idx, ["Receipt_Status"])
+  };
 }
 
 function headerIndex_(headersRow) {
@@ -489,15 +755,20 @@ function resolveExportRowNumbers_(payload, lastRow) {
   var out = [];
   if (requested.length) {
     var seen = {};
+    var maxRows = Math.max(0, Number(payload.maxRows || payload.batchSize || payload.limit || 0));
     for (var i = 0; i < requested.length; i++) {
       var n = Number(requested[i] || 0);
       if (!n || n < 2 || n > lastRow || seen[n]) continue;
       seen[n] = true;
       out.push(n);
+      if (maxRows > 0 && out.length >= maxRows) break;
     }
     return out;
   }
-  for (var row = 2; row <= lastRow; row++) out.push(row);
+  var startRow = Math.max(2, Number(payload.startRow || 2));
+  var batchSize = Math.max(1, Number(payload.batchSize || payload.limit || Math.max(0, lastRow - 1) || 1));
+  var endRow = Math.min(lastRow, startRow + batchSize - 1);
+  for (var row = startRow; row <= endRow; row++) out.push(row);
   return out;
 }
 
@@ -834,7 +1105,7 @@ function admin_exportPortalLinksCsv(payload) {
   var secretsSheet = openPortalSecrets_();
   var lastRow = sh.getLastRow();
   var rows = resolveExportRowNumbers_(payload, lastRow);
-  var out = [["ApplicantID", "Email", "Full_Name", "Student_Portal_Link"]];
+  var out = [["ApplicantID", "PortalUrl"]];
   var exportedCount = 0;
   var generatedCount = 0;
   var rekeyedCount = 0;
@@ -859,7 +1130,7 @@ function admin_exportPortalLinksCsv(payload) {
     if (admissionsHash && !hasSecretRecord) rekeyedCount++;
 
     var link = buildPortalLinkFromBase_(clean_(CONFIG.WEBAPP_URL_STUDENT || ""), applicantId, secretInfo.secretPlain);
-    out.push([applicantId, email, fullName, link]);
+    out.push([applicantId, link]);
     exportedCount++;
   }
 

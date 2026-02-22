@@ -245,18 +245,33 @@ function doPost(e) {
 
 /******************** ENTRYPOINT: GET ********************/
 function doGet(e) {
-  var view = String((e.parameter.view || "portal")).toLowerCase();
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var view = clean_(params.view || "").toLowerCase();
+  var isAdminDeployment = isAdminDeploymentRequest_();
+  var currentUrl = "";
+  try {
+    currentUrl = clean_(ScriptApp.getService().getUrl() || "");
+  } catch (routeErr) {}
+  Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
 
-  // ROUTE FIRST
-  if (view === "admin") return renderAdminApp_(e);
   if (view === "diag") return respondDiag_(e);
-  if (view !== "portal") return htmlOutput_(renderErrorHtml_("Missing portal link"));
+  if (!view) {
+    if (isAdminDeployment) return renderAdminApp_(e);
+    view = "portal";
+  }
+  if (view === "admin") return renderAdminApp_(e);
+  if (view !== "portal") {
+    if (isAdminDeployment) return renderAdminApp_(e);
+    view = "portal";
+  }
 
-  var id = clean_(e.parameter.id || "");
-  var secret = clean_(e.parameter.s || "");
-  var saved = clean_(e.parameter.saved || "") === "1";
-  var errorFlag = clean_(e.parameter.error || "") === "1";
-  var dbg = clean_(e.parameter.dbg || "");
+  var id = clean_(params.id || "");
+  var secret = clean_(params.s || "");
+  var saved = clean_(params.saved || "") === "1";
+  var errorFlag = clean_(params.error || "") === "1";
+  var dbg = clean_(params.dbg || "");
+  var uploadFail = clean_(params.uploadFail || "") === "1";
+  var uploadField = clean_(params.field || "");
   var reqId = makeReqId_();
   var debugPage = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && dbg === "1";
   var reqMeta = getPortalRequestMeta_(e);
@@ -365,12 +380,18 @@ function doGet(e) {
     saved: saved,
     errorFlag: errorFlag,
     dbg: dbg,
+    uploadFail: uploadFail,
+    uploadField: uploadField,
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
     editFields: getPortalEditableFields_(),
     docs: getDocUiFields_(),
-    visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS
+    visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
+    version: CONFIG.VERSION,
+    versionShort: portalVersionShort_(CONFIG.VERSION),
+    buildRenderedAt: new Date().toISOString(),
+    buildScriptId: ScriptApp.getScriptId()
   }));
 }
 
@@ -577,87 +598,120 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
   var fileNames = Array.isArray(fileName) ? fileName : [fileName];
   var mimeTypes = Array.isArray(mimeType) ? mimeType : [mimeType];
   var base64List = Array.isArray(base64Data) ? base64Data : [base64Data];
+  var dbgId = newDebugId_();
 
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
-  var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
+  try {
+    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+    var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+    var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
-  var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
-  if (!found) throw new Error("Record not found.");
-  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") throw new Error("Access suspended.");
+    var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
+    if (!found) throw new Error("Record not found.");
+    if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") throw new Error("Access suspended.");
+    if (isPaymentVerified_(found.record)) throw new Error("Record locked (payment verified).");
 
-  if (isPaymentVerified_(found.record)) throw new Error("Record locked (payment verified).");
-
-  // Determine applicant folder (prefer Folder_Url)
-  var folderUrl = clean_(found.record.Folder_Url || "");
-  var folderId = folderIdFromUrl_(folderUrl);
-  var folder;
-
-  if (folderId) {
-    folder = DriveApp.getFolderById(folderId);
-  } else {
-    folder = createApplicantFolder_(found.record);
-    writeBack_(sheet, found.rowNum, { Folder_Url: folder.getUrl() });
-  }
-
-  var docMeta = docMetaByField_(fieldName);
-  var isMultiple = !!(docMeta && docMeta.multiple === true);
-  if (fileNames.length !== mimeTypes.length || fileNames.length !== base64List.length) {
-    throw new Error("Upload payload mismatch.");
-  }
-  if (!fileNames.length) throw new Error("No files selected.");
-
-  var createdUrls = [];
-  for (var i = 0; i < fileNames.length; i++) {
-    var fName = clean_(fileNames[i]) || ("upload_" + Date.now() + "_" + i);
-    var fType = clean_(mimeTypes[i]) || "application/octet-stream";
-    var b64 = String(base64List[i] || "");
-    if (!b64) continue;
-    var bytes = Utilities.base64Decode(b64);
-    var blob = Utilities.newBlob(bytes, fType, fName);
-    var file = folder.createFile(blob);
-    createdUrls.push(file.getUrl());
-  }
-  if (!createdUrls.length) throw new Error("No valid files to upload.");
-
-  var updates = {};
-  var oldCell = clean_(found.record[fieldName] || "");
-  if (isMultiple) {
-    var merged = oldCell;
-    for (var j = 0; j < createdUrls.length; j++) {
-      merged = appendUrlToCell_(merged, createdUrls[j]);
+    var docMeta = docMetaByField_(fieldName);
+    var isMultiple = !!(docMeta && docMeta.multiple === true);
+    if (fileNames.length !== mimeTypes.length || fileNames.length !== base64List.length) {
+      throw new Error("Upload payload mismatch.");
     }
-    updates[fieldName] = merged;
-  } else {
-    updates[fieldName] = createdUrls[createdUrls.length - 1];
+    if (!fileNames.length) throw new Error("No files selected.");
+
+    var folderUrl = clean_(found.record.Folder_Url || "");
+    var folderId = folderIdFromUrl_(folderUrl);
+    if (!folderId) throw new Error("Applicant folder missing. Please contact admissions.");
+    var folder;
+    try {
+      folder = DriveApp.getFolderById(folderId);
+      folder.getName();
+    } catch (folderErr) {
+      throw new Error("Applicant folder is unavailable or inaccessible.");
+    }
+
+    var createdUrls = [];
+    try {
+      for (var i = 0; i < fileNames.length; i++) {
+        var fName = clean_(fileNames[i]) || ("upload_" + Date.now() + "_" + i);
+        var fType = clean_(mimeTypes[i]) || "application/octet-stream";
+        var b64 = String(base64List[i] || "");
+        if (!b64) continue;
+        var bytes = Utilities.base64Decode(b64);
+        var blob = Utilities.newBlob(bytes, fType, fName);
+        var file = folder.createFile(blob);
+        createdUrls.push(file.getUrl());
+      }
+    } catch (driveErr) {
+      throw new Error("Drive upload failed: " + String(driveErr && driveErr.message ? driveErr.message : driveErr));
+    }
+    if (!createdUrls.length) throw new Error("No valid files to upload.");
+
+    var updates = {};
+    var oldCell = clean_(found.record[fieldName] || "");
+    if (isMultiple) {
+      var merged = oldCell;
+      for (var j = 0; j < createdUrls.length; j++) {
+        merged = appendUrlToCell_(merged, createdUrls[j]);
+      }
+      updates[fieldName] = merged;
+    } else {
+      updates[fieldName] = createdUrls[createdUrls.length - 1];
+    }
+    updates.PortalLastUpdateAt = new Date().toISOString();
+    if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
+
+    // If status column exists, set PENDING_REVIEW
+    if (docMeta && hasHeader_(sheet, docMeta.status)) updates[docMeta.status] = "PENDING_REVIEW";
+
+    var fileLog = clean_(found.record.File_Log || "");
+    for (var k = 0; k < createdUrls.length; k++) {
+      var line = new Date().toISOString()
+        + " | " + fieldName
+        + " | " + (isMultiple ? "uploaded" : "replaced")
+        + " | old=" + (oldCell || "-")
+        + " | new=" + createdUrls[k];
+      fileLog = appendLog_(fileLog, line);
+    }
+    updates.File_Log = fileLog;
+
+    writeBack_(sheet, found.rowNum, updates);
+    SpreadsheetApp.flush();
+    var verifyRow = getRowObject_(sheet, found.rowNum);
+    var verifyCell = clean_(verifyRow[fieldName] || "");
+    var latestUrl = clean_(createdUrls[createdUrls.length - 1] || "");
+    if (!latestUrl || verifyCell.indexOf(latestUrl) < 0) {
+      throw new Error("Upload URL was not saved. Please try again.");
+    }
+    log_(logSheet, "PORTAL UPLOAD", "ApplicantID=" + applicantId + " field=" + fieldName + " files=" + createdUrls.length);
+
+    return {
+      ok: true,
+      field: fieldName,
+      url: createdUrls[createdUrls.length - 1],
+      urls: createdUrls,
+      multiple: isMultiple
+    };
+  } catch (e) {
+    var msg = String(e && e.message ? e.message : e);
+    var stack = String(e && e.stack ? e.stack : "");
+    logPortalUploadError_(dbgId, applicantId, fieldName, msg, {
+      code: "UPLOAD_FAILED",
+      stack: stack,
+      fileCount: fileNames.length,
+      hasToken: !!(applicantId && secret)
+    });
+    return {
+      ok: false,
+      debugId: dbgId,
+      field: fieldName,
+      error: "Upload failed. Please try again. Debug: " + dbgId,
+      redirectUrl: buildPortalRedirectUrl_(applicantId, secret, {
+        error: true,
+        dbg: dbgId,
+        uploadFail: true,
+        field: fieldName
+      })
+    };
   }
-  updates.PortalLastUpdateAt = new Date().toISOString();
-  if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
-
-  // If status column exists, set PENDING_REVIEW
-  if (docMeta && hasHeader_(sheet, docMeta.status)) updates[docMeta.status] = "PENDING_REVIEW";
-
-  var fileLog = clean_(found.record.File_Log || "");
-  for (var k = 0; k < createdUrls.length; k++) {
-    var line = new Date().toISOString()
-      + " | " + fieldName
-      + " | " + (isMultiple ? "uploaded" : "replaced")
-      + " | old=" + (oldCell || "-")
-      + " | new=" + createdUrls[k];
-    fileLog = appendLog_(fileLog, line);
-  }
-  updates.File_Log = fileLog;
-
-  writeBack_(sheet, found.rowNum, updates);
-  log_(logSheet, "PORTAL UPLOAD", "ApplicantID=" + applicantId + " field=" + fieldName + " files=" + createdUrls.length);
-
-  return {
-    ok: true,
-    field: fieldName,
-    url: createdUrls[createdUrls.length - 1],
-    urls: createdUrls,
-    multiple: isMultiple
-  };
 }
 
 function portal_deleteUploadedFile(payload) {
@@ -667,39 +721,46 @@ function portal_deleteUploadedFile(payload) {
   var fieldName = clean_(payload.field || "");
   var targetUrl = clean_(payload.url || "");
   var rowNumber = Number(payload.rowNumber || 0);
+  var dbgId = newDebugId_();
 
   if (!applicantId || !secret || !fieldName || !targetUrl) {
-    return { ok: false, error: "Missing delete payload fields" };
+    return {
+      ok: false,
+      debugId: dbgId,
+      error: "Missing delete payload fields",
+      redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId })
+    };
   }
 
   var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
   var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
-  if (!found) return { ok: false, error: "Record not found." };
-  if (rowNumber >= 2 && rowNumber !== found.rowNum) return { ok: false, error: "Row mismatch." };
+  if (!found) return { ok: false, debugId: dbgId, error: "Record not found.", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
+  if (rowNumber >= 2 && rowNumber !== found.rowNum) return { ok: false, debugId: dbgId, error: "Row mismatch.", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
   portalDebugLog_("PORTAL_DELETE_TARGET", {
     applicantId: applicantId,
     rowNumber: found.rowNum,
     fileField: fieldName,
     url: targetUrl
   });
-  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return { ok: false, error: "Locked" };
-  if (isPaymentVerified_(found.record)) return { ok: false, error: "Locked" };
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return { ok: false, debugId: dbgId, error: "Locked", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
+  if (isPaymentVerified_(found.record)) return { ok: false, debugId: dbgId, error: "Locked", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
 
   try {
     var docMeta = docMetaByField_(fieldName);
-    if (!docMeta) return { ok: false, error: "Invalid field." };
-    if (!docMeta.multiple) return { ok: false, error: "Delete only allowed for multi-upload fields." };
+    if (!docMeta) return { ok: false, debugId: dbgId, error: "Invalid field.", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
 
     var existing = clean_(found.record[fieldName] || "");
     var updatedCell = removeUrlFromCell_(existing, targetUrl);
     var remainingUrls = normalizeToUrlList_(updatedCell);
     var removed = existing !== updatedCell;
+    if (!removed) return { ok: false, debugId: dbgId, error: "File URL not found.", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
 
     var updates = {};
     updates[fieldName] = updatedCell;
     updates.PortalLastUpdateAt = new Date().toISOString();
+    if (docMeta.status && hasHeader_(sheet, docMeta.status)) updates[docMeta.status] = "PENDING_REVIEW";
     var line = new Date().toISOString() + " | " + fieldName + ": DELETE " + targetUrl;
     updates.File_Log = appendLog_(clean_(found.record.File_Log || ""), line);
     writeBack_(sheet, found.rowNum, updates);
@@ -732,7 +793,7 @@ function portal_deleteUploadedFile(payload) {
       trashed: trashed,
       warning: warning
     });
-    log_(logSheet, "PORTAL DELETE", "ApplicantID=" + applicantId + " field=" + fieldName + " trashed=" + trashed);
+    log_(logSheet, "PORTAL_DOC_DELETE", "ApplicantID=" + applicantId + " field=" + fieldName + " trashed=" + trashed);
     return { ok: true, remainingUrls: remainingUrls, trashed: trashed, warning: warning };
   } catch (e2) {
     portalDebugLog_("PORTAL_DELETE_ERROR", {
@@ -741,11 +802,24 @@ function portal_deleteUploadedFile(payload) {
       fileField: fieldName,
       error: String(e2 && e2.message ? e2.message : e2)
     });
-    return { ok: false, error: String(e2 && e2.message ? e2.message : e2) };
+    return {
+      ok: false,
+      debugId: dbgId,
+      error: String(e2 && e2.message ? e2.message : e2),
+      redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId })
+    };
   }
 }
 
 /******************** PORTAL HTML ********************/
+function portalVersionShort_(rawVersion) {
+  var v = String(rawVersion || "");
+  var tail = v.split("-").pop();
+  if (/^r\d+$/i.test(tail)) return tail;
+  var m = v.match(/-r(\d+)\b/i);
+  return m ? ("r" + m[1]) : "r?";
+}
+
 function renderPortalHtml_(opts) {
   var id = opts.id, secret = opts.secret, record = opts.record;
   var reqId = clean_(opts.reqId || "");
@@ -753,18 +827,24 @@ function renderPortalHtml_(opts) {
   var saved = opts.saved === true;
   var hasErr = opts.errorFlag === true;
   var dbg = clean_(opts.dbg || "");
+  var uploadFail = opts.uploadFail === true;
+  var uploadField = clean_(opts.uploadField || "");
   var subjects = opts.subjects || [];
   var examSites = opts.examSites || [];
   var editFields = opts.editFields || [];
   var docs = opts.docs || [];
   var visibleFields = opts.visibleFields || [];
   var error = opts.error || "";
+  var milestoneStatus = computeOverallStatus_(record);
   var actionUrl = canonicalStudentExecBase_() + "?view=portal";
   var actionWarn = actionUrl ? "" : "Student URL not configured. Saving may not work for external users.";
   var scriptId = clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId());
   var deploymentId = clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "");
   var actionUrlShort = actionUrl.length > 140 ? (actionUrl.slice(0, 137) + "...") : actionUrl;
-  var buildVersion = clean_(CONFIG.VERSION || "");
+  var buildVersion = clean_(opts.version || CONFIG.VERSION || "");
+  var shortVersion = clean_(opts.versionShort || portalVersionShort_(buildVersion));
+  var buildRenderedAt = clean_(opts.buildRenderedAt || new Date().toISOString());
+  var buildScriptId = clean_(opts.buildScriptId || scriptId || "");
   var buildLabel = clean_(CONFIG.BUILD_LABEL || "");
   var redactedSecret = redactToken_(secret);
 
@@ -814,8 +894,11 @@ function renderPortalHtml_(opts) {
   var savedBlock = saved
     ? '<div id="savedBanner" style="background:#eaf7ea;border:1px solid #2e7d32;padding:8px;margin-bottom:12px;color:#000;">Saved. Your updates are now shown below.</div>'
     : "";
+  var errText = uploadFail
+    ? ("Upload failed. Please try again." + (uploadField ? (" Field: " + uploadField + ".") : ""))
+    : "Portal update failed.";
   var errBlock = hasErr
-    ? '<div style="background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;">Portal update failed.' + (dbg ? (" Debug: " + esc_(dbg)) : "") + "</div>"
+    ? '<div style="background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;">' + esc_(errText) + (dbg ? (" Debug: " + esc_(dbg)) : "") + "</div>"
     : "";
   var debugComment = debugPage
     ? '<!-- DEBUG_PORTAL_GET reqId=' + esc_(reqId) + ' id=' + esc_(id) + ' s(redacted)=' + esc_(redactedSecret) + ' -->'
@@ -859,8 +942,15 @@ function renderPortalHtml_(opts) {
     + '<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />'
     + '<meta http-equiv="Pragma" content="no-cache" />'
     + '<meta http-equiv="Expires" content="0" />'
+    + "<style>"
+    + ".milestone{padding:12px;margin-bottom:16px;border-radius:6px;font-size:14px;}"
+    + ".docs-stage{background:#1f2937;color:#fbbf24;}"
+    + ".payment-stage{background:#064e3b;color:#34d399;}"
+    + ".pending-stage{background:#1e3a8a;color:#93c5fd;}"
+    + "</style>"
     + "</head>"
     + '<body style="font-family:Arial,Helvetica,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;">'
+    + '<div style="position:fixed;top:10px;right:12px;z-index:9;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#0f172a;background:#dbeafe;border:1px solid #93c5fd;" title="' + esc_(buildVersion) + '">' + esc_(shortVersion) + "</div>"
     + "<h2>FODE Student Portal</h2>"
     + '<div id="portalFlashMount"></div>'
     + savedBlock
@@ -868,6 +958,7 @@ function renderPortalHtml_(opts) {
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + "<div><b>Applicant ID:</b> " + esc_(id) + "</div>"
     + "<div><b>Secure Link:</b> verified</div>"
+    + '<div style="margin-top:6px;color:#555;font-size:12px;" title="Script ID: ' + esc_(buildScriptId) + '">Build: ' + esc_(buildVersion) + ' | Rendered: ' + esc_(buildRenderedAt) + '</div>'
     + "</div>"
     + lockedBlock
     + errorBlock
@@ -877,6 +968,8 @@ function renderPortalHtml_(opts) {
     + '<h3 style="margin-top:0;">Submitted Details (read-only)</h3>'
     + summaryHtml
     + "</div>"
+
+    + '<div id="milestoneBanner" class="milestone pending-stage">Your application is under review.</div>'
 
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + '<h3 style="margin-top:0;">Documents & Payment Proof</h3>'
@@ -925,8 +1018,8 @@ function renderPortalHtml_(opts) {
     + saveButton
     + "</form>"
     + debugFooter
-    + '<div id="buildStamp" style="margin-top:16px;color:#000;">Version: ' + esc_(buildVersion) + " | " + esc_(buildLabel) + "</div>"
-    + '<div style="margin-top:8px;color:#000;">Version: ' + esc_(CONFIG.VERSION) + " | Script ID: " + esc_(scriptId) + " | Deployment: " + esc_(deploymentId || "-") + " | View: portal</div>"
+    + '<div class="footer-version" id="studentVersion" style="margin-top:16px;color:#666;font-size:12px;" title="Script ID: ' + esc_(buildScriptId) + '"></div>'
+    + '<div style="margin-top:8px;color:#000;">Script ID: ' + esc_(scriptId) + " | Deployment: " + esc_(deploymentId || "-") + " | View: portal</div>"
     + '<div style="margin-top:8px;color:#666;font-size:12px;">URL: ' + esc_(actionUrlShort) + "</div>"
 
     + "<script>"
@@ -977,7 +1070,7 @@ function renderPortalHtml_(opts) {
     + "function escText(v){"
     + "return String(v===undefined||v===null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#039;');"
     + "}"
-    + "function renderPortalFlash(type,dbg){"
+    + "function renderPortalFlash(type,dbg,mode,field){"
     + "var mount=document.getElementById('portalFlashMount');"
     + "if(!mount) return;"
     + "if(type==='success'){"
@@ -985,8 +1078,9 @@ function renderPortalHtml_(opts) {
     + "return;"
     + "}"
     + "if(type==='error'){"
+    + "var text=(mode==='upload')?'Upload failed. Please try again.'+((field&&String(field).trim())?(' Field: '+escText(field)+'.'):''):'Portal update failed.';"
     + "var d=dbg?(' Debug: '+escText(dbg)):'';"
-    + "mount.innerHTML='<div id=\"portalFlashBanner\" style=\"background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;\">Portal update failed.'+d+'</div>';"
+    + "mount.innerHTML='<div id=\"portalFlashBanner\" style=\"background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;\">'+text+d+'</div>';"
     + "}"
     + "}"
     + "function initPortalFlashAndCleanup(){"
@@ -999,8 +1093,10 @@ function renderPortalHtml_(opts) {
     + "hasSaved=(params.get('saved')==='1');"
     + "hasError=(params.get('error')==='1');"
     + "var dbgQ=params.get('dbg')||'';"
+    + "var uploadFailQ=(params.get('uploadFail')==='1');"
+    + "var fieldQ=params.get('field')||'';"
     + "if(hasSaved){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'success',ts:Date.now()})); }"
-    + "if(hasError){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,ts:Date.now()})); }"
+    + "if(hasError){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,mode:(uploadFailQ?'upload':'update'),field:fieldQ,ts:Date.now()})); }"
     + "if(params.has('id') || params.has('s')){"
     + "params.delete('id');"
     + "params.delete('s');"
@@ -1017,7 +1113,7 @@ function renderPortalHtml_(opts) {
     + "var flash=JSON.parse(raw);"
     + "var age=Date.now()-Number((flash&&flash.ts)||0);"
     + "if(age>=0 && age<=120000){"
-    + "renderPortalFlash(String(flash.type||''), String((flash&&flash.dbg)||''));"
+    + "renderPortalFlash(String(flash.type||''), String((flash&&flash.dbg)||''), String((flash&&flash.mode)||''), String((flash&&flash.field)||''));"
     + "}"
     + "sessionStorage.removeItem('portalFlash');"
     + "}"
@@ -1029,7 +1125,32 @@ function renderPortalHtml_(opts) {
     + "var dbgAfterEl=document.getElementById('dbgHrefAfterCleanup'); if(dbgAfterEl){ dbgAfterEl.textContent=window.location.href; }"
     + "var dbgHrefEl=document.getElementById('dbgCurrentHref'); if(dbgHrefEl){ dbgHrefEl.textContent=window.location.href; }"
     + "}"
-    + "if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', initPortalFlashAndCleanup); } else { initPortalFlashAndCleanup(); }"
+    + "function initStudentVersionFooter(){"
+    + "var full=" + JSON.stringify(buildVersion) + ";"
+    + "var shortV=" + JSON.stringify(shortVersion) + ";"
+    + "var el=document.getElementById('studentVersion');"
+    + "if(el){ el.textContent='Version ' + shortV + ' | Rendered ' + " + JSON.stringify(buildRenderedAt) + "; el.title=full; }"
+    + "}"
+    + "function renderMilestone(status){"
+    + "var el=document.getElementById('milestoneBanner');"
+    + "if(!el) return;"
+    + "if(status==='Docs_Verified'){"
+    + "el.innerHTML='<strong>Documents Verified.</strong><br>Your documents have been verified. Please allow 10-15 working days after payment confirmation for login access.';"
+    + "el.className='milestone docs-stage';"
+    + "} else if(status==='Verified'){"
+    + "el.innerHTML='<strong>Payment Confirmed.</strong><br>Your admission is confirmed. Login credentials will be issued within 10-15 working days.';"
+    + "el.className='milestone payment-stage';"
+    + "} else {"
+    + "el.innerHTML='Your application is under review.';"
+    + "el.className='milestone pending-stage';"
+    + "}"
+    + "}"
+    + "function initPortalPage(){"
+    + "initPortalFlashAndCleanup();"
+    + "initStudentVersionFooter();"
+    + "renderMilestone(" + JSON.stringify(milestoneStatus) + ");"
+    + "}"
+    + "if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', initPortalPage); } else { initPortalPage(); }"
     + "setTimeout(function(){var b=document.getElementById('savedBanner');if(b){b.style.display='none';}},5000);"
     + "var dbgForm=document.getElementById('portalForm');"
     + "if(dbgForm){"
@@ -1046,13 +1167,14 @@ function renderPortalHtml_(opts) {
 
 function renderDocsSection_(id, secret, record, docs, locked) {
   var out = "";
+  var portalReloadUrl = buildPortalRedirectUrl_(id, secret, {});
   for (var i = 0; i < docs.length; i++) {
     var d = docs[i];
     var cur = clean_(record[d.field] || "");
-    var st = clean_(record[d.status] || "");
+    var st = mapDocStatusForDisplay_(record[d.status]);
     var cm = clean_(record[d.comment] || "");
 
-    var stBadge = st ? ("<b>Status:</b> " + esc_(st)) : "<b>Status:</b> (not set)";
+    var stBadge = "<b>Status:</b> " + esc_(st || "Pending Review");
     var cmBlock = cm ? ("<div style='margin-top:6px;'><b>Admin comment:</b> " + esc_(cm) + "</div>") : "";
 
     var urlList = normalizeToUrlList_(cur);
@@ -1060,7 +1182,7 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     if (urlList.length) {
       var linksHtml = [];
       for (var u = 0; u < urlList.length; u++) {
-        var delBtn = (d.multiple && !locked)
+        var delBtn = (!locked)
           ? " <button type='button' onclick=\"deleteDocUrl('" + esc_(d.field) + "','" + esc_(encodeURIComponent(urlList[u])) + "')\">Delete</button>"
           : "";
         linksHtml.push("<span><a target='_blank' href='" + esc_(urlList[u]) + "'>Open " + String(u + 1) + "</a>" + delBtn + "</span>");
@@ -1117,10 +1239,9 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "  var box=document.getElementById('cur_'+fieldName);"
     + "  if(!box) return;"
     + "  if(!urls || !urls.length){ box.innerHTML='<b>Current files:</b> None uploaded'; return; }"
-    + "  var isMulti=!!DOC_MULTI_MAP[fieldName];"
     + "  var parts=urls.map(function(u,i){"
     + "    var line='<a target=\"_blank\" href=\"'+escHtml(u)+'\">Open '+(i+1)+'</a>';"
-    + "    if(isMulti && !PORTAL_LOCKED){ line += ' <button type=\"button\" onclick=\"deleteDocUrl(\\''+fieldName+'\\',\\''+encodeURIComponent(u)+'\\')\">Delete</button>'; }"
+    + "    if(!PORTAL_LOCKED){ line += ' <button type=\"button\" onclick=\"deleteDocUrl(\\''+fieldName+'\\',\\''+encodeURIComponent(u)+'\\')\">Delete</button>'; }"
     + "    return line;"
     + "  });"
     + "  box.innerHTML='<b>Current files:</b><br/>'+parts.join('<br/>');"
@@ -1170,6 +1291,14 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "    var base64s=payloads.map(function(p){return p.base64;});"
     + "    google.script.run"
     + "      .withSuccessHandler(function(res){"
+    + "        if(!res || res.ok!==true){"
+    + "          var dbg=(res&&res.debugId)?String(res.debugId):'';"
+    + "          var redirect=(res&&res.redirectUrl)?String(res.redirectUrl):'';"
+    + "          if(msg) msg.innerHTML=(res&&res.error)?String(res.error):('Upload failed.'+(dbg?(' Debug: '+dbg):''));"
+    + "          if(redirect){ window.location.replace(redirect); return; }"
+    + "          setUploadBusy(fieldName,false);"
+    + "          return;"
+    + "        }"
     + "        var uploaded=(res && res.urls && res.urls.length) ? res.urls : (res && res.url ? [res.url] : []);"
     + "        var current=getCurrentUrlsFromDom(fieldName);"
     + "        uploaded.forEach(function(u){ if(u && current.indexOf(u)===-1) current.push(u); });"
@@ -1198,13 +1327,14 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "  google.script.run"
     + "    .withSuccessHandler(function(res){"
     + "      if(!res || res.ok!==true){"
+    + "        var redirect=(res&&res.redirectUrl)?String(res.redirectUrl):'';"
     + "        if(msg) msg.innerHTML='Delete failed: '+((res&&res.error)?res.error:'Unknown error');"
-    + "        setUploadBusy(fieldName,false);"
-    + "        return;"
-    + "      }"
-    + "      renderCurrentUrls(fieldName, res.remainingUrls||[]);"
+    + "        if(redirect){ window.location.replace(redirect); return; }"
+        + "        setUploadBusy(fieldName,false);"
+        + "        return;"
+        + "      }"
     + "      if(msg) msg.innerHTML='Deleted.'+(res.warning?(' '+res.warning):'');"
-    + "      setUploadBusy(fieldName,false);"
+    + "      window.location.replace(" + JSON.stringify(portalReloadUrl) + ");"
     + "    })"
     + "    .withFailureHandler(function(err){"
     + "      if(msg) msg.innerHTML='Delete failed: '+(err&&err.message?err.message:err);"
@@ -1219,10 +1349,18 @@ function renderDocsSection_(id, secret, record, docs, locked) {
 
 function renderAllowlistSummary_(record, visibleFields) {
   var keys = visibleFields || [];
+  var deny = { Physical_Exam_Site: true };
+  var docFields = CONFIG.DOC_FIELDS || [];
+  for (var df = 0; df < docFields.length; df++) {
+    var fileField = clean_(docFields[df] && docFields[df].file);
+    if (fileField) deny[fileField] = true;
+  }
   var rows = "";
 
   for (var i = 0; i < keys.length; i++) {
     var k = keys[i];
+    if (deny[k]) continue;
+    if (/_File$/i.test(k)) continue;
     var rawVal = record[k];
     var v = clean_(rawVal);
     var display = v ? v : "-";
@@ -1257,6 +1395,21 @@ function renderAllowlistSummary_(record, visibleFields) {
   }
 
   return "<table style='width:100%;border-collapse:collapse;font-size:13px;'>" + rows + "</table>";
+}
+
+function mapDocStatusForDisplay_(raw) {
+  var s = clean_(raw);
+  if (!s) return "Pending Review";
+  var upper = s.toUpperCase();
+  if (upper === "VERIFIED") return "Verified";
+  if (upper === "REJECTED") return "Rejected";
+  if (upper === "FRAUDULENT") return "Fraudulent";
+  if (upper === "PENDING_REVIEW") return "Pending Review";
+  if (upper === "PENDING REVIEW") return "Pending Review";
+  if (upper === "PENDING") return "Pending Review";
+  if (upper === "VERIFIED" || upper === "REJECTED" || upper === "FRAUDULENT") return s;
+  if (s === "Verified" || s === "Rejected" || s === "Fraudulent" || s === "Pending Review") return s;
+  return "Pending Review";
 }
 
 function renderEditableFields_(record, editFields, dis) {
@@ -1329,6 +1482,8 @@ function buildPortalRedirectUrl_(applicantId, secret) {
   var hasError = opts.error === true || opts.err === true;
   if (hasError) url += "&error=1";
   if (opts.dbg) url += "&dbg=" + encodeURIComponent(clean_(opts.dbg));
+  if (opts.uploadFail === true) url += "&uploadFail=1";
+  if (opts.field) url += "&field=" + encodeURIComponent(clean_(opts.field));
   return url;
 }
 
@@ -1398,6 +1553,24 @@ function canonicalStudentExecBase_() {
     return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\//i, "https://script.google.com/");
   }
   return raw;
+}
+
+function normalizeWebAppUrl_(url) {
+  var out = clean_(url || "");
+  if (!out) return "";
+  out = out.replace(/\?.*$/, "");
+  out = out.replace(/\/+$/, "");
+  return out;
+}
+
+function isAdminDeploymentRequest_() {
+  try {
+    var current = normalizeWebAppUrl_(ScriptApp.getService().getUrl() || "");
+    var adminBase = normalizeWebAppUrl_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
+    return !!(current && adminBase && current === adminBase);
+  } catch (e) {
+    return false;
+  }
 }
 
 function parsePortalPayloadField_(raw) {
@@ -1613,7 +1786,155 @@ function uniqCsv_(arr) {
 
 /******************** LOCK RULE ********************/
 function isPaymentVerified_(record) {
-  return String(record.Payment_Verified || "").trim().toLowerCase() === "yes";
+  return derivePaymentVerified_(record) === true;
+}
+
+function resolveDocStatusKeys_(row) {
+  row = row || {};
+  function pick_(keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (hasOwn_(row, k)) return k;
+    }
+    return keys[0];
+  }
+  return {
+    birth: pick_(["Birth_ID_Status", "Birth_Status"]),
+    report: pick_(["Report_Status"]),
+    photo: pick_(["Photo_Status"]),
+    transfer: pick_(["Transfer_Status"]),
+    receipt: pick_(["Receipt_Status"])
+  };
+}
+
+function derivePaymentVerified_(row) {
+  row = row || {};
+  var paymentBadge = derivePaymentBadge_(row);
+  var paymentVerified = paymentBadge === "Verified";
+  // Keep legacy compatibility column aligned when present in row object.
+  if (hasOwn_(row, "Payment_Verified")) row.Payment_Verified = paymentVerified ? "Yes" : "";
+  return paymentVerified;
+}
+
+function normalizeOverallDocValue_(v) {
+  var s = clean_(v).toLowerCase();
+  if (s === "verified" || s === "yes" || s === "true" || s === "1") return "Verified";
+  if (s === "rejected" || s === "reject") return "Rejected";
+  if (s === "fraudulent" || s === "fraud") return "Rejected";
+  return "Pending";
+}
+
+function computeDocVerificationStatus_(row) {
+  row = row || {};
+  var keys = resolveDocStatusKeys_(row);
+  var requiredDocs = [keys.birth, keys.report, keys.photo];
+  var hasRejected = false;
+  var allVerified = true;
+  for (var i = 0; i < requiredDocs.length; i++) {
+    var st = normalizeOverallDocValue_(row[requiredDocs[i]]);
+    if (st === "Rejected") hasRejected = true;
+    if (st !== "Verified") allVerified = false;
+  }
+  if (hasRejected) return "Rejected";
+  if (allVerified) return "Verified";
+  return "Pending";
+}
+
+function derivePaymentBadge_(row) {
+  row = row || {};
+  var keys = resolveDocStatusKeys_(row);
+  var st = normalizeOverallDocValue_(row[keys.receipt]);
+  if (st === "Verified") return "Verified";
+  if (st === "Rejected") return "Rejected";
+  return "Pending";
+}
+
+function computeOverallStatus_(row) {
+  row = row || {};
+  var docStage = computeDocVerificationStatus_(row);
+  var paymentBadge = derivePaymentBadge_(row);
+  // keep compatibility alignment
+  if (hasOwn_(row, "Payment_Verified")) row.Payment_Verified = paymentBadge === "Verified" ? "Yes" : "";
+  if (docStage === "Verified" && paymentBadge === "Verified") return "Verified";
+  if (docStage === "Verified" && paymentBadge !== "Verified") return "Docs_Verified";
+  return "Pending";
+}
+
+function canOverrideOverall_(email) {
+  var e = clean_(email).toLowerCase();
+  if (!e) return false;
+  var superList = (CONFIG.SUPER_ADMIN_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
+  var elevatedList = (CONFIG.ELEVATED_OVERRIDE_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
+  return superList.indexOf(e) >= 0 || elevatedList.indexOf(e) >= 0;
+}
+
+function buildCrmPayloadFromRow_(rowObj) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || row[SCHEMA.APPLICANT_ID] || "");
+  var firstName = clean_(row.First_Name || "");
+  var lastName = clean_(row.Last_Name || "");
+  var emailCorrected = clean_(row.Parent_Email_Corrected || row[SCHEMA.PARENT_EMAIL_CORRECTED] || "");
+  var emailRaw = clean_(row.Parent_Email || row[SCHEMA.PARENT_EMAIL] || "");
+  var effectiveEmail = emailCorrected || emailRaw;
+  var intakeYear = clean_(row.Intake_Year || "");
+  if (!intakeYear) intakeYear = String((new Date()).getFullYear() + 1);
+  return {
+    applicantId: applicantId,
+    firstName: firstName,
+    lastName: lastName,
+    fullName: (firstName + " " + lastName).trim(),
+    parentEmail: emailRaw,
+    parentEmailCorrected: emailCorrected,
+    effectiveEmail: effectiveEmail,
+    parentPhone: clean_(row.Parent_Phone || ""),
+    gradeApplyingFor: clean_(row.Grade_Applying_For || ""),
+    intakeYear: intakeYear,
+    subjects: clean_(row.Subjects_Selected_Canonical || subjectsToCsv_(row.Subjects_Selected || "")),
+    folderUrl: clean_(row.Folder_Url || row[SCHEMA.FOLDER_URL] || ""),
+    formId: clean_(row.FormID || row.FD_FormID || "")
+  };
+}
+
+function ensureStableFormId_(rowObj, sh, rowNumber, idx) {
+  var row = rowObj || {};
+  var stable = clean_(row.FormID || row.FD_FormID || "");
+  if (stable) return stable;
+  var applicantId = clean_(row.ApplicantID || row[SCHEMA.APPLICANT_ID] || "");
+  stable = applicantId ? ("FODE_" + applicantId) : ("FODE_" + Utilities.formatDate(new Date(), "UTC", "yyyyMMddHHmmss"));
+  var formCol = idx && idx.FormID ? "FormID" : (idx && idx.FD_FormID ? "FD_FormID" : "");
+  if (formCol) {
+    sh.getRange(rowNumber, idx[formCol]).setValue(stable);
+    row[formCol] = stable;
+  }
+  return stable;
+}
+
+function readRowSnapshot_(applicantId) {
+  var id = clean_(applicantId || "");
+  if (!id) return null;
+  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var rowNum = findRowByApplicantId_(sheet, id);
+  if (!rowNum) return null;
+  var rowObj = getRowObject_(sheet, rowNum) || {};
+  var out = {
+    ApplicantID: clean_(rowObj.ApplicantID || ""),
+    Birth_Status: clean_(rowObj.Birth_Status || ""),
+    Report_Status: clean_(rowObj.Report_Status || ""),
+    Photo_Status: clean_(rowObj.Photo_Status || ""),
+    Transfer_Status: clean_(rowObj.Transfer_Status || ""),
+    Receipt_Status: clean_(rowObj.Receipt_Status || "")
+  };
+  if (Object.prototype.hasOwnProperty.call(rowObj, "Doc_Verification_Status")) {
+    out.Doc_Verification_Status = clean_(rowObj.Doc_Verification_Status || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(rowObj, "Overall_Status")) {
+    out.Overall_Status = clean_(rowObj.Overall_Status || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(rowObj, "Payment_Verified")) {
+    out.Payment_Verified = clean_(rowObj.Payment_Verified || "");
+  }
+  return out;
 }
 
 /******************** SHEET HELPERS ********************/

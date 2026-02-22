@@ -22,7 +22,145 @@ function makeReqId_() {
 }
 
 function newDebugId_() {
-  return "DBG-" + Utilities.getUuid();
+  var ts = Utilities.formatDate(new Date(), "UTC", "yyyyMMddHHmmss");
+  var rand = Utilities.getUuid().replace(/-/g, "").slice(0, 8);
+  return "DBG-" + ts + "-" + rand;
+}
+
+function logPortalUploadError_(dbgId, applicantId, fieldName, msg, extraObj) {
+  try {
+    var payload = {
+      applicantId: clean_(applicantId || ""),
+      field: clean_(fieldName || ""),
+      dbgId: clean_(dbgId || ""),
+      message: clean_(msg || "")
+    };
+    var extra = extraObj && typeof extraObj === "object" ? extraObj : {};
+    var compact = {};
+    Object.keys(extra).forEach(function (k) {
+      var v = extra[k];
+      if (v === null || v === undefined) return;
+      var s = (typeof v === "string") ? v : JSON.stringify(v);
+      if (!s) return;
+      compact[k] = s.length > 400 ? s.slice(0, 400) : s;
+    });
+    if (Object.keys(compact).length) payload.extra = compact;
+    var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+    log_(sh, "PORTAL_UPLOAD_FAIL", JSON.stringify(payload));
+  } catch (e) {
+    // Best-effort only; never break upload flow.
+  }
+}
+
+function getZohoToken_() {
+  var props = PropertiesService.getScriptProperties();
+  var cached = clean_(props.getProperty("ZOHO_ACCESS_TOKEN") || "");
+  var expMs = Number(props.getProperty("ZOHO_ACCESS_TOKEN_EXP_MS") || 0);
+  if (cached && expMs > (Date.now() + 60 * 1000)) return cached;
+
+  var refreshToken = clean_(props.getProperty("ZOHO_REFRESH_TOKEN") || "");
+  var clientId = clean_(props.getProperty("ZOHO_CLIENT_ID") || "");
+  var clientSecret = clean_(props.getProperty("ZOHO_CLIENT_SECRET") || "");
+  if (!refreshToken || !clientId || !clientSecret) {
+    throw new Error("Missing Zoho OAuth script properties.");
+  }
+
+  var endpoint = clean_(CONFIG.ZOHO_OAUTH_BASE || "https://accounts.zoho.com/oauth/v2") + "/token";
+  var resp = UrlFetchApp.fetch(endpoint, {
+    method: "post",
+    muteHttpExceptions: true,
+    payload: {
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "refresh_token"
+    }
+  });
+  var code = Number(resp.getResponseCode() || 0);
+  var body = String(resp.getContentText() || "");
+  var parsed;
+  try { parsed = JSON.parse(body || "{}"); } catch (e) { parsed = {}; }
+  if (code < 200 || code >= 300 || !clean_(parsed.access_token || "")) {
+    throw new Error("Zoho token refresh failed (" + code + ")");
+  }
+  var accessToken = clean_(parsed.access_token);
+  var expiresIn = Number(parsed.expires_in || parsed.expires_in_sec || 3600);
+  props.setProperty("ZOHO_ACCESS_TOKEN", accessToken);
+  props.setProperty("ZOHO_ACCESS_TOKEN_EXP_MS", String(Date.now() + Math.max(120, expiresIn - 60) * 1000));
+  return accessToken;
+}
+
+function upsertZohoContact_(token, payloadRowObj) {
+  var p = payloadRowObj || {};
+  var data = {
+    First_Name: clean_(p.firstName || ""),
+    Last_Name: clean_(p.lastName || p.fullName || "Unknown"),
+    Email: clean_(p.effectiveEmail || ""),
+    Phone: clean_(p.parentPhone || "")
+  };
+  var body = {
+    data: [data],
+    duplicate_check_fields: ["Email", "Phone"]
+  };
+  var endpoint = clean_(CONFIG.ZOHO_API_BASE || "https://www.zohoapis.com/crm/v2") + "/Contacts/upsert";
+  var res = UrlFetchApp.fetch(endpoint, {
+    method: "post",
+    muteHttpExceptions: true,
+    contentType: "application/json",
+    headers: { Authorization: "Zoho-oauthtoken " + clean_(token) },
+    payload: JSON.stringify(body)
+  });
+  var code = Number(res.getResponseCode() || 0);
+  var text = String(res.getContentText() || "");
+  var parsed;
+  try { parsed = JSON.parse(text || "{}"); } catch (e) { parsed = {}; }
+  if (code < 200 || code >= 300) throw new Error("Zoho contact upsert failed (" + code + ")");
+  var item = (parsed.data && parsed.data[0]) ? parsed.data[0] : {};
+  var id = clean_((item.details && item.details.id) || item.id || "");
+  if (!id) throw new Error("Zoho contact upsert returned no id");
+  return { id: id, response: parsed };
+}
+
+function upsertZohoDeal_(token, payloadRowObj, folderUrl, contactId) {
+  var p = payloadRowObj || {};
+  var duplicateField = clean_(CONFIG.DEAL_DUPLICATE_FIELD || "FormID");
+  var stableFormId = clean_(p.formId || "");
+  var applicantId = clean_(p.applicantId || "");
+  var dedupeValue = stableFormId || applicantId;
+  var dealName = clean_(p.fullName || "") || applicantId || "FODE Applicant";
+  dealName += applicantId ? (" - " + applicantId) : "";
+
+  var dealData = {
+    Deal_Name: dealName,
+    Stage: clean_(CONFIG.DEAL_STAGE || "Qualification")
+  };
+  if (clean_(contactId)) dealData.Contact_Name = { id: clean_(contactId) };
+  if (duplicateField && dedupeValue) dealData[duplicateField] = dedupeValue;
+  var ownerId = clean_(PropertiesService.getScriptProperties().getProperty("FODE_DEFAULT_OWNER_ID") || "");
+  if (ownerId) dealData.Owner = { id: ownerId };
+  if (clean_(folderUrl || "")) dealData.Description = "Folder: " + clean_(folderUrl);
+
+  var body = {
+    data: [dealData],
+    duplicate_check_fields: duplicateField && dedupeValue ? [duplicateField] : ["Deal_Name"]
+  };
+  var endpoint = clean_(CONFIG.ZOHO_API_BASE || "https://www.zohoapis.com/crm/v2") + "/Deals/upsert";
+  var res = UrlFetchApp.fetch(endpoint, {
+    method: "post",
+    muteHttpExceptions: true,
+    contentType: "application/json",
+    headers: { Authorization: "Zoho-oauthtoken " + clean_(token) },
+    payload: JSON.stringify(body)
+  });
+  var code = Number(res.getResponseCode() || 0);
+  var text = String(res.getContentText() || "");
+  var parsed;
+  try { parsed = JSON.parse(text || "{}"); } catch (e) { parsed = {}; }
+  if (code < 200 || code >= 300) throw new Error("Zoho deal upsert failed (" + code + ")");
+  var item = (parsed.data && parsed.data[0]) ? parsed.data[0] : {};
+  var id = clean_((item.details && item.details.id) || item.id || "");
+  if (!id) throw new Error("Zoho deal upsert returned no id");
+  return { id: id, response: parsed };
 }
 
 function getCurrentWebAppUrl_() {
