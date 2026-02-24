@@ -27,6 +27,337 @@ function newDebugId_() {
   return "DBG-" + ts + "-" + rand;
 }
 
+function makeDebugId_() {
+  return newDebugId_();
+}
+
+function makeClientDebugId_() {
+  return "CDBG-" + Utilities.formatDate(new Date(), "UTC", "yyyyMMddHHmmss") + "-" + Utilities.getUuid().replace(/-/g, "").slice(0, 8);
+}
+
+function stringifyGsError_(err) {
+  if (err === null || err === undefined) return "";
+  if (typeof err === "string") return err;
+  try {
+    if (err && typeof err.message === "string" && err.message) return err.message;
+  } catch (_e1) {}
+  try {
+    return JSON.stringify(err);
+  } catch (_e2) {}
+  try {
+    return String(err);
+  } catch (_e3) {}
+  return "Unknown error";
+}
+
+function getExecIdentity_() {
+  var activeUserEmail = "";
+  var effectiveUserEmail = "";
+  try { activeUserEmail = clean_(Session.getActiveUser().getEmail() || ""); } catch (_e1) {}
+  try { effectiveUserEmail = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_e2) {}
+  return {
+    activeUserEmail: activeUserEmail,
+    effectiveUserEmail: effectiveUserEmail,
+    isAnonymousActiveUser: !activeUserEmail
+  };
+}
+
+function isAdminEmail_(email) {
+  var e = clean_(email || "").toLowerCase();
+  if (!e) return false;
+  var allowlist = (CONFIG.ADMIN_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
+  return allowlist.indexOf(e) >= 0;
+}
+
+function getCallerEmail_() {
+  var active = "";
+  var effective = "";
+  try { active = clean_(Session.getActiveUser().getEmail() || ""); } catch (_a) {}
+  try { effective = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_e) {}
+  return clean_(active || effective || "");
+}
+
+function isAdminCaller_() {
+  return isAdminEmail_(getCallerEmail_());
+}
+
+function safeErr_(e) {
+  var name = "";
+  var message = "";
+  var stack = "";
+  try { name = clean_(e && e.name || ""); } catch (_e1) {}
+  try { message = clean_(e && e.message || stringifyGsError_(e) || ""); } catch (_e2) {}
+  try { stack = String(e && e.stack ? e.stack : ""); } catch (_e3) {}
+  var lines = stack ? stack.split(/\r?\n/) : [];
+  return {
+    name: name,
+    message: message,
+    stackTop: lines.slice(0, 5).join("\n")
+  };
+}
+
+function getScriptProp_(key) {
+  var k = clean_(key);
+  if (!k) return "";
+  try {
+    return clean_(PropertiesService.getScriptProperties().getProperty(k) || "");
+  } catch (_e) {
+    return "";
+  }
+}
+
+function setScriptProp_(key, value) {
+  var k = clean_(key);
+  if (!k) return;
+  var v = clean_(value);
+  PropertiesService.getScriptProperties().setProperty(k, v);
+}
+
+function safeFolderProbe_(folderId) {
+  var id = clean_(folderId);
+  if (!id) {
+    return { ok: false, errName: "Error", errMessage: "Missing folderId" };
+  }
+  try {
+    var folder = withRetries_(function () {
+      return DriveApp.getFolderById(id);
+    }, { label: "safeFolderProbe:getFolderById" });
+    var name = withRetries_(function () {
+      return clean_(folder.getName() || "");
+    }, { label: "safeFolderProbe:getName" });
+    return { ok: true, name: name };
+  } catch (e) {
+    var se = safeErr_(e);
+    return {
+      ok: false,
+      errName: clean_(se.name || "Error") || "Error",
+      errMessage: clean_(se.message || "Folder probe failed") || "Folder probe failed"
+    };
+  }
+}
+
+function isDriveServerError_(e) {
+  var msg = "";
+  try { msg = clean_(e && e.message || stringifyGsError_(e) || ""); } catch (_e1) {}
+  return /server error occurred/i.test(msg);
+}
+
+function withRetries_(fn, opts) {
+  var cfg = opts && typeof opts === "object" ? opts : {};
+  var attempts = Math.max(1, Number(cfg.attempts || 3));
+  var sleepMs = Math.max(0, Number(cfg.sleepMs || 250));
+  var backoff = Math.max(1, Number(cfg.backoff || 2));
+  var maxTotalMs = Math.max(0, Number(cfg.maxTotalMs || 8000));
+  var dbg = clean_(cfg.dbg || "");
+  var label = clean_(cfg.label || "retry");
+  var lastErr = null;
+  var totalSleepMs = 0;
+  for (var i = 0; i < attempts; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      lastErr = e;
+      var retryable = isDriveServerError_(e);
+      if (!retryable || i >= attempts - 1) throw e;
+      var plannedSleep = Math.round(sleepMs * Math.pow(backoff, i));
+      if (maxTotalMs > 0 && totalSleepMs + plannedSleep > maxTotalMs) {
+        plannedSleep = Math.max(0, maxTotalMs - totalSleepMs);
+      }
+      try {
+        logExecTrace_("RETRY_WAIT", dbg, {
+          label: label,
+          attempt: i + 1,
+          attempts: attempts,
+          sleepMs: plannedSleep,
+          err: clean_(stringifyGsError_(e) || "")
+        });
+      } catch (_logRetry) {}
+      if (plannedSleep > 0) {
+        Utilities.sleep(plannedSleep);
+        totalSleepMs += plannedSleep;
+      }
+    }
+  }
+  throw lastErr || new Error("Retry failed");
+}
+
+function safeHttpErr_(resText, status) {
+  var body = "";
+  try { body = String(resText || ""); } catch (_e) {}
+  body = body.replace(/\s+/g, " ").trim();
+  if (body.length > 500) body = body.slice(0, 500);
+  return {
+    status: Number(status || 0),
+    bodySnippet: body
+  };
+}
+
+function oauthHeaders_() {
+  return {
+    Authorization: "Bearer " + ScriptApp.getOAuthToken()
+  };
+}
+
+function buildUrlWithParams_(baseUrl, params) {
+  var url = clean_(baseUrl);
+  var q = [];
+  var p = params && typeof params === "object" ? params : {};
+  Object.keys(p).forEach(function (k) {
+    var v = p[k];
+    if (v === null || v === undefined || v === "") return;
+    q.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v)));
+  });
+  if (!q.length) return url;
+  return url + (url.indexOf("?") >= 0 ? "&" : "?") + q.join("&");
+}
+
+function urlFetchJson_(url, opts) {
+  var cfg = opts && typeof opts === "object" ? opts : {};
+  var method = String(cfg.method || "get").toLowerCase();
+  var headers = cfg.headers && typeof cfg.headers === "object" ? shallowCopy_(cfg.headers) : {};
+  var payload = cfg.payload;
+  var mute = cfg.muteHttpExceptions !== false;
+  var fetchOpts = {
+    method: method,
+    headers: headers,
+    muteHttpExceptions: mute
+  };
+  if (cfg.contentType) fetchOpts.contentType = cfg.contentType;
+  if (payload !== undefined) fetchOpts.payload = payload;
+  var resp = UrlFetchApp.fetch(url, fetchOpts);
+  var status = Number(resp.getResponseCode() || 0);
+  var text = String(resp.getContentText() || "");
+  var parsed = null;
+  try { parsed = JSON.parse(text || "null"); } catch (_jsonErr) {}
+  return {
+    ok: status >= 200 && status < 300,
+    status: status,
+    json: parsed,
+    text: text
+  };
+}
+
+function driveApiGet_(path, params) {
+  var base = clean_(CONFIG.DRIVE_API_BASE || "https://www.googleapis.com/drive/v3");
+  var url = buildUrlWithParams_(base + path, params);
+  return urlFetchJson_(url, {
+    method: "get",
+    headers: oauthHeaders_(),
+    muteHttpExceptions: true
+  });
+}
+
+function driveApiPost_(path, body, params) {
+  var base = clean_(CONFIG.DRIVE_API_BASE || "https://www.googleapis.com/drive/v3");
+  var url = buildUrlWithParams_(base + path, params);
+  return urlFetchJson_(url, {
+    method: "post",
+    headers: oauthHeaders_(),
+    contentType: "application/json",
+    payload: JSON.stringify(body || {}),
+    muteHttpExceptions: true
+  });
+}
+
+function driveApiMultipartUpload_(metadata, blob) {
+  var boundary = "fode_" + Utilities.getUuid().replace(/-/g, "");
+  var uploadBase = clean_(CONFIG.DRIVE_UPLOAD_BASE || "https://www.googleapis.com/upload/drive/v3");
+  var fields = clean_(CONFIG.DRIVE_FIELDS_FILE || "id,name,webViewLink,parents");
+  var url = buildUrlWithParams_(uploadBase + "/files", {
+    uploadType: "multipart",
+    fields: fields
+  });
+  var metaJson = JSON.stringify(metadata || {});
+  var pre = ""
+    + "--" + boundary + "\r\n"
+    + "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+    + metaJson + "\r\n"
+    + "--" + boundary + "\r\n"
+    + "Content-Type: " + clean_(blob && blob.getContentType && blob.getContentType() || "application/octet-stream") + "\r\n\r\n";
+  var post = "\r\n--" + boundary + "--";
+  var bytes = []
+    .concat(Utilities.newBlob(pre).getBytes())
+    .concat(blob.getBytes())
+    .concat(Utilities.newBlob(post).getBytes());
+  return urlFetchJson_(url, {
+    method: "post",
+    headers: oauthHeaders_(),
+    contentType: "multipart/related; boundary=" + boundary,
+    payload: bytes,
+    muteHttpExceptions: true
+  });
+}
+
+function getOrCreateFolderByName_(parentFolder, name, dbg) {
+  var parent = parentFolder;
+  var folderName = clean_(name);
+  var it = parent.getFoldersByName(folderName);
+  if (it.hasNext()) return it.next();
+  var created = parent.createFolder(folderName);
+  try {
+    logExecTrace_("YEAR_FOLDER_CREATED", dbg, {
+      event: "YEAR_FOLDER_CREATED",
+      yearFolderName: folderName,
+      yearFolderId: clean_(created && created.getId && created.getId() || "")
+    });
+  } catch (_e) {}
+  return created;
+}
+
+function classifyUploadErr_(e) {
+  try {
+    var explicit = clean_(e && (e.errCode || e.code) || "");
+    if (explicit) return explicit;
+  } catch (_e0) {}
+  var msg = "";
+  try { msg = clean_(e && e.message || stringifyGsError_(e) || ""); } catch (_e1) {}
+  var lower = msg.toLowerCase();
+  if (lower.indexOf("server error occurred") >= 0 && (lower.indexOf("folder_root_") >= 0 || lower.indexOf("drive_probe") >= 0)) {
+    return "driveapp_unavailable";
+  }
+  if (lower.indexOf("driveapp_unavailable") >= 0) return "driveapp_unavailable";
+  if (lower.indexOf("folder_root_unusable") >= 0) return "folder_root_unusable";
+  if (lower.indexOf("folder_root_unset") >= 0) return "folder_root_unset";
+  return "server_exception";
+}
+
+function decodeBase64DataUrl_(dataUrl) {
+  var raw = String(dataUrl || "");
+  var mimeType = "";
+  var payload = raw;
+  var m = raw.match(/^data:([^;]+);base64,(.+)$/i);
+  if (m) {
+    mimeType = clean_(m[1] || "");
+    payload = String(m[2] || "");
+  }
+  if (!payload) throw new Error("Missing base64 payload");
+  return {
+    mimeType: mimeType,
+    bytes: Utilities.base64Decode(payload)
+  };
+}
+
+function base64FromText_(text) {
+  return Utilities.base64Encode(String(text || ""), Utilities.Charset.UTF_8);
+}
+
+function safeFileName_(name) {
+  var s = clean_(name || "") || ("upload_" + Date.now());
+  s = s.replace(/[\\\/:\*\?\"<>\|]+/g, "_");
+  s = s.replace(/\s+/g, " ").trim();
+  if (s.length > 180) {
+    var dot = s.lastIndexOf(".");
+    if (dot > 0 && dot < s.length - 1) {
+      var ext = s.slice(dot);
+      var base = s.slice(0, dot);
+      s = base.slice(0, Math.max(1, 180 - ext.length)) + ext;
+    } else {
+      s = s.slice(0, 180);
+    }
+  }
+  return s || ("upload_" + Date.now());
+}
+
 function logPortalUploadError_(dbgId, applicantId, fieldName, msg, extraObj) {
   try {
     var payload = {
@@ -132,8 +463,12 @@ function upsertZohoDeal_(token, payloadRowObj, folderUrl, contactId) {
 
   var dealData = {
     Deal_Name: dealName,
-    Stage: clean_(CONFIG.DEAL_STAGE || "Qualification")
+    Stage: clean_(p.crmStage || CONFIG.CRM_STAGE_PAYMENT_VERIFIED || CONFIG.DEAL_STAGE || "Qualification")
   };
+  if (clean_(p.crmPipeline || CONFIG.CRM_PIPELINE_FODE || "")) {
+    // Best-effort; ignored by Zoho if this field name is not present in the module layout.
+    dealData.Pipeline = clean_(p.crmPipeline || CONFIG.CRM_PIPELINE_FODE || "");
+  }
   if (clean_(contactId)) dealData.Contact_Name = { id: clean_(contactId) };
   if (duplicateField && dedupeValue) dealData[duplicateField] = dedupeValue;
   var ownerId = clean_(PropertiesService.getScriptProperties().getProperty("FODE_DEFAULT_OWNER_ID") || "");
@@ -171,6 +506,23 @@ function getCurrentWebAppUrl_() {
   } catch (e) {
     return "";
   }
+}
+
+function canonicalizeWebAppUrl_(url) {
+  var raw = clean_(url || "");
+  if (!raw) return "";
+  var m = raw.match(/^https:\/\/script\.google\.com(?:\/a\/[^/]+)?\/macros\/s\/([a-zA-Z0-9_-]+)\/exec(?:[?#].*)?$/i);
+  if (m && m[1]) return "https://script.google.com/macros/s/" + m[1] + "/exec";
+  if (/^https:\/\/script\.google\.com\/a\//i.test(raw)) {
+    raw = raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\//i, "https://script.google.com/");
+  }
+  return raw.replace(/[?#].*$/, "").replace(/\/+$/, "");
+}
+
+function getStudentBaseUrl_() {
+  var configured = clean_(CONFIG.WEBAPP_URL_STUDENT || CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  if (configured) return canonicalizeWebAppUrl_(configured);
+  return canonicalizeWebAppUrl_(getCurrentWebAppUrl_());
 }
 
 function toIsoDateInput_(value) {
@@ -236,6 +588,58 @@ function hasOwn_(obj, key) {
   return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
 }
 
+function clampInt_(value, min, max) {
+  var n = Number(value);
+  if (!isFinite(n)) n = Number(min || 0);
+  n = Math.floor(n);
+  if (isFinite(min)) n = Math.max(Number(min), n);
+  if (isFinite(max)) n = Math.min(Number(max), n);
+  return n;
+}
+
+function nowMs_() {
+  return Date.now();
+}
+
+function elapsedMs_(t0) {
+  return Date.now() - Number(t0 || 0);
+}
+
+function logExecTrace_(tag, dbg, obj) {
+  try {
+    var payload = obj && typeof obj === "object" ? shallowCopy_(obj) : {};
+    payload.dbg = clean_(dbg || payload.dbg || "");
+    payload.tag = clean_(tag || "");
+    payload.ts = new Date().toISOString();
+    var msg = JSON.stringify(payload, function (key, value) {
+      var k = String(key || "").toLowerCase();
+      if (k === "base64" || k.indexOf("base64") >= 0 || k === "dataurl") return "[omitted]";
+      return value;
+    });
+    Logger.log((payload.tag || "TRACE") + " " + msg);
+  } catch (_e) {
+    try { Logger.log(String(tag || "TRACE")); } catch (_e2) {}
+  }
+}
+
+function normalizeRowNumbers_(arr, lastRow, maxCount) {
+  var list = Array.isArray(arr) ? arr : [];
+  var out = [];
+  var seen = {};
+  var upper = Number(lastRow || 0);
+  var limit = Number(maxCount || 0);
+  for (var i = 0; i < list.length; i++) {
+    var n = clampInt_(list[i], 0, upper || 0);
+    if (!n || n < 2) continue;
+    if (upper && n > upper) continue;
+    if (seen[n]) continue;
+    seen[n] = true;
+    out.push(n);
+    if (limit > 0 && out.length >= limit) break;
+  }
+  return out;
+}
+
 function normalizePayloadValue_(value) {
   if (typeof value === "string") return value.trim();
   if (Array.isArray(value)) {
@@ -282,6 +686,39 @@ function jsonOut_(obj) {
       .setHeader("Pragma", "no-cache");
   }
   return out;
+}
+
+function safeJsonForHtml_(obj) {
+  var json = "";
+  try {
+    json = JSON.stringify(obj && typeof obj === "object" ? obj : {});
+  } catch (_e) {
+    json = JSON.stringify({ ok: false, code: "SERIALIZE_FAIL", message: "Failed to serialize payload." });
+  }
+  return String(json || "{}")
+    .replace(/<\//g, "<\\/")
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
+function htmlIframeResult_(payload) {
+  var msg = safeJsonForHtml_(payload || {});
+  var html = ""
+    + "<!doctype html><html><head><meta charset=\"utf-8\" />"
+    + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+    + "<title>Upload Result</title></head><body>"
+    + "<script>"
+    + "(function(){"
+    + "var payload=" + msg + ";"
+    + "try{ if(window.parent&&window.parent.postMessage){ window.parent.postMessage(payload,'*'); } }catch(e){}"
+    + "document.body.textContent='PORTAL_UPLOAD_RESULT '+(payload&&payload.ok?'ok':'fail');"
+    + "})();"
+    + "</script>"
+    + "<noscript>PORTAL_UPLOAD_RESULT</noscript>"
+    + "</body></html>";
+  return HtmlService.createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function esc_(s) {
@@ -335,6 +772,16 @@ function hashPortalSecret_(secret) {
     out.push(h.length === 1 ? "0" + h : h);
   }
   return out.join("");
+}
+
+function secretHashPrefix_(secret) {
+  var s = clean_(secret || "");
+  if (!s) return "";
+  try {
+    return clean_(hashPortalSecret_(s)).slice(0, 8);
+  } catch (_e) {
+    return "";
+  }
 }
 
 function openPortalSecrets_() {
@@ -702,7 +1149,10 @@ function portalDebugLog_(tag, obj) {
     if (src.mismatches !== undefined) payload.mismatches = src.mismatches;
     if (src.patchSample !== undefined) payload.patchSample = src.patchSample;
 
-    var msg = JSON.stringify(payload);
+    var msg = JSON.stringify(payload, function (key, value) {
+      if (String(key || "").toLowerCase() === "base64") return "[omitted]";
+      return value;
+    });
     var maxBytes = Number(CONFIG.PORTAL_DEBUG_MAX_BYTES || 2500);
     if (!(maxBytes > 0)) maxBytes = 2500;
     if (msg.length > maxBytes) msg = msg.slice(0, maxBytes);

@@ -22,6 +22,10 @@ Sheet:
 function doPost(e) {
   var reqId = makeReqId_();
   var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var postView = clean_(params.view || "").toLowerCase();
+  if (postView === "portalupload") {
+    return doPost_portalUpload_(e);
+  }
   var paramKeys = Object.keys(params);
   var rawPostData = (e && e.postData) ? e.postData : null;
   var postType = clean_(rawPostData && (rawPostData.type || rawPostData.contentType) || "");
@@ -255,6 +259,11 @@ function doGet(e) {
   Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
 
   if (view === "diag") return respondDiag_(e);
+  if (view === "driveapiprobe") return doGet_driveApiProbe_(e);
+  if (view === "drivedeepprobe") return doGet_driveDeepProbe_(e);
+  if (view === "driveprobe") return doGet_driveProbe_(e);
+  if (view === "portalsmoke") return doGet_portalSmoke_(e);
+  if (view === "uploadsmoke") return doGet_uploadSmoke_(e);
   if (!view) {
     if (isAdminDeployment) return renderAdminApp_(e);
     view = "portal";
@@ -275,19 +284,25 @@ function doGet(e) {
   var reqId = makeReqId_();
   var debugPage = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && dbg === "1";
   var reqMeta = getPortalRequestMeta_(e);
+  function invalidPortalLinkMsg_(reasonCode, dbgId, extra) {
+    var reason = clean_(reasonCode || "") || "invalid";
+    var debugId = clean_(dbgId || "");
+    var extraText = clean_(extra || "");
+    var msg = "Invalid portal link (" + reason + ")";
+    if (extraText) msg += " - " + extraText;
+    if (debugId) msg += " Debug: " + debugId;
+    return msg;
+  }
   if (!id || !secret) {
+    var missingTokenDbg = newDebugId_();
     safePortalLog_({
       route: "doGet:portal",
       applicantId: id || "",
       email: reqMeta.ip || "",
       status: "invalid_token",
-      message: "missing_params | ua=" + (reqMeta.ua || "")
+      message: "missing_params dbg=" + missingTokenDbg + " | ua=" + (reqMeta.ua || "")
     }, false);
-    var msg = "Missing portal link parameters";
-    if (errorFlag) {
-      msg = "Missing portal token (id/s). Please reopen your portal link.";
-      if (dbg) msg += " Debug: " + dbg;
-    }
+    var msg = invalidPortalLinkMsg_("missingToken", errorFlag && dbg ? dbg : missingTokenDbg, "Please reopen your portal link.");
     return htmlOutput_(renderErrorHtml_(msg));
   }
 
@@ -295,6 +310,7 @@ function doGet(e) {
   var sheet = mustGetDataSheet_(ss);
   var rowNum = findRowByApplicantId_(sheet, id);
   if (!rowNum) {
+    var applicantNotFoundDbg = newDebugId_();
     var missingCount = incrementInvalidPortalAttempt_(id);
     if (missingCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
     safePortalLog_({
@@ -302,9 +318,9 @@ function doGet(e) {
       applicantId: id,
       email: reqMeta.ip || "",
       status: "invalid_token",
-      message: "row_not_found attempts=" + missingCount + " | ua=" + (reqMeta.ua || "")
+      message: "row_not_found attempts=" + missingCount + " dbg=" + applicantNotFoundDbg + " | ua=" + (reqMeta.ua || "")
     }, false);
-    return htmlOutput_(renderErrorHtml_("Invalid portal link"));
+    return htmlOutput_(renderErrorHtml_(invalidPortalLinkMsg_("applicantNotFound", applicantNotFoundDbg)));
   }
   var rowObj = getRowObject_(sheet, rowNum);
   if (!clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "")) {
@@ -332,6 +348,7 @@ function doGet(e) {
   var currentHash = clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "");
   var inputHash = hashPortalSecret_(secret);
   if (!currentHash || !inputHash || currentHash !== inputHash) {
+    var secretMismatchDbg = newDebugId_();
     var badCount = incrementInvalidPortalAttempt_(id);
     if (badCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
     safePortalLog_({
@@ -339,21 +356,22 @@ function doGet(e) {
       applicantId: id,
       email: reqMeta.ip || "",
       status: "invalid_token",
-      message: "hash_mismatch attempts=" + badCount + " | ua=" + (reqMeta.ua || "")
+      message: "hash_mismatch attempts=" + badCount + " dbg=" + secretMismatchDbg + " | ua=" + (reqMeta.ua || "")
     }, false);
-    return htmlOutput_(renderErrorHtml_("Invalid portal link"));
+    return htmlOutput_(renderErrorHtml_(invalidPortalLinkMsg_("secretMismatch", secretMismatchDbg)));
   }
 
   var record = rowObj;
   if (String(record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+    var lockedDbg = newDebugId_();
     safePortalLog_({
       route: "doGet:portal",
       applicantId: id,
       email: reqMeta.ip || "",
       status: "locked",
-      message: "portal_locked | ua=" + (reqMeta.ua || "")
+      message: "portal_locked dbg=" + lockedDbg + " | ua=" + (reqMeta.ua || "")
     }, false);
-    return htmlOutput_(renderErrorHtml_("Access suspended"));
+    return htmlOutput_(renderErrorHtml_(invalidPortalLinkMsg_("locked", lockedDbg, "Access suspended")));
   }
 
   record._PortalLockReason = getPortalLockReason_(record);
@@ -396,15 +414,129 @@ function doGet(e) {
   }));
 }
 
-function diagStatus_() {
-  return {
+function diagStatus_(e) {
+  var activeUser = "";
+  var effectiveUser = "";
+  var serviceUrl = "";
+  var isAdmin = false;
+  if (CONFIG.DIAG_RUNTIME !== true) {
+    return { ok: false, err: "diag disabled" };
+  }
+  try { activeUser = clean_(Session.getActiveUser().getEmail() || ""); } catch (_au) {}
+  try { effectiveUser = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_eu) {}
+  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_su) {}
+  try {
+    var allowlist = (CONFIG.ADMIN_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
+    isAdmin = allowlist.indexOf(clean_(activeUser).toLowerCase()) >= 0;
+  } catch (_adm) {}
+  var out = {
     ok: true,
     version: CONFIG.VERSION,
-    now: new Date().toISOString(),
+    changelog: CONFIG.CHANGELOG_LAST || "",
+    nowIso: new Date().toISOString(),
     scriptId: ScriptApp.getScriptId(),
-    deployment: "DEV",
-    note: "Use this endpoint to confirm deployment + runtime without clasp run"
+    serviceUrl: serviceUrl,
+    studentBaseUrl: getStudentBaseUrl_(),
+    user: activeUser,
+    effectiveUser: effectiveUser
   };
+  if (isAdmin) {
+    var propKey = clean_(CONFIG.SCRIPT_PROP_UPLOAD_ROOT_ID || "FODE_UPLOAD_ROOT_ID") || "FODE_UPLOAD_ROOT_ID";
+    out.rootPrimaryId = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY || "");
+    out.rootFallbackId = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_FALLBACK || "");
+    out.yearFolderName = clean_(CONFIG.APPLICANT_ROOT_YEAR_FOLDER_NAME || "");
+    out.autoUploadRootEnabled = CONFIG.AUTO_UPLOAD_ROOT_ENABLED === true;
+    out.scriptPropUploadRootKey = propKey;
+    out.scriptPropUploadRootId = (typeof getScriptProp_ === "function") ? clean_(getScriptProp_(propKey) || "") : "";
+    out.driveAuthHint = "If Drive operations fail with server error, run authDrive() in the Apps Script editor as the owner.";
+  }
+  return out;
+}
+
+function driveProbeFolder_(folderId) {
+  var out = {
+    ok: false,
+    folderId: clean_(folderId || ""),
+    canIterate: false
+  };
+  try {
+    var id = clean_(folderId || "");
+    if (!id) throw new Error("Missing folderId");
+    var folder = DriveApp.getFolderById(id);
+    out.name = clean_(folder.getName() || "");
+    out.url = clean_(folder.getUrl() || "");
+    try {
+      var it = folder.getFolders();
+      out.canIterate = !!it;
+      if (it && typeof it.hasNext === "function") it.hasNext();
+    } catch (_iterErr) {
+      out.canIterate = false;
+    }
+    out.ok = true;
+    return out;
+  } catch (e) {
+    var se = safeErr_(e);
+    out.errCode = "drive_probe_failed";
+    out.errName = clean_(se.name || "Error") || "Error";
+    out.errMessage = clean_(se.message || "Drive probe failed") || "Drive probe failed";
+    return out;
+  }
+}
+
+function authDrive() {
+  var rootId = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY || "");
+  var out = {
+    ok: false,
+    rootId: rootId,
+    version: CONFIG.VERSION
+  };
+  try {
+    var myDriveRoot = DriveApp.getRootFolder();
+    var _myDriveRootName = clean_(myDriveRoot.getName() || "");
+    var root = DriveApp.getFolderById(rootId);
+    out.rootName = clean_(root.getName() || "");
+    out.rootUrl = clean_(root.getUrl() || "");
+    try {
+      var it = root.getFolders();
+      if (it && typeof it.hasNext === "function") it.hasNext();
+    } catch (_iterErr) {}
+    out.ok = true;
+  } catch (e) {
+    var se = safeErr_(e);
+    out.errName = clean_(se.name || "Error") || "Error";
+    out.errMessage = clean_(se.message || "Drive auth failed") || "Drive auth failed";
+  }
+  var text = JSON.stringify(out);
+  Logger.log(text);
+  return text;
+}
+
+function authDriveYearFolder() {
+  var out = {
+    ok: false,
+    version: CONFIG.VERSION
+  };
+  try {
+    var rootId = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY || "");
+    var yearFolderName = clean_(CONFIG.APPLICANT_ROOT_YEAR_FOLDER_NAME || CONFIG.YEAR_FOLDER || "");
+    if (!rootId) throw new Error("Missing CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY");
+    if (!yearFolderName) throw new Error("Missing year folder config");
+    var root = DriveApp.getFolderById(rootId);
+    var yearFolder = (typeof getOrCreateFolderByName_ === "function")
+      ? getOrCreateFolderByName_(root, yearFolderName, "AUTH")
+      : getOrCreateFolder_(root, yearFolderName);
+    out.ok = true;
+    out.rootId = rootId;
+    out.yearFolderId = clean_(yearFolder.getId() || "");
+    out.yearFolderName = clean_(yearFolder.getName() || yearFolderName);
+  } catch (e) {
+    var se = safeErr_(e);
+    out.errName = clean_(se.name || "Error") || "Error";
+    out.errMessage = clean_(se.message || "Drive year-folder auth failed") || "Drive year-folder auth failed";
+  }
+  var text = JSON.stringify(out);
+  Logger.log(text);
+  return text;
 }
 
 
@@ -563,6 +695,12 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
 
   log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
   log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+  var beforeReceiptRow = {
+    ApplicantID: clean_(found.record.ApplicantID || id || ""),
+    First_Name: clean_(found.record.First_Name || ""),
+    Last_Name: clean_(found.record.Last_Name || ""),
+    Fee_Receipt_File: clean_(found.record.Fee_Receipt_File || "")
+  };
   try {
     writeBack_(dataSheet, rowIndex, updates);
     SpreadsheetApp.flush();
@@ -573,6 +711,18 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
       error: String(e && e.message ? e.message : e)
     });
     return failResult(String(e && e.message ? e.message : e), "WRITE_FAILED");
+  }
+  try {
+    if (Object.prototype.hasOwnProperty.call(updates, "Fee_Receipt_File")) {
+      var afterReceiptRow = getRowObject_(dataSheet, rowIndex);
+      maybeNotifyPaymentReceiptUploadTransition_(beforeReceiptRow, afterReceiptRow, rowIndex, { source: "portal_update" });
+    }
+  } catch (receiptAlertErr) {
+    portalDebugLog_("PAYMENT_RECEIPT_ALERT_ERROR", {
+      applicantId: id,
+      rowNumber: rowIndex,
+      error: String(receiptAlertErr && receiptAlertErr.message ? receiptAlertErr.message : receiptAlertErr)
+    });
   }
   portalDebugLog_("PORTAL_UPDATE_RESULT", {
     applicantId: id,
@@ -588,6 +738,210 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
     applicantId: id,
     rowNumber: rowIndex,
     saved: 1
+  };
+}
+
+function isAllowedPortalUploadField_(fieldKey) {
+  var key = clean_(fieldKey || "");
+  var allow = CONFIG.PORTAL_UPLOAD_KEYS || [];
+  return allow.indexOf(key) >= 0;
+}
+
+function savePortalUpload_(applicantId, fieldKey, fileName, mimeType, bytes, ctx) {
+  var id = clean_(applicantId || "");
+  var key = clean_(fieldKey || "");
+  var context = ctx || {};
+  if (!id) throw new Error("Missing ApplicantID");
+  if (!isAllowedPortalUploadField_(key)) throw new Error("Invalid upload field");
+
+  var ss = context.ss || SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var sheet = context.sheet || mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var dbg = clean_(context.dbg || "");
+  var preferRestOnly = context.preferRest === true && CONFIG.DRIVE_REST_FALLBACK_ENABLED === true && CONFIG.PORTAL_UPLOAD_PREFER_REST === true;
+  var onStage = (typeof context.onStage === "function") ? context.onStage : null;
+  function emitUploadStage_(name, extra) {
+    if (!onStage) return;
+    try { onStage(clean_(name), extra && typeof extra === "object" ? extra : {}); } catch (_stageErr) {}
+  }
+  var rowNumber = Number(context.rowNumber || 0);
+  var rowObj = context.rowObj || (rowNumber >= 2 ? getRowObject_(sheet, rowNumber) : null) || {};
+  if (!rowNumber && id) rowNumber = findRowByApplicantId_(sheet, id);
+  if (!rowNumber || rowNumber < 2) throw new Error("Applicant row not found");
+
+  var tFolder = nowMs_();
+  var folderUrl = clean_(rowObj.Folder_Url || "");
+  var folderId = folderIdFromUrl_(folderUrl);
+  var folder = null;
+  var folderHandle = null;
+  var folderIdKnown = !!folderId;
+  emitUploadStage_("folder", {
+    applicantId: id,
+    field: key,
+    folderIdKnown: folderIdKnown
+  });
+  if (preferRestOnly) {
+    if (folderId) {
+      folderHandle = driveApiBuildFolderHandleById_(folderId, dbg, folderUrl);
+    }
+  } else if (folderId) {
+    try {
+      folder = withRetries_(function () { return DriveApp.getFolderById(folderId); }, { dbg: dbg, label: "savePortalUpload:getFolderById" });
+      withRetries_(function () { return folder.getName(); }, { dbg: dbg, label: "savePortalUpload:folderGetName" });
+      folderHandle = {
+        kind: "driveapp",
+        folder: folder,
+        id: clean_(folder.getId() || folderId),
+        url: clean_(folder.getUrl() || folderUrl)
+      };
+    } catch (e) {
+      folder = null;
+      if (typeof isDriveServerError_ === "function" && isDriveServerError_(e) && CONFIG.DRIVE_REST_FALLBACK_ENABLED === true) {
+        folderHandle = driveApiBuildFolderHandleById_(folderId, dbg, folderUrl);
+      }
+    }
+  }
+  if (!folderHandle) {
+    if (preferRestOnly) {
+      folderHandle = createApplicantFolderHandleWithRestFallback_(rowObj, dbg, id);
+    } else {
+      try {
+        folder = createApplicantFolder_(rowObj, { dbg: dbg });
+        folderHandle = {
+          kind: "driveapp",
+          folder: folder,
+          id: clean_(folder.getId() || ""),
+          url: clean_(folder.getUrl() || "")
+        };
+      } catch (createErr) {
+        if (typeof isDriveServerError_ === "function" && isDriveServerError_(createErr) && CONFIG.DRIVE_REST_FALLBACK_ENABLED === true) {
+          folderHandle = createApplicantFolderHandleWithRestFallback_(rowObj, dbg, id);
+        } else {
+          throw createErr;
+        }
+      }
+    }
+    if (!folderHandle) throw new Error("folder_root_unusable: folder handle missing");
+    writeBack_(sheet, rowNumber, { Folder_Url: clean_(folderHandle.url || "") });
+    rowObj.Folder_Url = clean_(folderHandle.url || "");
+  }
+  logExecTrace_("UPLOAD_T_FOLDER", dbg, {
+    applicantId: id,
+    field: key,
+    ms: elapsedMs_(tFolder),
+    folderIdKnown: folderIdKnown
+  });
+
+  var meta = docMetaByField_(key) || {};
+  var prefix = safeFileName_(id) + "__" + safeFileName_(key) + "__";
+  var finalName = prefix + safeFileName_(fileName || ((meta.label || key) + ".bin"));
+  var blob = Utilities.newBlob(bytes || [], clean_(mimeType || "application/octet-stream") || "application/octet-stream", finalName);
+  emitUploadStage_("drive", {
+    applicantId: id,
+    field: key
+  });
+  var tDrive = nowMs_();
+  var file = null;
+  var fileInfo = null;
+  if (folderHandle.kind === "driveapp") {
+    file = withRetries_(function () {
+      return folderHandle.folder.createFile(blob);
+    }, { dbg: dbg, label: "savePortalUpload:createFile" });
+    fileInfo = {
+      fileId: clean_(file.getId() || ""),
+      fileUrl: clean_(file.getUrl() || ""),
+      fileName: clean_(file.getName() || finalName)
+    };
+  } else if (folderHandle.kind === "rest") {
+    fileInfo = driveApiUploadBlobToFolder_(clean_(folderHandle.id || ""), finalName, blob, dbg);
+  } else {
+    throw new Error("folder_root_unusable: unknown folder handle kind");
+  }
+  logExecTrace_("UPLOAD_T_DRIVE", dbg, {
+    applicantId: id,
+    field: key,
+    ms: elapsedMs_(tDrive)
+  });
+  return {
+    fileId: clean_(fileInfo && fileInfo.fileId || ""),
+    fileUrl: clean_(fileInfo && fileInfo.fileUrl || ""),
+    fileName: clean_(fileInfo && fileInfo.fileName || finalName),
+    rowNumber: rowNumber,
+    folderUrl: clean_(folderHandle && folderHandle.url || ""),
+    driveMode: folderHandle && folderHandle.kind === "rest" ? "REST" : "DRIVEAPP"
+  };
+}
+
+function applyPortalUploadSheetUpdate_(sheet, rowNumber, rowObj, fieldKey, uploadResult, opts) {
+  var sh = sheet;
+  var rowNum = Number(rowNumber || 0);
+  var record = rowObj || getRowObject_(sh, rowNum);
+  var key = clean_(fieldKey || "");
+  var res = uploadResult || {};
+  var logSheet = (opts && opts.logSheet) || mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+  var dbg = clean_((opts && opts.dbg) || "");
+  var docMeta = docMetaByField_(key);
+  if (!docMeta) throw new Error("Invalid document field");
+
+  var oldCell = clean_(record[key] || "");
+  var isMultiple = docMeta.multiple === true;
+  var fileUrl = clean_(res.fileUrl || "");
+  if (!fileUrl) throw new Error("Missing uploaded file URL");
+  var updates = {};
+  updates[key] = isMultiple ? appendUrlToCell_(oldCell, fileUrl) : fileUrl;
+  updates.PortalLastUpdateAt = new Date().toISOString();
+  if (!clean_(record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
+  if (docMeta.status && hasHeader_(sh, docMeta.status)) updates[docMeta.status] = "PENDING_REVIEW";
+  var line = new Date().toISOString()
+    + " | " + key
+    + " | " + (isMultiple ? "uploaded" : "replaced")
+    + " | old=" + (oldCell || "-")
+    + " | new=" + fileUrl;
+  updates.File_Log = appendLog_(clean_(record.File_Log || ""), line);
+
+  var receiptBeforeRow = null;
+  if (key === "Fee_Receipt_File") {
+    receiptBeforeRow = {
+      ApplicantID: clean_(record.ApplicantID || ""),
+      First_Name: clean_(record.First_Name || ""),
+      Last_Name: clean_(record.Last_Name || ""),
+      Fee_Receipt_File: clean_(record.Fee_Receipt_File || "")
+    };
+  }
+
+  var tSheet = nowMs_();
+  writeBack_(sh, rowNum, updates);
+  SpreadsheetApp.flush();
+  var verifyRow = getRowObject_(sh, rowNum);
+  logExecTrace_("UPLOAD_T_SHEET", dbg, {
+    applicantId: clean_(record.ApplicantID || ""),
+    field: key,
+    ms: elapsedMs_(tSheet)
+  });
+  var verifyCell = clean_(verifyRow[key] || "");
+  if (verifyCell.indexOf(fileUrl) < 0) throw new Error("Upload URL was not saved. Please try again.");
+
+  log_(logSheet, "PORTAL_UPLOAD_OK", JSON.stringify({
+    applicantId: clean_(record.ApplicantID || ""),
+    fieldKey: key,
+    fileId: clean_(res.fileId || ""),
+    rowNumber: rowNum
+  }));
+
+  if (key === "Fee_Receipt_File") {
+    try {
+      maybeNotifyPaymentReceiptUploadTransition_(receiptBeforeRow || {}, verifyRow, rowNum, { source: "portalUploadFile_" });
+    } catch (receiptAlertErr) {
+      log_(logSheet, "PAYMENT_RECEIPT_ALERT_ERROR", String(receiptAlertErr && receiptAlertErr.message ? receiptAlertErr.message : receiptAlertErr));
+    }
+  }
+
+  return {
+    fileUrl: fileUrl,
+    fileId: clean_(res.fileId || ""),
+    rowNumber: rowNum,
+    fieldKey: key,
+    multiple: isMultiple,
+    currentUrls: normalizeToUrlList_(verifyRow[key] || "")
   };
 }
 
@@ -674,6 +1028,15 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
     }
     updates.File_Log = fileLog;
 
+    var receiptBeforeRow = null;
+    if (fieldName === "Fee_Receipt_File") {
+      receiptBeforeRow = {
+        ApplicantID: clean_(found.record.ApplicantID || applicantId || ""),
+        First_Name: clean_(found.record.First_Name || ""),
+        Last_Name: clean_(found.record.Last_Name || ""),
+        Fee_Receipt_File: clean_(found.record.Fee_Receipt_File || "")
+      };
+    }
     writeBack_(sheet, found.rowNum, updates);
     SpreadsheetApp.flush();
     var verifyRow = getRowObject_(sheet, found.rowNum);
@@ -683,6 +1046,13 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
       throw new Error("Upload URL was not saved. Please try again.");
     }
     log_(logSheet, "PORTAL UPLOAD", "ApplicantID=" + applicantId + " field=" + fieldName + " files=" + createdUrls.length);
+    if (fieldName === "Fee_Receipt_File") {
+      try {
+        maybeNotifyPaymentReceiptUploadTransition_(receiptBeforeRow || {}, verifyRow, found.rowNum, { source: "uploadPortalFile" });
+      } catch (receiptUploadAlertErr) {
+        log_(logSheet, "PAYMENT_RECEIPT_ALERT_ERROR", String(receiptUploadAlertErr && receiptUploadAlertErr.message ? receiptUploadAlertErr.message : receiptUploadAlertErr));
+      }
+    }
 
     return {
       ok: true,
@@ -958,6 +1328,7 @@ function renderPortalHtml_(opts) {
     + '<div style="position:fixed;top:10px;right:12px;z-index:9;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#0f172a;background:#dbeafe;border:1px solid #93c5fd;" title="' + esc_(buildVersion) + '">' + esc_(shortVersion) + "</div>"
     + "<h2>FODE Student Portal</h2>"
     + '<div id="portalFlashMount"></div>'
+    + '<div id="portalErrorBanner" style="display:none;background:#ffecec;border:1px solid #b30000;padding:10px;border-radius:8px;margin-bottom:12px;color:#000;"></div>'
     + savedBlock
     + errBlock
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
@@ -1173,6 +1544,11 @@ function renderPortalHtml_(opts) {
 function renderDocsSection_(id, secret, record, docs, locked) {
   var out = "";
   var portalReloadUrl = buildPortalRedirectUrl_(id, secret, {});
+  var studentExecBase = canonicalStudentExecBase_();
+  var portalUploadActionUrl = studentExecBase
+    + (studentExecBase.indexOf("?") >= 0 ? "&" : "?") + "view=portalUpload"
+    + "&id=" + encodeURIComponent(clean_(id || ""))
+    + "&s=" + encodeURIComponent(clean_(secret || ""));
   for (var i = 0; i < docs.length; i++) {
     var d = docs[i];
     var cur = clean_(record[d.field] || "");
@@ -1203,33 +1579,134 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     var uploadUi = locked
       ? "<div style='margin-top:10px;color:#666;'><i>Uploads disabled (locked).</i></div>"
       : "<div style='margin-top:10px;'>"
-        + "<input type='file' id='f_" + esc_(d.field) + "'" + multipleAttr + " onchange=\"onDocFileChange('" + esc_(d.field) + "', " + (d.multiple ? "true" : "false") + ")\" /> "
-        + "<button type='button' id='btn_" + esc_(d.field) + "' onclick=\"uploadDoc('" + esc_(d.field) + "', " + (d.multiple ? "true" : "false") + ")\">Upload / Replace</button>"
+        + "<form id='uf_" + esc_(d.field) + "' method='post' enctype='multipart/form-data' action='" + esc_(portalUploadActionUrl) + "' target='portalUploadFrame' style='margin:0;'>"
+        + "<input type='hidden' name='id' value='" + esc_(id) + "' />"
+        + "<input type='hidden' name='s' value='" + esc_(secret) + "' />"
+        + "<input type='hidden' name='docKey' value='" + esc_(d.field) + "' />"
+        + "<input type='hidden' name='dbg' id='dbg_" + esc_(d.field) + "' value='' />"
+        + "<input type='file' name='file' id='f_" + esc_(d.field) + "' data-upload-input='1' data-field='" + esc_(d.field) + "' data-multi='" + (d.multiple ? "1" : "0") + "'" + multipleAttr + " /> "
+        + "<button type='button' id='btn_" + esc_(d.field) + "' data-upload-btn='1' data-field='" + esc_(d.field) + "' data-multi='" + (d.multiple ? "1" : "0") + "'>Upload / Replace</button>"
+        + "</form>"
         + noteHtml
         + "<div id='cur_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'>" + curLinks + "</div>"
         + "<div id='msg_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'></div>"
+        + "<div id='ust_" + esc_(d.field) + "' style='margin-top:6px;padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f8fafc;font-size:11px;'>"
+        + "<div><b>Upload Status:</b> <span id='ust_text_" + esc_(d.field) + "'>Idle</span></div>"
+        + "<div>dbg: <span id='ust_dbg_" + esc_(d.field) + "'>-</span></div>"
+        + "<div>stage: <span id='ust_stage_" + esc_(d.field) + "'>-</span></div>"
+        + "<div>errCode: <span id='ust_err_" + esc_(d.field) + "'>-</span></div>"
+        + "<div>driveMode: <span id='ust_mode_" + esc_(d.field) + "'>-</span></div>"
+        + "<div>serverMs: <span id='ust_ms_" + esc_(d.field) + "'>-</span></div>"
+        + "<div>fileUrl: <span id='ust_url_" + esc_(d.field) + "'>-</span></div>"
+        + "</div>"
         + multiBadge
         + "</div>";
 
     out += ""
       + "<div style='padding:10px;border:1px solid #eee;border-radius:10px;margin:10px 0;'>"
       + "<div><b>" + esc_(d.label) + "</b></div>"
-      + "<div style='margin-top:6px;'>" + stBadge + "</div>"
+      + "<div id='st_" + esc_(d.field) + "' style='margin-top:6px;'>" + stBadge + "</div>"
       + cmBlock
       + curLinks
       + uploadUi
       + "</div>";
   }
 
+  out += "<iframe name='portalUploadFrame' id='portalUploadFrame' style='display:none;width:0;height:0;border:0;' title='portal-upload-frame'></iframe>";
+
   // uploader script
   out += ""
     + "<script>"
-    + "var PORTAL_AUTO_UPLOAD=true;"
+    + "var PORTAL_AUTO_UPLOAD=false;"
     + "var PORTAL_LOCKED=" + (locked ? "true" : "false") + ";"
+    + "var PORTAL_UPLOAD_MAX_MB=" + String(Number(CONFIG.PORTAL_UPLOAD_MAX_MB || 5)) + ";"
+    + "var PORTAL_UPLOAD_MAX_SERVER_MS=" + String(Number(CONFIG.PORTAL_UPLOAD_MAX_SERVER_MS || 20000)) + ";"
+    + "var PORTAL_UPLOAD_TIMEOUT_MS=" + String(Number(CONFIG.PORTAL_UPLOAD_TIMEOUT_MS || 25000)) + ";"
     + "var DOC_MULTI_MAP={"
     + (docs || []).map(function (x) { return "'" + esc_(x.field) + "':" + (x.multiple ? "true" : "false"); }).join(",")
     + "};"
+    + "var PORTAL_UPLOAD_PENDING={};"
     + "function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\\"/g,'&quot;').replace(/'/g,'&#039;');}"
+    + "function makeClientDebugId_(){"
+    + "  var ts='';"
+    + "  try{ ts=new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,14); }catch(e){ ts=String(Date.now()); }"
+    + "  return 'CDBG-'+ts+'-'+Math.random().toString(16).slice(2,10);"
+    + "}"
+    + "function stringifyGsError_(err){"
+    + "  if(err===null || err===undefined) return 'Unknown error';"
+    + "  if(typeof err==='string') return err;"
+    + "  if(err && typeof err.message==='string' && err.message) return err.message;"
+    + "  try{return JSON.stringify(err);}catch(e){}"
+    + "  try{return String(err);}catch(e2){}"
+    + "  return 'Unknown error';"
+    + "}"
+    + "function setPortalError_(msg){"
+    + "  var el=document.getElementById('portalErrorBanner');"
+    + "  if(!el) return;"
+    + "  var t=String(msg||'').trim();"
+    + "  if(!t){ el.style.display='none'; el.textContent=''; return; }"
+    + "  el.textContent=t;"
+    + "  el.style.display='block';"
+    + "}"
+    + "function clearPortalError_(){ setPortalError_(''); }"
+    + "function getPortalTokens_(){"
+    + "  var q=new URLSearchParams(window.location.search||'');"
+    + "  var id=(q.get('id')||'').trim();"
+    + "  var s=(q.get('s')||'').trim();"
+    + "  if((!id || !s)){"
+    + "    var form=document.getElementById('portalForm');"
+    + "    if(form){"
+    + "      var idEl=form.querySelector('input[name=\"id\"]');"
+    + "      var sEl=form.querySelector('input[name=\"s\"]');"
+    + "      if(!id && idEl) id=String(idEl.value||'').trim();"
+    + "      if(!s && sEl) s=String(sEl.value||'').trim();"
+    + "    }"
+    + "  }"
+    + "  if(!id || !s){"
+    + "    setPortalError_('Missing portal link token. Please reopen your portal link.');"
+    + "    return null;"
+    + "  }"
+    + "  return {id:id,s:s};"
+    + "}"
+    + "function setRowMsg(fieldName, txt, isErr){"
+    + "  var msg=document.getElementById('msg_'+fieldName);"
+    + "  if(!msg) return;"
+    + "  msg.style.color=isErr ? '#b30000' : '';"
+    + "  msg.innerHTML=txt||'';"
+    + "}"
+    + "function setUploadStatusPanel_(fieldName, info){"
+    + "  var x=info||{};"
+    + "  function set_(id,val,isLink){"
+    + "    var el=document.getElementById(id+'_'+fieldName);"
+    + "    if(!el) return;"
+    + "    var v=(val===undefined||val===null||val==='')?'-':String(val);"
+    + "    if(isLink && v && v!=='-'){ el.innerHTML='<a target=\"_blank\" href=\"'+escHtml(v)+'\">'+escHtml(v)+'</a>'; }"
+    + "    else { el.textContent=v; }"
+    + "  }"
+    + "  set_('ust_text', x.text||'');"
+    + "  set_('ust_dbg', x.dbg||'');"
+    + "  set_('ust_stage', x.stage||'');"
+    + "  set_('ust_err', x.errCode||'');"
+    + "  set_('ust_mode', x.driveMode||'');"
+    + "  set_('ust_ms', x.serverMs!==undefined&&x.serverMs!==null ? String(x.serverMs) : '');"
+    + "  set_('ust_url', x.fileUrl||'', true);"
+    + "}"
+    + "function setUploadUiError_(fieldName, txt, meta){"
+    + "  var m=meta||{};"
+    + "  setPortalError_(txt);"
+    + "  setRowMsg(fieldName, txt, true);"
+    + "  setUploadStatusPanel_(fieldName, { text:'Error', dbg:m.dbg||'', stage:m.stage||'', errCode:m.errCode||'', driveMode:m.driveMode||'', serverMs:m.serverMs, fileUrl:m.fileUrl||'' });"
+    + "}"
+    + "function setUploadUiSuccess_(fieldName, txt, meta){"
+    + "  var m=meta||{};"
+    + "  clearPortalError_();"
+    + "  setRowMsg(fieldName, txt, false);"
+    + "  setUploadStatusPanel_(fieldName, { text:'Uploaded', dbg:m.dbg||'', stage:m.stage||'done', errCode:m.errCode||'', driveMode:m.driveMode||'', serverMs:m.serverMs, fileUrl:m.fileUrl||'' });"
+    + "}"
+    + "function markDocStatusPendingReviewUi_(fieldName){"
+    + "  var el=document.getElementById('st_'+fieldName);"
+    + "  if(el) el.innerHTML='<b>Status:</b> Pending Review';"
+    + "}"
     + "function setUploadBusy(fieldName,busy){"
     + "  var input=document.getElementById('f_'+fieldName);"
     + "  var btn=document.getElementById('btn_'+fieldName);"
@@ -1251,77 +1728,95 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "  });"
     + "  box.innerHTML='<b>Current files:</b><br/>'+parts.join('<br/>');"
     + "}"
-    + "function readFilesAsBase64(files, done, fail){"
-    + "  var out=[];"
-    + "  var idx=0;"
-    + "  function step(){"
-    + "    if(idx>=files.length){ done(out); return; }"
-    + "    var f=files[idx++];"
-    + "    var reader=new FileReader();"
-    + "    reader.onload=function(e){"
-    + "      var data=e.target && e.target.result ? e.target.result : '';"
-    + "      out.push({name:f.name||('upload_'+Date.now()), type:f.type||'application/octet-stream', base64:String(data).split(',').pop()||''});"
-    + "      step();"
-    + "    };"
-    + "    reader.onerror=function(){ fail('Failed to read file: '+(f && f.name ? f.name : 'unknown')); };"
-    + "    reader.readAsDataURL(f);"
-    + "  }"
-    + "  step();"
-    + "}"
     + "function onDocFileChange(fieldName, isMultiple){"
     + "  var input=document.getElementById('f_'+fieldName);"
-    + "  var msg=document.getElementById('msg_'+fieldName);"
     + "  var btn=document.getElementById('btn_'+fieldName);"
-    + "  if(!input || !msg){ return; }"
+    + "  if(!input){ return; }"
     + "  var files=[].slice.call(input.files||[]);"
-    + "  if(!files.length){ if(btn) btn.disabled=false; msg.innerHTML='Select a file first.'; return; }"
+    + "  if(!files.length){ if(btn) btn.disabled=false; setRowMsg(fieldName,'Select a file first.',true); return; }"
     + "  if(!isMultiple) files=[files[0]];"
+    + "  var tooBig=files.some(function(f){ return Number(f && f.size || 0) > (8*1024*1024); });"
+    + "  if(tooBig){ if(btn) btn.disabled=false; setUploadUiError_(fieldName,'File too large. Maximum '+String(PORTAL_UPLOAD_MAX_MB||5)+'MB allowed.',{errCode:'file_too_large',stage:'validate'}); return; }"
     + "  var names=files.map(function(f){ return f.name; }).join(', ');"
-    + "  msg.innerHTML='Selected: '+escHtml(names);"
+    + "  clearPortalError_();"
+    + "  setRowMsg(fieldName,'Selected: '+escHtml(names),false);"
+    + "  setUploadStatusPanel_(fieldName,{text:'Ready',stage:'validate',driveMode:'MULTIPART'});"
     + "  if(btn) btn.disabled=false;"
     + "  if(PORTAL_AUTO_UPLOAD){ uploadDoc(fieldName, isMultiple); }"
-    + "  else { msg.innerHTML += '<br/>Selecting a file does NOT upload until Upload/Replace runs.'; }"
+    + "  else { setRowMsg(fieldName,'Selected: '+escHtml(names)+'<br/>Click Upload / Replace to submit.',false); }"
     + "}"
     + "function uploadDoc(fieldName, isMultiple){"
     + "  var input=document.getElementById('f_'+fieldName);"
-    + "  var msg=document.getElementById('msg_'+fieldName);"
-    + "  if(!input || !input.files || !input.files.length){ if(msg) msg.innerHTML='Select a file first.'; return; }"
+    + "  var form=document.getElementById('uf_'+fieldName);"
+    + "  if(!form || !input || !input.files || !input.files.length){ setUploadUiError_(fieldName,'Please select a file.',{errCode:'NO_FILE',stage:'validate'}); return; }"
     + "  var files=[].slice.call(input.files||[]);"
     + "  if(!isMultiple) files=[files[0]];"
+    + "  if(files.some(function(f){ return Number(f && f.size || 0) > (Math.max(1,Number(PORTAL_UPLOAD_MAX_MB||5))*1024*1024); })){ setUploadUiError_(fieldName,'File too large. Maximum '+String(PORTAL_UPLOAD_MAX_MB||5)+'MB allowed.',{errCode:'FILE_TOO_LARGE',stage:'validate'}); return; }"
+    + "  var dbg=makeClientDebugId_();"
+    + "  var dbgEl=document.getElementById('dbg_'+fieldName);"
+    + "  if(dbgEl) dbgEl.value=dbg;"
+    + "  PORTAL_UPLOAD_PENDING[fieldName]={ dbg:dbg, startedAt:Date.now() };"
     + "  setUploadBusy(fieldName,true);"
-    + "  if(msg) msg.innerHTML='Uploading...';"
-    + "  readFilesAsBase64(files,function(payloads){"
-    + "    var names=payloads.map(function(p){return p.name;});"
-    + "    var types=payloads.map(function(p){return p.type;});"
-    + "    var base64s=payloads.map(function(p){return p.base64;});"
-    + "    google.script.run"
-    + "      .withSuccessHandler(function(res){"
-    + "        if(!res || res.ok!==true){"
-    + "          var dbg=(res&&res.debugId)?String(res.debugId):'';"
-    + "          var redirect=(res&&res.redirectUrl)?String(res.redirectUrl):'';"
-    + "          if(msg) msg.innerHTML=(res&&res.error)?String(res.error):('Upload failed.'+(dbg?(' Debug: '+dbg):''));"
-    + "          if(redirect){ window.location.replace(redirect); return; }"
-    + "          setUploadBusy(fieldName,false);"
-    + "          return;"
-    + "        }"
-    + "        var uploaded=(res && res.urls && res.urls.length) ? res.urls : (res && res.url ? [res.url] : []);"
-    + "        var current=getCurrentUrlsFromDom(fieldName);"
-    + "        uploaded.forEach(function(u){ if(u && current.indexOf(u)===-1) current.push(u); });"
-    + "        renderCurrentUrls(fieldName, current);"
-    + "        if(msg) msg.innerHTML='Uploaded '+uploaded.length+' file(s).';"
-    + "        input.value='';"
-    + "        setUploadBusy(fieldName,false);"
-    + "      })"
-    + "      .withFailureHandler(function(err){"
-    + "        if(msg) msg.innerHTML='Upload failed: '+(err && err.message ? err.message : err);"
-    + "        setUploadBusy(fieldName,false);"
-    + "      })"
-    + "      .uploadPortalFile('" + esc_(id) + "','" + esc_(secret) + "', fieldName, names, types, base64s);"
-    + "  }, function(readErr){"
-    + "    if(msg) msg.innerHTML='Upload failed: '+readErr;"
-    + "    setUploadBusy(fieldName,false);"
+    + "  clearPortalError_();"
+    + "  setRowMsg(fieldName,'Uploading...',false);"
+    + "  setUploadStatusPanel_(fieldName,{text:'Uploading...',dbg:dbg,stage:'call',driveMode:'MULTIPART'});"
+    + "  try{ form.submit(); }catch(subErr){ setUploadUiError_(fieldName,'Upload failed: '+stringifyGsError_(subErr),{dbg:dbg,errCode:'SUBMIT_FAIL',stage:'call',driveMode:'MULTIPART'}); setUploadBusy(fieldName,false); }"
+    + "}"
+    + "function onPortalUploadIframeResult_(data){"
+    + "  if(!data || data.type!=='PORTAL_UPLOAD_RESULT') return;"
+    + "  var fieldName=String(data.docKey||'');"
+    + "  if(!fieldName) return;"
+    + "  var pending=PORTAL_UPLOAD_PENDING[fieldName]||{};"
+    + "  var dbg=String(data.debugId||data.dbg||pending.dbg||'');"
+    + "  if(data.ok===true){"
+    + "    var urls=Array.isArray(data.currentUrls)?data.currentUrls:getCurrentUrlsFromDom(fieldName);"
+    + "    if(data.fileUrl && urls.indexOf(String(data.fileUrl))===-1) urls.push(String(data.fileUrl));"
+    + "    renderCurrentUrls(fieldName, urls);"
+    + "    markDocStatusPendingReviewUi_(fieldName);"
+    + "    setUploadUiSuccess_(fieldName,'Uploaded (Pending Review).',{dbg:dbg,stage:String(data.stage||'done'),errCode:String(data.errCode||''),driveMode:String(data.driveMode||'MULTIPART'),serverMs:data.serverMs,fileUrl:String(data.fileUrl||'')});"
+    + "    var inEl=document.getElementById('f_'+fieldName);"
+    + "    if(inEl) inEl.value='';"
+    + "  } else {"
+    + "    var code=String(data.code||data.errCode||'UPLOAD_FAILED');"
+    + "    var stage=String(data.stage||'call');"
+    + "    var msg=String(data.message||'Upload failed.');"
+    + "    setUploadUiError_(fieldName, msg+' (code='+code+', dbg='+dbg+')',{dbg:dbg,stage:stage,errCode:code,driveMode:String(data.driveMode||'MULTIPART'),serverMs:data.serverMs,fileUrl:String(data.fileUrl||'')});"
+    + "  }"
+    + "  setUploadBusy(fieldName,false);"
+    + "  delete PORTAL_UPLOAD_PENDING[fieldName];"
+    + "}"
+    + "function bindPortalUploadIframeListener_(){"
+    + "  if(window.__fodePortalUploadIframeBound) return;"
+    + "  window.__fodePortalUploadIframeBound=true;"
+    + "  window.addEventListener('message', function(ev){"
+    + "    try{ onPortalUploadIframeResult_(ev&&ev.data); }catch(_e){}"
     + "  });"
     + "}"
+    + "function bindPortalUploadUi_(){"
+    + "  bindPortalUploadIframeListener_();"
+    + "  var btns=[].slice.call(document.querySelectorAll('[data-upload-btn]'));"
+    + "  btns.forEach(function(btn){"
+    + "    if(!btn || btn.__fodeBoundUploadClick) return;"
+    + "    btn.__fodeBoundUploadClick=true;"
+    + "    btn.addEventListener('click', function(ev){"
+    + "      if(ev && typeof ev.preventDefault==='function') ev.preventDefault();"
+    + "      var field=String(btn.getAttribute('data-field')||'');"
+    + "      var isMultiple=String(btn.getAttribute('data-multi')||'0')==='1';"
+    + "      uploadDoc(field, isMultiple);"
+    + "    });"
+    + "  });"
+    + "  var inputs=[].slice.call(document.querySelectorAll('[data-upload-input]'));"
+    + "  inputs.forEach(function(input){"
+    + "    if(!input || input.__fodeBoundUploadChange) return;"
+    + "    input.__fodeBoundUploadChange=true;"
+    + "    input.addEventListener('change', function(){"
+    + "      var field=String(input.getAttribute('data-field')||'');"
+    + "      var isMultiple=String(input.getAttribute('data-multi')||'0')==='1';"
+    + "      onDocFileChange(field, isMultiple);"
+    + "    });"
+    + "  });"
+    + "}"
+    + "if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', bindPortalUploadUi_); } else { bindPortalUploadUi_(); }"
     + "function deleteDocUrl(fieldName, encodedUrl){"
     + "  if(PORTAL_LOCKED){ return; }"
     + "  var msg=document.getElementById('msg_'+fieldName);"
@@ -1460,17 +1955,280 @@ function renderSuccessHtml_(applicantId) {
 function getStudentActionUrl_() {
   var studentExec = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
   var hasStudentExec = /^https:\/\/script\.google\.com\//i.test(studentExec);
-  if (hasStudentExec) return { url: studentExec, isStudentReady: true, warning: "" };
+  if (hasStudentExec) return { url: getStudentBaseUrl_() || studentExec, isStudentReady: true, warning: "" };
   var studentUrl = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
   var adminUrl = clean_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
   var isStudentReady = /^https:\/\/script\.google\.com\//i.test(studentUrl);
-  var url = isStudentReady ? studentUrl : adminUrl;
+  var url = isStudentReady ? (getStudentBaseUrl_() || studentUrl) : adminUrl;
   var warning = isStudentReady ? "" : "Student URL not configured. Saving may not work for external users.";
   return {
     url: url,
     isStudentReady: isStudentReady,
     warning: warning
   };
+}
+
+function parseMultipartForm_(e) {
+  try {
+    var postData = (e && e.postData) ? e.postData : null;
+    var contentType = String((postData && (postData.type || postData.contentType)) || "");
+    var raw = String((postData && postData.contents) || "");
+    var m = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    var boundary = clean_((m && (m[1] || m[2])) || "");
+    if (!boundary) return { ok: false, code: "MULTIPART_PARSE_FAIL", message: "Missing multipart boundary." };
+    if (!raw) return { ok: false, code: "MULTIPART_PARSE_FAIL", message: "Empty multipart body." };
+
+    var out = { ok: true, fields: {}, files: {} };
+    var delimiter = "--" + boundary;
+    var parts = raw.split(delimiter);
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!part) continue;
+      if (part === "--" || part === "--\r\n" || part === "--\n") continue;
+      if (/^\r?\n/.test(part)) part = part.replace(/^\r?\n/, "");
+      if (!part || part === "--") continue;
+      if (/--\r?\n?$/.test(part)) part = part.replace(/--\r?\n?$/, "");
+      var sepIdx = part.indexOf("\r\n\r\n");
+      var sepLen = 4;
+      if (sepIdx < 0) {
+        sepIdx = part.indexOf("\n\n");
+        sepLen = 2;
+      }
+      if (sepIdx < 0) continue;
+      var headerText = part.slice(0, sepIdx);
+      var body = part.slice(sepIdx + sepLen);
+      body = body.replace(/\r?\n$/, "");
+
+      var headers = {};
+      var lines = headerText.split(/\r?\n/);
+      for (var h = 0; h < lines.length; h++) {
+        var line = String(lines[h] || "");
+        var colon = line.indexOf(":");
+        if (colon < 0) continue;
+        var hk = line.slice(0, colon).trim().toLowerCase();
+        var hv = line.slice(colon + 1).trim();
+        headers[hk] = hv;
+      }
+      var disp = String(headers["content-disposition"] || "");
+      if (!disp) continue;
+      var nameMatch = disp.match(/name="([^"]*)"/i);
+      var fileMatch = disp.match(/filename="([^"]*)"/i);
+      var fieldName = clean_((nameMatch && nameMatch[1]) || "");
+      if (!fieldName) continue;
+      if (fileMatch && fileMatch[1] !== undefined) {
+        var fileName = String(fileMatch[1] || "");
+        var ct = clean_(headers["content-type"] || "application/octet-stream");
+        var bytes = [];
+        for (var b = 0; b < body.length; b++) bytes.push(body.charCodeAt(b) & 0xff);
+        var fileObj = {
+          fileName: fileName,
+          contentType: ct,
+          bytes: bytes,
+          blob: Utilities.newBlob(bytes, ct || "application/octet-stream", fileName || "upload.bin")
+        };
+        if (hasOwn_(out.files, fieldName)) {
+          if (!Array.isArray(out.files[fieldName])) out.files[fieldName] = [out.files[fieldName]];
+          out.files[fieldName].push(fileObj);
+        } else {
+          out.files[fieldName] = fileObj;
+        }
+      } else {
+        out.fields[fieldName] = body;
+      }
+    }
+    return out;
+  } catch (err) {
+    return {
+      ok: false,
+      code: "MULTIPART_PARSE_FAIL",
+      message: String(err && err.message ? err.message : err)
+    };
+  }
+}
+
+function portal_uploadMultipart_(e) {
+  var t0 = nowMs_();
+  var dbg = makeDebugId_();
+  function out_(ok, code, message, extra) {
+    var x = (extra && typeof extra === "object") ? extra : {};
+    var payload = {
+      type: "PORTAL_UPLOAD_RESULT",
+      ok: !!ok,
+      code: clean_(code || (ok ? "OK" : "UPLOAD_FAILED")),
+      errCode: clean_(x.errCode || code || ""),
+      message: clean_(message || ""),
+      debugId: clean_(x.debugId || dbg),
+      dbg: clean_(x.debugId || dbg),
+      docKey: clean_(x.docKey || ""),
+      fileUrl: clean_(x.fileUrl || ""),
+      fileId: clean_(x.fileId || ""),
+      currentUrls: Array.isArray(x.currentUrls) ? x.currentUrls : [],
+      driveMode: clean_(x.driveMode || ""),
+      stage: clean_(x.stage || ""),
+      recvIdSource: clean_(x.recvIdSource || ""),
+      recvSHashed: clean_(x.recvSHashed || ""),
+      serverMs: Number(x.serverMs || elapsedMs_(t0))
+    };
+    return htmlIframeResult_(payload);
+  }
+
+  try {
+    var parsed = parseMultipartForm_(e);
+    if (!parsed || parsed.ok !== true) {
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "MULTIPART_PARSE_FAIL", stage: "parse", err: clean_(parsed && parsed.message || "") });
+      return out_(false, "MULTIPART_PARSE_FAIL", clean_(parsed && parsed.message || "Could not parse upload form."), { stage: "parse" });
+    }
+
+    var fields = parsed.fields || {};
+    var queryParams = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+    var queryId = clean_(queryParams.id || queryParams.applicantId || "");
+    var queryS = clean_(queryParams.s || queryParams.secret || "");
+    var multipartId = clean_(fields.id || fields.applicantId || "");
+    var multipartS = clean_(fields.s || fields.secret || "");
+    var recvIdSource = "missing";
+    var applicantId = "";
+    var secret = "";
+    if (queryId && queryS) {
+      applicantId = queryId;
+      secret = queryS;
+      recvIdSource = "query";
+    } else if (multipartId && multipartS) {
+      applicantId = multipartId;
+      secret = multipartS;
+      recvIdSource = "multipart";
+    } else {
+      applicantId = clean_(queryId || multipartId || "");
+      secret = clean_(queryS || multipartS || "");
+      recvIdSource = "missing";
+    }
+    var recvSHashed = (typeof secretHashPrefix_ === "function")
+      ? secretHashPrefix_(secret)
+      : clean_(hashPortalSecret_(secret || "")).slice(0, 8);
+    var docKey = clean_(fields.docKey || fields.field || "");
+    var postedDbg = clean_(fields.dbg || "");
+    if (postedDbg) dbg = postedDbg;
+    var fileEntry = parsed.files && parsed.files.file ? parsed.files.file : null;
+    if (Array.isArray(fileEntry)) fileEntry = fileEntry[0] || null;
+    if (!applicantId || !secret) {
+      return out_(false, "TOKEN_MISSING", "Missing portal token.", {
+        stage: "auth",
+        docKey: docKey,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+    if (!docKey) {
+      return out_(false, "INVALID_FIELD", "Missing document field.", {
+        stage: "validate",
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+
+    if (!fileEntry || !Array.isArray(fileEntry.bytes) || !fileEntry.bytes.length) {
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "NO_FILE", stage: "parse", applicantId: applicantId, docKey: docKey });
+      return out_(false, "NO_FILE", "Please select a file.", {
+        stage: "parse",
+        docKey: docKey,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+
+    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+    var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+    var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
+    if (!found) {
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "TOKEN_INVALID", stage: "auth", applicantId: applicantId, docKey: docKey });
+      return out_(false, "TOKEN_INVALID", "Invalid or expired portal link token.", {
+        stage: "auth",
+        docKey: docKey,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+    if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+      return out_(false, "ACCESS_LOCKED", "Portal access is locked. Please contact admissions.", {
+        stage: "auth",
+        docKey: docKey,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+    if (isPaymentFreezeActive_(found.record)) {
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "PAYMENT_FREEZE", stage: "auth", applicantId: applicantId, docKey: docKey });
+      return out_(false, "PAYMENT_FREEZE", "Uploads are disabled after payment verification.", {
+        stage: "auth",
+        docKey: docKey,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+
+    var fileName = clean_(fileEntry.fileName || fields.name || "portal-upload.bin");
+    var mimeType = clean_(fileEntry.contentType || fields.mimeType || "application/octet-stream");
+    var b64 = Utilities.base64Encode(fileEntry.bytes);
+    var res = portalUpload_fromUi_({
+      id: applicantId,
+      s: secret,
+      field: docKey,
+      name: fileName,
+      mimeType: mimeType,
+      b64: b64,
+      dbg: dbg
+    }) || {};
+
+    var code = clean_(res.errCode || (res.ok ? "OK" : "UPLOAD_FAILED")) || (res.ok ? "OK" : "UPLOAD_FAILED");
+    if (res.ok === true) {
+      logExecTrace_("PORTAL_UPLOAD", dbg, {
+        applicantId: applicantId,
+        docKey: docKey,
+        fileName: fileName,
+        byteSize: Number(fileEntry.bytes.length || 0),
+        serverMs: Number(res.serverMs || elapsedMs_(t0)),
+        driveMode: clean_(res.driveMode || "")
+      });
+      return out_(true, "OK", "Uploaded", {
+        debugId: clean_(res.dbg || dbg),
+        docKey: docKey,
+        fileUrl: res.fileUrl,
+        fileId: res.fileId,
+        currentUrls: res.currentUrls,
+        driveMode: res.driveMode,
+        stage: res.stage || "done",
+        serverMs: res.serverMs,
+        recvIdSource: recvIdSource,
+        recvSHashed: recvSHashed
+      });
+    }
+
+    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, {
+      applicantId: applicantId,
+      docKey: docKey,
+      fileName: fileName,
+      byteSize: Number(fileEntry.bytes.length || 0),
+      stage: clean_(res.stage || "call"),
+      errCode: clean_(res.errCode || code),
+      serverMs: Number(res.serverMs || elapsedMs_(t0))
+    });
+    return out_(false, code.toUpperCase(), clean_(res.err || "Upload failed."), {
+      debugId: clean_(res.dbg || dbg),
+      docKey: docKey,
+      fileUrl: res.fileUrl,
+      fileId: res.fileId,
+      currentUrls: res.currentUrls,
+      driveMode: res.driveMode,
+      stage: res.stage || "call",
+      serverMs: res.serverMs,
+      errCode: res.errCode || code,
+      recvIdSource: recvIdSource,
+      recvSHashed: recvSHashed
+    });
+  } catch (err) {
+    var msg = String(err && err.message ? err.message : err);
+    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "PORTAL_UPLOAD_EXCEPTION", stage: "call", e: safeErr_(err) });
+    return out_(false, "PORTAL_UPLOAD_EXCEPTION", msg || "Upload failed.", { stage: "call" });
+  }
 }
 
 function buildPortalRedirectUrl_(applicantId, secret) {
@@ -1537,7 +2295,7 @@ function returnPortalRedirectOutput_(url) {
 function canonicalizePortalRedirectUrl_(url) {
   var raw = clean_(url);
   if (!raw) return "";
-  var canonicalBase = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  var canonicalBase = getStudentBaseUrl_() || clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
   var qIndex = raw.indexOf("?");
   var query = qIndex >= 0 ? raw.slice(qIndex) : "";
   if (/^https:\/\/script\.google\.com\/a\//i.test(raw)) {
@@ -1551,13 +2309,7 @@ function canonicalizePortalRedirectUrl_(url) {
 }
 
 function canonicalStudentExecBase_() {
-  var raw = clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
-  if (!raw) raw = clean_(CONFIG.WEBAPP_URL_STUDENT || getStudentActionUrl_().url || "");
-  if (!raw) return "";
-  if (/^https:\/\/script\.google\.com\/a\//i.test(raw)) {
-    return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\//i, "https://script.google.com/");
-  }
-  return raw;
+  return getStudentBaseUrl_() || clean_(CONFIG.WEBAPP_URL_STUDENT_EXEC || CONFIG.WEBAPP_URL_STUDENT || "");
 }
 
 function normalizeWebAppUrl_(url) {
@@ -1792,8 +2544,7 @@ function uniqCsv_(arr) {
 /******************** LOCK RULE ********************/
 function getPortalLockReason_(record) {
   var row = record || {};
-  if (derivePaymentBadge_(row) === "Verified") return "payment_verified";
-  if (clean_(row.Payment_Verified).toLowerCase() === "yes") return "payment_verified_compat";
+  if (isPaymentVerifiedDerived_(row)) return "payment_verified";
   if (String(row[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") return "portal_access_locked";
   if (row._PortalHardLocked === true) return "hard_locked";
   return "";
@@ -1804,7 +2555,17 @@ function isPortalLocked_(record) {
 }
 
 function isPaymentVerified_(record) {
-  return derivePaymentVerified_(record) === true;
+  return isPaymentVerifiedDerived_(record) === true;
+}
+
+function isPaymentVerifiedDerived_(row) {
+  row = row || {};
+  if (derivePaymentBadge_(row) === "Verified") return true;
+  return clean_(row.Payment_Verified).toLowerCase() === "yes";
+}
+
+function isPaymentFreezeActive_(row) {
+  return isPaymentVerifiedDerived_(row) === true;
 }
 
 function resolveDocStatusKeys_(row) {
@@ -1827,8 +2588,7 @@ function resolveDocStatusKeys_(row) {
 
 function derivePaymentVerified_(row) {
   row = row || {};
-  var paymentBadge = derivePaymentBadge_(row);
-  var paymentVerified = paymentBadge === "Verified";
+  var paymentVerified = isPaymentVerifiedDerived_(row);
   // Keep legacy compatibility column aligned when present in row object.
   if (hasOwn_(row, "Payment_Verified")) row.Payment_Verified = paymentVerified ? "Yes" : "";
   return paymentVerified;
@@ -1871,9 +2631,11 @@ function computeOverallStatus_(row) {
   row = row || {};
   var docStage = computeDocVerificationStatus_(row);
   var paymentBadge = derivePaymentBadge_(row);
+  var paymentVerified = isPaymentVerifiedDerived_(row);
   // keep compatibility alignment
-  if (hasOwn_(row, "Payment_Verified")) row.Payment_Verified = paymentBadge === "Verified" ? "Yes" : "";
-  if (docStage === "Verified" && paymentBadge === "Verified") return "Verified";
+  if (hasOwn_(row, "Payment_Verified")) row.Payment_Verified = paymentVerified ? "Yes" : "";
+  // Payment verification is the final milestone and must not be downgraded by doc edits.
+  if (paymentVerified) return "Verified";
   if (docStage === "Verified" && paymentBadge !== "Verified") return "Docs_Verified";
   return "Pending";
 }
@@ -1884,6 +2646,184 @@ function canOverrideOverall_(email) {
   var superList = (CONFIG.SUPER_ADMIN_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
   var elevatedList = (CONFIG.ELEVATED_OVERRIDE_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
   return superList.indexOf(e) >= 0 || elevatedList.indexOf(e) >= 0;
+}
+
+function canBypassPaymentFreeze_(email) {
+  var e = clean_(email).toLowerCase();
+  if (!e) return false;
+  var superList = (CONFIG.SUPER_ADMIN_EMAILS || []).map(function (x) { return clean_(x).toLowerCase(); });
+  return superList.indexOf(e) >= 0;
+}
+
+function computeFodeFeeQuote_(rowObj) {
+  var row = rowObj || {};
+  var registrationK = Number(CONFIG.FEE_REGISTRATION_KINA || 600);
+  var perSubjectK = Number(CONFIG.FEE_PER_SUBJECT_KINA || 450);
+  var csv = clean_(row.Subjects_Selected_Canonical || row[SCHEMA.SUBJECTS_CANONICAL] || "");
+  if (!csv) csv = subjectsToCsv_(row.Subjects_Selected || "");
+  var parts = csv ? csv.split(",") : [];
+  var subjects = [];
+  for (var i = 0; i < parts.length; i++) {
+    var s = clean_(parts[i]);
+    if (s) subjects.push(s);
+  }
+  var subjectCount = subjects.length;
+  var subjectFeeK = perSubjectK * subjectCount;
+  return {
+    registrationK: registrationK,
+    subjectCount: subjectCount,
+    subjectFeeK: subjectFeeK,
+    totalK: registrationK + subjectFeeK,
+    subjectsList: subjects.join(", ")
+  };
+}
+
+function buildAdminApplicantDeepLink_(applicantId) {
+  var base = clean_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
+  var id = clean_(applicantId || "");
+  if (!base || !id) return "";
+  return base + "?view=admin&open=" + encodeURIComponent(id);
+}
+
+function formatKina_(n) {
+  var num = Number(n || 0);
+  if (!isFinite(num)) num = 0;
+  return "K" + String(Math.round(num));
+}
+
+function sendEmailBestEffort_(toEmail, subject, body, logLabel, meta) {
+  var dbgId = newDebugId_();
+  var to = clean_(toEmail || "");
+  var lbl = clean_(logLabel || "EMAIL_SEND");
+  var payload = meta && typeof meta === "object" ? meta : {};
+  function safeEmailLogPayload_(obj) {
+    try {
+      log_(mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET), lbl, JSON.stringify(obj || {}));
+    } catch (_logErr) {
+      try { Logger.log("%s %s", lbl, JSON.stringify(obj || {})); } catch (_e) {}
+    }
+  }
+  try {
+    if (!to) throw new Error("Missing recipient email");
+    MailApp.sendEmail({
+      to: to,
+      subject: String(subject || ""),
+      body: String(body || ""),
+      name: clean_(CONFIG.EMAIL_FROM_NAME || "FODE")
+    });
+    safeEmailLogPayload_({
+      ok: true,
+      debugId: dbgId,
+      to: to,
+      subject: String(subject || ""),
+      meta: payload
+    });
+    return { ok: true, debugId: dbgId, to: to };
+  } catch (e) {
+    safeEmailLogPayload_({
+      ok: false,
+      debugId: dbgId,
+      to: to,
+      subject: String(subject || ""),
+      error: String(e && e.message ? e.message : e),
+      meta: payload
+    });
+    return { ok: false, debugId: dbgId, to: to, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+function sendDocsVerifiedPaymentRequiredEmail_(rowObj, rowNumber, actorEmail) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || row[SCHEMA.APPLICANT_ID] || "");
+  var recipient = clean_(row.Parent_Email_Corrected || row[SCHEMA.PARENT_EMAIL_CORRECTED] || row.Parent_Email || row[SCHEMA.PARENT_EMAIL] || "");
+  var quote = computeFodeFeeQuote_(row);
+  var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.DATA_SHEET);
+  var rowNum = Number(rowNumber || 0) || findRowByApplicantId_(sh, applicantId);
+  var portalUrl = "";
+  if (rowNum >= 2 && applicantId) {
+    var emailForSecret = clean_(row.Parent_Email_Corrected || row.Parent_Email || "");
+    var fullName = (clean_(row.First_Name || "") + " " + clean_(row.Last_Name || "")).trim();
+    var secretInfo = getOrCreateActivePortalSecret_(applicantId, emailForSecret, fullName, sh, rowNum, {});
+    portalUrl = buildPortalLinkFromBase_(clean_(getStudentBaseUrl_() || CONFIG.WEBAPP_URL_STUDENT || ""), applicantId, secretInfo.secretPlain);
+  }
+  var subject = "FODE Documents Verified - Payment Required - " + applicantId;
+  var body = [
+    "Dear Parent/Guardian,",
+    "",
+    "Your FODE application documents have been verified. Payment is now required to proceed.",
+    "",
+    "ApplicantID: " + applicantId,
+    "",
+    "Fee breakdown:",
+    "- Registration Fee: " + formatKina_(quote.registrationK),
+    "- Subjects Selected: " + quote.subjectCount + (quote.subjectsList ? (" (" + quote.subjectsList + ")") : ""),
+    "- Subject Fee: " + formatKina_(quote.subjectFeeK) + " (" + formatKina_(CONFIG.FEE_PER_SUBJECT_KINA || 450) + " x " + quote.subjectCount + ")",
+    "- Total Payable: " + formatKina_(quote.totalK),
+    "",
+    String(CONFIG.PAYMENT_INSTRUCTIONS_TEXT || "").trim(),
+    "",
+    portalUrl ? ("Upload payment receipt here: " + portalUrl) : "Portal link unavailable. Please contact admissions.",
+    "",
+    "ApplicantID: " + applicantId
+  ].join("\n");
+  var sendRes = sendEmailBestEffort_(recipient, subject, body, "DOCS_VERIFIED_EMAIL_SENT", {
+    applicantId: applicantId,
+    rowNumber: rowNum,
+    by: clean_(actorEmail || ""),
+    recipient: recipient,
+    feeQuote: quote
+  });
+  sendRes.portalUrl = portalUrl;
+  sendRes.feeQuote = quote;
+  return sendRes;
+}
+
+function notifyAdminPaymentReceiptUploaded_(rowObj, rowNumber, opts) {
+  var row = rowObj || {};
+  opts = opts || {};
+  var applicantId = clean_(row.ApplicantID || row[SCHEMA.APPLICANT_ID] || "");
+  var fullName = (clean_(row.First_Name || "") + " " + clean_(row.Last_Name || "")).trim();
+  var toEmail = clean_(CONFIG.EMAIL_ADMIN_ALERTS_TO || "");
+  var subject = "PAYMENT RECEIPT UPLOADED - " + applicantId + " - " + (fullName || "Unknown");
+  var adminUrl = buildAdminApplicantDeepLink_(applicantId);
+  var body = [
+    "Payment receipt uploaded.",
+    "",
+    "ApplicantID: " + applicantId,
+    "Name: " + (fullName || "-"),
+    "Timestamp: " + (new Date()).toISOString(),
+    "RowNumber: " + String(Number(rowNumber || 0) || ""),
+    "",
+    "Admin review URL:",
+    adminUrl || "(admin URL not configured)"
+  ].join("\n");
+  try {
+    log_(mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET), "PAYMENT_RECEIPT_UPLOADED", JSON.stringify({
+      applicantId: applicantId,
+      rowNumber: Number(rowNumber || 0) || "",
+      source: clean_(opts.source || ""),
+      oldValue: clean_(opts.oldValue || ""),
+      newValue: clean_(opts.newValue || "")
+    }));
+  } catch (_alertLogErr) {}
+  return sendEmailBestEffort_(toEmail, subject, body, "PAYMENT_RECEIPT_ALERT_EMAIL", {
+    applicantId: applicantId,
+    rowNumber: Number(rowNumber || 0) || "",
+    source: clean_(opts.source || ""),
+    adminUrl: adminUrl
+  });
+}
+
+function maybeNotifyPaymentReceiptUploadTransition_(beforeRow, afterRow, rowNumber, opts) {
+  var prevUrl = clean_((beforeRow || {}).Fee_Receipt_File || "");
+  var nextUrl = clean_((afterRow || {}).Fee_Receipt_File || "");
+  if (!nextUrl) return { notified: false, reason: "empty" };
+  if (prevUrl === nextUrl) return { notified: false, reason: "unchanged" };
+  var alertRes = notifyAdminPaymentReceiptUploaded_(afterRow || beforeRow || {}, rowNumber, Object.assign({
+    oldValue: prevUrl,
+    newValue: nextUrl
+  }, opts || {}));
+  return { notified: true, alert: alertRes };
 }
 
 function buildCrmPayloadFromRow_(rowObj) {
@@ -1907,6 +2847,8 @@ function buildCrmPayloadFromRow_(rowObj) {
     parentPhone: clean_(row.Parent_Phone || ""),
     gradeApplyingFor: clean_(row.Grade_Applying_For || ""),
     intakeYear: intakeYear,
+    crmPipeline: clean_(CONFIG.CRM_PIPELINE_FODE || ""),
+    crmStage: clean_(CONFIG.CRM_STAGE_PAYMENT_VERIFIED || CONFIG.DEAL_STAGE || ""),
     subjects: clean_(row.Subjects_Selected_Canonical || subjectsToCsv_(row.Subjects_Selected || "")),
     folderUrl: clean_(row.Folder_Url || row[SCHEMA.FOLDER_URL] || ""),
     formId: clean_(row.FormID || row.FD_FormID || "")
@@ -2048,14 +2990,396 @@ function hasHeader_(sheet, headerName) {
 }
 
 /******************** DRIVE ********************/
-function createApplicantFolder_(payloadOrRecord) {
-  var first = slug_(payloadOrRecord.First_Name);
-  var last = slug_(payloadOrRecord.Last_Name);
-  var date = new Date().toISOString().slice(0, 10);
+function resolveUploadRootFolderId_(dbg) {
+  var primary = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY || "");
+  var fallback = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_FALLBACK || "");
+  var propKey = clean_(CONFIG.SCRIPT_PROP_UPLOAD_ROOT_ID || "FODE_UPLOAD_ROOT_ID") || "FODE_UPLOAD_ROOT_ID";
+  var propRoot = getScriptProp_(propKey);
+  var autoEnabled = CONFIG.AUTO_UPLOAD_ROOT_ENABLED === true;
+  var autoName = clean_(CONFIG.AUTO_UPLOAD_ROOT_NAME || "FODE Upload Root (Auto)") || "FODE Upload Root (Auto)";
+  var candidateInfo = [
+    { source: "PRIMARY", id: primary },
+    { source: "FALLBACK", id: fallback },
+    { source: "SCRIPT_PROP", id: propRoot }
+  ];
+  var attemptedSources = [];
+  var unusableDetails = [];
+  var anyConfiguredCandidate = false;
 
-  var root = DriveApp.getFolderById(CONFIG.ROOT_FOLDER_ID);
-  var year = getOrCreateFolder_(root, CONFIG.YEAR_FOLDER);
-  return year.createFolder(first + "_" + last + "_" + date);
+  for (var i = 0; i < candidateInfo.length; i++) {
+    var c = candidateInfo[i];
+    var cid = clean_(c.id || "");
+    if (!cid) continue;
+    anyConfiguredCandidate = true;
+    attemptedSources.push(c.source);
+    var probe = safeFolderProbe_(cid);
+    if (probe && probe.ok) {
+      logExecTrace_("ROOT_PROBE_OK", dbg, {
+        event: "ROOT_PROBE_OK",
+        candidateSource: c.source,
+        candidateId: cid
+      });
+      return {
+        primary: primary,
+        fallback: fallback,
+        propRoot: propRoot,
+        chosenRoot: cid,
+        source: c.source,
+        name: clean_(probe.name || ""),
+        rootAttemptSummary: attemptedSources.slice()
+      };
+    }
+    var errName = clean_(probe && probe.errName || "Error") || "Error";
+    var errMessage = clean_(probe && probe.errMessage || "probe_failed") || "probe_failed";
+    logExecTrace_("ROOT_PROBE_FAIL", dbg, {
+      event: "ROOT_PROBE_FAIL",
+      candidateSource: c.source,
+      candidateId: cid,
+      probeErr: {
+        errName: errName,
+        errMessage: errMessage
+      }
+    });
+    unusableDetails.push(c.source + " msg=" + errName + ": " + errMessage);
+  }
+
+  if (autoEnabled) {
+    attemptedSources.push("AUTO");
+    try {
+      var ts = Utilities.formatDate(new Date(), "UTC", "yyyyMMddHHmm");
+      var scriptId = "";
+      try { scriptId = clean_(ScriptApp.getScriptId() || ""); } catch (_sidErr) {}
+      var autoFolderName = autoName + " - " + ts + (scriptId ? " - " + scriptId : "");
+      var autoFolder = DriveApp.createFolder(autoFolderName);
+      var autoId = clean_(autoFolder.getId() || "");
+      var autoActualName = clean_(autoFolder.getName() || autoFolderName);
+      if (!autoId) throw new Error("missing_folder_id");
+      setScriptProp_(propKey, autoId);
+      logExecTrace_("DRIVE_ROOT_PROVISIONED", dbg, {
+        event: "DRIVE_ROOT_PROVISIONED",
+        folderId: autoId,
+        folderName: autoActualName
+      });
+      return {
+        primary: primary,
+        fallback: fallback,
+        propRoot: propRoot,
+        chosenRoot: autoId,
+        source: "AUTO",
+        name: autoActualName,
+        rootAttemptSummary: attemptedSources.slice()
+      };
+    } catch (autoErr) {
+      var autoMsg = clean_(stringifyGsError_(autoErr) || "auto_create_failed");
+      unusableDetails.push("AUTO msg=" + autoMsg);
+      var eAuto = new Error("folder_root_unusable: " + autoMsg);
+      eAuto.errCode = "folder_root_unusable";
+      eAuto.rootAttemptSummary = attemptedSources.slice();
+      throw eAuto;
+    }
+  }
+
+  if (!anyConfiguredCandidate) {
+    var eUnset = new Error("folder_root_unset");
+    eUnset.errCode = "folder_root_unset";
+    eUnset.rootAttemptSummary = attemptedSources.slice();
+    throw eUnset;
+  }
+
+  var eUnusable = new Error("folder_root_unusable: " + (unusableDetails.join(" | ") || "no_usable_root"));
+  eUnusable.errCode = "folder_root_unusable";
+  eUnusable.rootAttemptSummary = attemptedSources.slice();
+  throw eUnusable;
+}
+
+function driveApiErrCodeFromStatus_(status) {
+  var n = Number(status || 0);
+  if (n === 401) return "drive_api_401";
+  if (n === 403) return "drive_api_403";
+  if (n === 429) return "drive_api_429";
+  if (n >= 500 && n < 600) return "drive_api_5xx";
+  return "drive_api_error";
+}
+
+function throwDriveApiHttpError_(label, resp) {
+  var safe = safeHttpErr_(resp && resp.text || "", resp && resp.status || 0);
+  var msg = clean_(label || "drive_api") + " failed status=" + String(Number(safe.status || 0));
+  if (safe.bodySnippet) msg += " body=" + safe.bodySnippet;
+  var err = new Error(msg);
+  err.errCode = driveApiErrCodeFromStatus_(safe.status);
+  err.status = Number(safe.status || 0);
+  err.errorBodySnippet = clean_(safe.bodySnippet || "");
+  throw err;
+}
+
+function escapeDriveQueryValue_(s) {
+  return String(s || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function driveApiGetRoot_(dbg) {
+  var resp = driveApiGet_("/files/root", { fields: clean_(CONFIG.DRIVE_FIELDS_FOLDER || "id,name,webViewLink") });
+  if (!resp.ok) throwDriveApiHttpError_("driveApiGetRoot_", resp);
+  return resp.json || {};
+}
+
+function driveApiGetFile_(fileId, dbg) {
+  var id = encodeURIComponent(clean_(fileId || ""));
+  var resp = driveApiGet_("/files/" + id, { fields: clean_(CONFIG.DRIVE_FIELDS_FILE || "id,name,webViewLink,parents") });
+  if (!resp.ok) throwDriveApiHttpError_("driveApiGetFile_", resp);
+  return resp.json || {};
+}
+
+function driveApiFindFolderByName_(parentId, name, dbg) {
+  var q = [
+    "mimeType='application/vnd.google-apps.folder'",
+    "name='" + escapeDriveQueryValue_(name) + "'",
+    "'" + escapeDriveQueryValue_(parentId) + "' in parents",
+    "trashed=false"
+  ].join(" and ");
+  var resp = driveApiGet_("/files", {
+    q: q,
+    pageSize: 1,
+    fields: "files(" + clean_(CONFIG.DRIVE_FIELDS_FOLDER || "id,name,webViewLink") + ")"
+  });
+  if (!resp.ok) throwDriveApiHttpError_("driveApiFindFolderByName_", resp);
+  var files = (resp.json && resp.json.files && Array.isArray(resp.json.files)) ? resp.json.files : [];
+  return files.length ? files[0] : null;
+}
+
+function driveApiCreateFolder_(parentId, name, dbg) {
+  var body = {
+    name: clean_(name || ""),
+    mimeType: "application/vnd.google-apps.folder",
+    parents: [clean_(parentId || "")]
+  };
+  var resp = driveApiPost_("/files", body, { fields: clean_(CONFIG.DRIVE_FIELDS_FOLDER || "id,name,webViewLink") });
+  if (!resp.ok) throwDriveApiHttpError_("driveApiCreateFolder_", resp);
+  return resp.json || {};
+}
+
+function driveApiGetOrCreateFolder_(parentId, name, dbg) {
+  var found = driveApiFindFolderByName_(parentId, name, dbg);
+  if (found && found.id) return found;
+  return driveApiCreateFolder_(parentId, name, dbg);
+}
+
+function driveApiUploadBlobToFolder_(parentId, name, blob, dbg) {
+  var metadata = {
+    name: clean_(name || "upload.bin"),
+    parents: [clean_(parentId || "")]
+  };
+  var resp = driveApiMultipartUpload_(metadata, blob);
+  if (!resp.ok) throwDriveApiHttpError_("driveApiUploadBlobToFolder_", resp);
+  var j = resp.json || {};
+  return {
+    fileId: clean_(j.id || ""),
+    fileUrl: clean_(j.webViewLink || (j.id ? ("https://drive.google.com/file/d/" + j.id + "/view") : "")),
+    fileName: clean_(j.name || metadata.name)
+  };
+}
+
+function driveApiCreateTextFile_(parentId, name, contentString, dbg) {
+  var blob = Utilities.newBlob(String(contentString || ""), "text/plain", clean_(name || "probe.txt"));
+  return driveApiUploadBlobToFolder_(parentId, clean_(name || "probe.txt"), blob, dbg);
+}
+
+function resolveUploadRootIdForRest_() {
+  var primary = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_PRIMARY || "");
+  var fallback = clean_(CONFIG.APPLICANT_ROOT_FOLDER_ID_FALLBACK || "");
+  var propKey = clean_(CONFIG.SCRIPT_PROP_UPLOAD_ROOT_ID || "FODE_UPLOAD_ROOT_ID") || "FODE_UPLOAD_ROOT_ID";
+  var propRoot = (typeof getScriptProp_ === "function") ? clean_(getScriptProp_(propKey) || "") : "";
+  var candidates = [primary, fallback, propRoot];
+  for (var i = 0; i < candidates.length; i++) {
+    if (clean_(candidates[i])) return clean_(candidates[i]);
+  }
+  var e = new Error("folder_root_unset");
+  e.errCode = "folder_root_unset";
+  throw e;
+}
+
+function buildApplicantFolderName_(record, applicantIdHint) {
+  var row = record || {};
+  var applicantId = clean_(applicantIdHint || row.ApplicantID || row[CONFIG.APPLICANT_ID_HEADER] || "");
+  if (applicantId) return applicantId;
+  var first = slug_(row.First_Name);
+  var last = slug_(row.Last_Name);
+  var date = new Date().toISOString().slice(0, 10);
+  return first + "_" + last + "_" + date;
+}
+
+function driveApiBuildFolderHandleById_(folderId, dbg, existingUrl) {
+  var file = driveApiGetFile_(folderId, dbg);
+  return {
+    kind: "rest",
+    id: clean_(file.id || folderId),
+    url: clean_(file.webViewLink || existingUrl || (folderId ? ("https://drive.google.com/drive/folders/" + folderId) : ""))
+  };
+}
+
+function createApplicantFolderHandleWithRestFallback_(payloadOrRecord, dbg, applicantIdHint) {
+  var record = payloadOrRecord || {};
+  var rootId = resolveUploadRootIdForRest_();
+  var yearFolderName = clean_(CONFIG.APPLICANT_ROOT_YEAR_FOLDER_NAME || CONFIG.YEAR_FOLDER || "");
+  if (!yearFolderName) {
+    var eYear = new Error("folder_root_unusable: missing year folder config");
+    eYear.errCode = "folder_root_unusable";
+    throw eYear;
+  }
+  var year = driveApiGetOrCreateFolder_(rootId, yearFolderName, dbg);
+  var applicantFolderName = buildApplicantFolderName_(record, applicantIdHint);
+  var applicant = driveApiGetOrCreateFolder_(clean_(year.id || ""), applicantFolderName, dbg);
+  return {
+    kind: "rest",
+    id: clean_(applicant.id || ""),
+    url: clean_(applicant.webViewLink || (applicant.id ? ("https://drive.google.com/drive/folders/" + applicant.id) : ""))
+  };
+}
+
+function createApplicantFolder_(payloadOrRecord, opts) {
+  var record = payloadOrRecord || {};
+  var dbg = clean_(opts && opts.dbg || "");
+  var first = slug_(record.First_Name);
+  var last = slug_(record.Last_Name);
+  var date = new Date().toISOString().slice(0, 10);
+  var rootInfo = resolveUploadRootFolderId_(dbg);
+  var chosenRoot = clean_(rootInfo && rootInfo.chosenRoot || "");
+
+  logExecTrace_("FOLDER_CREATE_ENTER", dbg, {
+    primary: clean_(rootInfo && rootInfo.primary || ""),
+    fallback: clean_(rootInfo && rootInfo.fallback || ""),
+    propRoot: clean_(rootInfo && rootInfo.propRoot || ""),
+    chosenRoot: chosenRoot
+  });
+
+  try {
+    if (!chosenRoot) {
+      var eMissing = new Error("folder_root_unset");
+      eMissing.errCode = "folder_root_unset";
+      eMissing.rootAttemptSummary = rootInfo && rootInfo.rootAttemptSummary ? rootInfo.rootAttemptSummary : [];
+      throw eMissing;
+    }
+    var root = withRetries_(function () {
+      return DriveApp.getFolderById(chosenRoot);
+    }, { dbg: dbg, label: "createApplicantFolder:getRootById" });
+    var yearFolderName = clean_(CONFIG.APPLICANT_ROOT_YEAR_FOLDER_NAME || CONFIG.YEAR_FOLDER || "");
+    if (!yearFolderName) {
+      var eYear = new Error("folder_root_unusable: missing year folder config");
+      eYear.errCode = "folder_root_unusable";
+      eYear.rootAttemptSummary = rootInfo && rootInfo.rootAttemptSummary ? rootInfo.rootAttemptSummary : [];
+      throw eYear;
+    }
+    var year = withRetries_(function () {
+      return (typeof getOrCreateFolderByName_ === "function")
+        ? getOrCreateFolderByName_(root, yearFolderName, dbg)
+        : getOrCreateFolder_(root, yearFolderName);
+    }, { dbg: dbg, label: "createApplicantFolder:getOrCreateYear" });
+    var applicantFolderName = first + "_" + last + "_" + date;
+    return withRetries_(function () {
+      return getOrCreateFolder_(year, applicantFolderName);
+    }, { dbg: dbg, label: "createApplicantFolder:getOrCreateApplicant" });
+  } catch (e) {
+    var code = classifyUploadErr_(e);
+    if (code === "folder_root_unset" || code === "folder_root_unusable") throw e;
+    if (typeof isDriveServerError_ === "function" && isDriveServerError_(e)) {
+      var eDriveApp = new Error("driveapp_unavailable: " + clean_(stringifyGsError_(e) || "DriveApp server error"));
+      eDriveApp.errCode = "driveapp_unavailable";
+      eDriveApp.rootAttemptSummary = rootInfo && rootInfo.rootAttemptSummary ? rootInfo.rootAttemptSummary : [];
+      throw eDriveApp;
+    }
+    var msg = clean_(stringifyGsError_(e) || "Drive error").replace(/\s+/g, " ");
+    if (msg.length > 180) msg = msg.slice(0, 180);
+    var eDrive = new Error("folder_root_unusable: rootId=" + (chosenRoot || "none") + " msg=" + (msg || "drive_error"));
+    eDrive.errCode = "folder_root_unusable";
+    eDrive.rootAttemptSummary = rootInfo && rootInfo.rootAttemptSummary ? rootInfo.rootAttemptSummary : [];
+    throw eDrive;
+  }
+}
+
+function driveDeepProbe_(opts) {
+  var cfg = opts && typeof opts === "object" ? opts : {};
+  var folderId = clean_(cfg.folderId || "");
+  var dbg = clean_(cfg.dbg || "");
+  var results = {};
+  var target = null;
+  var tempFolder = null;
+
+  function step_(key, fn) {
+    try {
+      var value = fn();
+      results[key] = { ok: true };
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        for (var k in value) results[key][k] = value[k];
+      } else if (value !== undefined) {
+        results[key].value = value;
+      }
+      return results[key];
+    } catch (e) {
+      var se = safeErr_(e);
+      results[key] = {
+        ok: false,
+        errName: clean_(se.name || "Error") || "Error",
+        errMessage: clean_(se.message || "Probe step failed") || "Probe step failed"
+      };
+      return results[key];
+    }
+  }
+
+  step_("step1_rootName", function () {
+    var root = withRetries_(function () { return DriveApp.getRootFolder(); }, { dbg: dbg, label: "driveDeepProbe:getRootFolder#1" });
+    return { rootName: withRetries_(function () { return clean_(root.getName() || ""); }, { dbg: dbg, label: "driveDeepProbe:rootGetName" }) };
+  });
+  step_("step2_rootId", function () {
+    var root2 = withRetries_(function () { return DriveApp.getRootFolder(); }, { dbg: dbg, label: "driveDeepProbe:getRootFolder#2" });
+    return { rootId: withRetries_(function () { return clean_(root2.getId() || ""); }, { dbg: dbg, label: "driveDeepProbe:rootGetId" }) };
+  });
+  step_("step3_createTempFolder", function () {
+    var name = "FODE_DRIVE_PROBE_" + Utilities.formatDate(new Date(), "UTC", "yyyyMMddHHmmss");
+    tempFolder = withRetries_(function () { return DriveApp.createFolder(name); }, { dbg: dbg, label: "driveDeepProbe:createTempFolder" });
+    return {
+      tempFolderId: clean_(tempFolder.getId() || ""),
+      tempFolderUrl: clean_(tempFolder.getUrl() || ""),
+      tempFolderName: clean_(tempFolder.getName() || name)
+    };
+  });
+  step_("step4_deleteTempFolder", function () {
+    if (!tempFolder) throw new Error("No temp folder to delete");
+    withRetries_(function () { return tempFolder.setTrashed(true); }, { dbg: dbg, label: "driveDeepProbe:trashTempFolder" });
+    return { trashed: true };
+  });
+  if (folderId) {
+    step_("canOpenTargetFolder", function () {
+      target = withRetries_(function () { return DriveApp.getFolderById(folderId); }, { dbg: dbg, label: "driveDeepProbe:getTargetFolder" });
+      return {
+        folderId: folderId,
+        name: withRetries_(function () { return clean_(target.getName() || ""); }, { dbg: dbg, label: "driveDeepProbe:targetGetName" }),
+        url: withRetries_(function () { return clean_(target.getUrl() || ""); }, { dbg: dbg, label: "driveDeepProbe:targetGetUrl" })
+      };
+    });
+    step_("canIterateTargetChildren", function () {
+      if (!target) target = withRetries_(function () { return DriveApp.getFolderById(folderId); }, { dbg: dbg, label: "driveDeepProbe:getTargetFolderIter" });
+      var hasAny = withRetries_(function () {
+        var it = target.getFolders();
+        return !!(it && it.hasNext && it.hasNext());
+      }, { dbg: dbg, label: "driveDeepProbe:targetIterChildren" });
+      return { canIterate: true, hasChildFolders: !!hasAny };
+    });
+    step_("canCreateFileInTarget", function () {
+      if (!target) target = withRetries_(function () { return DriveApp.getFolderById(folderId); }, { dbg: dbg, label: "driveDeepProbe:getTargetFolderCreateFile" });
+      var f = withRetries_(function () {
+        return target.createFile("probe.txt", "ok");
+      }, { dbg: dbg, label: "driveDeepProbe:createFileInTarget" });
+      try {
+        withRetries_(function () { return f.setTrashed(true); }, { dbg: dbg, label: "driveDeepProbe:trashTargetProbeFile" });
+      } catch (_trashFileErr) {}
+      return { fileId: clean_(f.getId() || ""), fileUrl: clean_(f.getUrl() || "") };
+    });
+  }
+
+  return {
+    ok: true,
+    folderId: folderId,
+    results: results
+  };
 }
 
 function getOrCreateFolder_(parent, name) {

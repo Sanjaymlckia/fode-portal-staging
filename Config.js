@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-22-PNG-STAGING-r87";
-  CHANGELOG_LAST: "r22: CIS-30 add build stamp + no-cache for portal HTML (CIS-29 deployed @66)",
-  BUILD_LABEL: "CIS-29 form POST + server redirect for portal_update (clasp version 66, student deploy @66)",
+  VERSION: "2026-02-24-PNG-STAGING-r116",
+  CHANGELOG_LAST: "r116: portalUpload uses query id/s authoritative source + auth debug recvIdSource",
+  BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING spreadsheet (FODE_Data + Webhook_Log)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -22,6 +22,20 @@ var CONFIG = {
 
   // Drive root (baseline)
   ROOT_FOLDER_ID: "1vGD3DoOv1hlxYoTIfrNCZqAnrVKmghuB",
+  APPLICANT_ROOT_FOLDER_ID_PRIMARY: "1vGD3DoOv1hlxYoTIfrNCZqAnrVKmghuB",
+  APPLICANT_ROOT_FOLDER_ID_FALLBACK: "",
+  SCRIPT_PROP_UPLOAD_ROOT_ID: "FODE_UPLOAD_ROOT_ID",
+  AUTO_UPLOAD_ROOT_NAME: "FODE Upload Root (Auto)",
+  AUTO_UPLOAD_ROOT_ENABLED: false,
+  APPLICANT_ROOT_YEAR_FOLDER_NAME: "2025",
+  DRIVE_REST_FALLBACK_ENABLED: true,
+  PORTAL_UPLOAD_PREFER_REST: true,
+  PORTAL_UPLOAD_DRIVEAPP_RETRY_ENABLED: false,
+  PORTAL_UPLOAD_MAX_SERVER_MS: 20000,
+  DRIVE_API_BASE: "https://www.googleapis.com/drive/v3",
+  DRIVE_UPLOAD_BASE: "https://www.googleapis.com/upload/drive/v3",
+  DRIVE_FIELDS_FOLDER: "id,name,webViewLink",
+  DRIVE_FIELDS_FILE: "id,name,webViewLink,parents",
   YEAR_FOLDER: "2025",
   
   // Portal Secrets File
@@ -44,6 +58,14 @@ var CONFIG = {
   ZOHO_OAUTH_BASE: "https://accounts.zoho.com/oauth/v2",
   DEAL_STAGE: "Qualification",
   DEAL_DUPLICATE_FIELD: "FormID",
+  CRM_PIPELINE_FODE: "FODE Admissions",
+  CRM_STAGE_PAYMENT_VERIFIED: "Payment Verified",
+
+  FEE_REGISTRATION_KINA: 600,
+  FEE_PER_SUBJECT_KINA: 450,
+  EMAIL_ADMIN_ALERTS_TO: "<SET_TO_GOOGLE_GROUP_OR_EMAIL>",
+  EMAIL_FROM_NAME: "Kundu International Academy - FODE",
+  PAYMENT_INSTRUCTIONS_TEXT: "<BANK DETAILS MODE A: literal bank instructions text>",
 
   // Deployment model:
   // - Admin web app: executeAs=USER_ACCESSING, access=DOMAIN
@@ -120,6 +142,18 @@ var CONFIG = {
   DEBUG_PORTAL_SHOW_ON_PAGE: true,
   PORTAL_DEBUG_TO_LOG_SHEET: true,
   PORTAL_DEBUG_MAX_BYTES: 2500,
+  PORTAL_UPLOAD_TIMEOUT_MS: 25000,
+  PORTAL_UPLOAD_MAX_MB: 5,
+  DIAG_RUNTIME: true,
+  DIAG_UPLOAD_VERBOSE: true,
+  DIAG_UPLOAD_SMOKE_ENABLED: true,
+  PORTAL_UPLOAD_KEYS: [
+    "Birth_ID_Passport_File",
+    "Latest_School_Report_File",
+    "Transfer_Certificate_File",
+    "Passport_Photo_File",
+    "Fee_Receipt_File"
+  ],
 
   // What students can see (allowlist)
   PORTAL_VISIBLE_FIELDS: [
