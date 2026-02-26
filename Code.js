@@ -22,7 +22,7 @@ Sheet:
 function doPost(e) {
   var reqId = makeReqId_();
   var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
-  var postView = clean_(params.view || "").toLowerCase();
+  var postView = clean_(typeof getParam_ === "function" ? getParam_(e, "view") : (params.view || "")).toLowerCase();
   if (postView === "portalupload") {
     return doPost_portalUpload_(e);
   }
@@ -99,7 +99,7 @@ function doPost(e) {
       }
       if (!applicantId || !secret) {
         try {
-          var ssMissing = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+          var ssMissing = getWorkingSpreadsheet_();
           var logSheetMissing = mustGetSheet_(ssMissing, CONFIG.LOG_SHEET);
           log_(logSheetMissing, "PORTAL_UPDATE_FATAL", debugId + " Missing portal token (id/s)");
         } catch (logErr0) {}
@@ -131,7 +131,7 @@ function doPost(e) {
           debugId: debugId
         });
       }
-      var ssPortal = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+      var ssPortal = getWorkingSpreadsheet_();
       var dataSheetPortal = mustGetDataSheet_(ssPortal);
       var logSheetPortal = mustGetSheet_(ssPortal, CONFIG.LOG_SHEET);
       log_(logSheetPortal, "PORTAL_UPDATE_DEBUG", debugId + " " + applicantId);
@@ -158,7 +158,11 @@ function doPost(e) {
         });
       }
       var failDbgId = clean_(resultObj.debugId || debugId) || debugId;
-      var failRedirect = buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: failDbgId });
+      var failCode = clean_(resultObj && resultObj.error && resultObj.error.code || "");
+      var isPaymentVerifiedLock = failCode === "PAYMENT_VERIFIED_LOCK";
+      var failRedirect = isPaymentVerifiedLock
+        ? buildPortalRedirectUrl_(applicantId, secret, { locked: true, msg: "enrolled" })
+        : buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: failDbgId });
       logPortalPostEvent_("PORTAL_POST_REDIRECT", {
         reqId: reqId,
         redirectUrl: failRedirect,
@@ -172,13 +176,13 @@ function doPost(e) {
         applicantId: applicantId,
         secret: secret,
         redirectUrl: failRedirect,
-        tokenValidationPassed: false,
+        tokenValidationPassed: isPaymentVerifiedLock ? true : false,
         result: resultObj,
         debugId: failDbgId
       });
     } catch (errPortal) {
       try {
-        var ssLog = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+        var ssLog = getWorkingSpreadsheet_();
         var logSheetFatal = mustGetSheet_(ssLog, CONFIG.LOG_SHEET);
         log_(logSheetFatal, "PORTAL_UPDATE_FATAL", debugId + " " + String(errPortal && errPortal.message ? errPortal.message : errPortal));
       } catch (logErr) {}
@@ -212,7 +216,7 @@ function doPost(e) {
     }
   }
 
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = getWorkingSpreadsheet_();
   var dataSheet = mustGetDataSheet_(ss);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
   appendPortalLog_({ route: "doPost", status: "HIT", message: "doPost called", email: payload.email || payload.Parent_Email || "", applicantId: payload.id || payload.ApplicantID || "" });
@@ -274,16 +278,38 @@ function doGet(e) {
     view = "portal";
   }
 
-  var id = clean_(params.id || "");
-  var secret = clean_(params.s || "");
+  return renderPortalPageResponse_(e, { uploadResult: null, viewName: "portal" });
+}
+
+function renderPortalPageResponse_(e, opts) {
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var o = (opts && typeof opts === "object") ? opts : {};
+  var uploadRes = (o.uploadResult && typeof o.uploadResult === "object" && !Array.isArray(o.uploadResult)) ? o.uploadResult : null;
+  var id = clean_(o.applicantId || params.id || "");
+  var secret = clean_(o.secret || params.s || "");
   var saved = clean_(params.saved || "") === "1";
   var errorFlag = clean_(params.error || "") === "1";
+  var lockedFlag = clean_(params.locked || "") === "1";
+  var msgToken = clean_(params.msg || "");
   var dbg = clean_(params.dbg || "");
   var uploadFail = clean_(params.uploadFail || "") === "1";
   var uploadField = clean_(params.field || "");
+  var uploadResult = clean_(params.u || "") === "1";
+  var uploadOk = clean_(params.ok || "") === "1";
+  var uploadDocKey = clean_(params.docKey || "");
+  var uploadErrCode = clean_(params.errCode || "");
+  if (uploadRes) {
+    uploadResult = true;
+    uploadOk = uploadRes.ok === true;
+    uploadDocKey = clean_(uploadRes.docKey || uploadDocKey || "");
+    uploadErrCode = clean_(uploadRes.errCode || uploadErrCode || "");
+    if (clean_(uploadRes.dbg || "")) dbg = clean_(uploadRes.dbg || "");
+    uploadFail = uploadOk !== true;
+  }
   var reqId = makeReqId_();
   var debugPage = CONFIG.DEBUG_PORTAL_SHOW_ON_PAGE === true && dbg === "1";
   var reqMeta = getPortalRequestMeta_(e);
+  var isAdminDeployment = isAdminDeploymentRequest_();
   function invalidPortalLinkMsg_(reasonCode, dbgId, extra) {
     var reason = clean_(reasonCode || "") || "invalid";
     var debugId = clean_(dbgId || "");
@@ -306,7 +332,7 @@ function doGet(e) {
     return htmlOutput_(renderErrorHtml_(msg));
   }
 
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = getWorkingSpreadsheet_();
   var sheet = mustGetDataSheet_(ss);
   var rowNum = findRowByApplicantId_(sheet, id);
   if (!rowNum) {
@@ -384,34 +410,50 @@ function doGet(e) {
     message: "open_ok | ua=" + (reqMeta.ua || "")
   }, false);
 
-  // prefill subjects from canonical OR raw Subjects_Selected
   var canonical = clean_(record.Subjects_Selected_Canonical || "");
   var fallbackCsv = subjectsToCsv_(record.Subjects_Selected || "");
   record._SubjectsCsv = canonical || fallbackCsv;
 
   var examSites = getExamSites_(ss);
-
-  return htmlOutput_(renderPortalHtml_({
+  var portalHtml = renderPortalHtml_({
     id: id,
     secret: secret,
     reqId: reqId,
     debugPage: debugPage,
     saved: saved,
     errorFlag: errorFlag,
+    lockedFlag: lockedFlag,
+    msgToken: msgToken,
     dbg: dbg,
     uploadFail: uploadFail,
     uploadField: uploadField,
+    uploadResult: uploadResult,
+    uploadOk: uploadOk,
+    uploadDocKey: uploadDocKey,
+    uploadErrCode: uploadErrCode,
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
     editFields: getPortalEditableFields_(),
     docs: getDocUiFields_(),
     visibleFields: CONFIG.PORTAL_VISIBLE_FIELDS,
+    subjectsLocked: isDocsVerified_(record),
     version: CONFIG.VERSION,
     versionShort: portalVersionShort_(CONFIG.VERSION),
     buildRenderedAt: new Date().toISOString(),
     buildScriptId: ScriptApp.getScriptId()
-  }));
+  });
+
+  Logger.log(
+    "PORTAL_RENDER_DIAG version=%s view=%s applicantId=%s isAdmin=%s cache=%s",
+    clean_(CONFIG.VERSION || ""),
+    clean_(clean_(o.viewName || "portal")),
+    clean_(id || "-") || "-",
+    isAdminDeployment ? "true" : "false",
+    "DISABLED"
+  );
+
+  return htmlOutput_(portalHtml);
 }
 
 function diagStatus_(e) {
@@ -624,6 +666,41 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
   var editFields = effectiveEditFields;
   var sourceFields = postKeys.length ? posted : payload;
 
+  if (editFields.indexOf("Subjects_Selected_Canonical") >= 0 && isDocsVerified_(found.record)) {
+    var attemptedSubjectsCanonical = hasOwn_(sourceFields, "Subjects_Selected_Canonical")
+      ? clean_(sourceFields.Subjects_Selected_Canonical)
+      : "";
+    var attemptedSubjectsLegacy = hasOwn_(sourceFields, "Subjects_Selected")
+      ? sourceFields.Subjects_Selected
+      : (payload.Subjects_Selected || payload.field_Subjects_Selected || "");
+    var attemptedSubjectsCsv = attemptedSubjectsCanonical || subjectsToCsv_(attemptedSubjectsLegacy);
+    var existingSubjectsCsv = clean_(found.record.Subjects_Selected_Canonical || "") || subjectsToCsv_(found.record.Subjects_Selected || "");
+    if (attemptedSubjectsCsv && attemptedSubjectsCsv !== existingSubjectsCsv) {
+      var attemptedFields = Object.keys(sourceFields || {}).filter(function (k) {
+        return k === "Subjects_Selected_Canonical" || k === "Subjects_Selected" || k === "subj";
+      });
+      try {
+        log_(logSheet, "SUBJECT_LOCK_BLOCK", JSON.stringify({
+          applicantId: id,
+          debugId: safeDebugId,
+          actor: "portal_student",
+          attemptedFields: attemptedFields
+        }));
+      } catch (_subjectLockBlockLogErr) {}
+      return {
+        ok: false,
+        code: "SUBJECT_LOCK_DOCS_VERIFIED",
+        message: "Subjects are locked because documents have been verified by Admin.",
+        debugId: safeDebugId,
+        applicantId: id,
+        error: {
+          message: "Subjects are locked because documents have been verified by Admin.",
+          code: "SUBJECT_LOCK_DOCS_VERIFIED"
+        }
+      };
+    }
+  }
+
     // Core fields from portal
   if (hasOwn_(sourceFields, "Date_Of_Birth")) {
     updates.Date_Of_Birth = normalize_(sourceFields.Date_Of_Birth);
@@ -754,7 +831,7 @@ function savePortalUpload_(applicantId, fieldKey, fileName, mimeType, bytes, ctx
   if (!id) throw new Error("Missing ApplicantID");
   if (!isAllowedPortalUploadField_(key)) throw new Error("Invalid upload field");
 
-  var ss = context.ss || SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = context.ss || getWorkingSpreadsheet_();
   var sheet = context.sheet || mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var dbg = clean_(context.dbg || "");
   var preferRestOnly = context.preferRest === true && CONFIG.DRIVE_REST_FALLBACK_ENABLED === true && CONFIG.PORTAL_UPLOAD_PREFER_REST === true;
@@ -877,7 +954,7 @@ function applyPortalUploadSheetUpdate_(sheet, rowNumber, rowObj, fieldKey, uploa
   var record = rowObj || getRowObject_(sh, rowNum);
   var key = clean_(fieldKey || "");
   var res = uploadResult || {};
-  var logSheet = (opts && opts.logSheet) || mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+  var logSheet = (opts && opts.logSheet) || mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET);
   var dbg = clean_((opts && opts.dbg) || "");
   var docMeta = docMetaByField_(key);
   if (!docMeta) throw new Error("Invalid document field");
@@ -945,6 +1022,161 @@ function applyPortalUploadSheetUpdate_(sheet, rowNumber, rowObj, fieldKey, uploa
   };
 }
 
+/******************** PORTAL B64 UPLOAD (student portal) ********************/
+function portalUploadExt_(fileName) {
+  var n = clean_(fileName || "").toLowerCase();
+  var idx = n.lastIndexOf(".");
+  if (idx < 0 || idx === n.length - 1) return "";
+  return n.slice(idx + 1);
+}
+
+function sanitizePortalUploadFileName_(fileName, fieldName) {
+  var raw = clean_(fileName || "");
+  raw = raw.replace(/[\\\/:*?"<>|]+/g, "_");
+  raw = raw.replace(/\s+/g, " ").trim();
+  if (!raw) raw = clean_(fieldName || "upload") + ".bin";
+  var ext = portalUploadExt_(raw);
+  var base = raw;
+  if (ext) base = raw.slice(0, -(ext.length + 1));
+  base = safeFileName_(base || "upload");
+  if (!base) base = "upload";
+  if (base.length > 80) base = base.slice(0, 80);
+  if (ext) {
+    ext = ext.replace(/[^a-z0-9]/g, "");
+    if (ext.length > 10) ext = ext.slice(0, 10);
+    return ext ? (base + "." + ext) : base;
+  }
+  return base;
+}
+
+function isPortalUploadTypeAllowed_(mimeType, fileName) {
+  var mime = clean_(mimeType || "").toLowerCase();
+  var ext = portalUploadExt_(fileName);
+  var mimeAllow = (CONFIG.PORTAL_ALLOWED_MIME || []).map(function (x) { return clean_(x).toLowerCase(); });
+  var extAllow = (CONFIG.PORTAL_ALLOWED_EXT || []).map(function (x) { return clean_(x).toLowerCase(); });
+  return (mime && mimeAllow.indexOf(mime) >= 0) || (ext && extAllow.indexOf(ext) >= 0);
+}
+
+function portalUploadBase64(data) {
+  Logger.log("UPLOAD_B64_RPC_ENTER " + JSON.stringify({
+    id: data && data.id,
+    field: data && data.field,
+    name: data && data.name,
+    mime: data && data.mime,
+    b64Len: data && data.base64 ? data.base64.length : 0
+  }));
+  return portalUpload_handleBase64_(data);
+}
+
+function portalUpload_handleBase64_(data) {
+  var payload = (data && typeof data === "object") ? data : {};
+  var dbg = makeDebugId_();
+  var applicantId = clean_(payload.id || payload.applicantId || "");
+  var secret = clean_(payload.s || payload.secret || "");
+  var fieldName = clean_(payload.field || payload.docKey || "");
+  var fileName = clean_(payload.name || "");
+  var mimeType = clean_(payload.mime || payload.mimeType || "");
+  var b64 = String(payload.base64 || payload.b64 || "");
+
+  function fail_(code, message, extra) {
+    var out = {
+      ok: false,
+      dbg: dbg,
+      code: clean_(code || "UPLOAD_FAILED"),
+      message: clean_(message || "Upload failed.")
+    };
+    if (extra && typeof extra === "object") {
+      if (extra.field) out.field = clean_(extra.field);
+      if (extra.fileUrl) out.fileUrl = clean_(extra.fileUrl);
+    }
+    logExecTrace_("UPLOAD_B64_FAIL", dbg, {
+      dbg: dbg,
+      code: out.code,
+      field: fieldName,
+      id: applicantId
+    });
+    return out;
+  }
+
+  logExecTrace_("UPLOAD_B64_ENTER", dbg, {
+    dbg: dbg,
+    id: applicantId,
+    field: fieldName,
+    name: fileName,
+    mime: mimeType,
+    b64Len: Number(b64.length || 0)
+  });
+
+  if (!applicantId || !secret || !fieldName || !fileName || !b64) {
+    return fail_("BAD_REQUEST", "Missing upload fields.", { field: fieldName });
+  }
+  if (!isAllowedPortalUploadField_(fieldName) || !docMetaByField_(fieldName)) {
+    return fail_("INVALID_FIELD", "Invalid document field.", { field: fieldName });
+  }
+  if (/^data:/i.test(b64) && b64.indexOf(",") >= 0) b64 = b64.split(",").slice(1).join(",");
+
+  var bytes = [];
+  try {
+    bytes = Utilities.base64Decode(b64);
+  } catch (_b64Err) {
+    return fail_("BAD_BASE64", "Upload payload is invalid. Please retry.", { field: fieldName });
+  }
+  if (!bytes || !bytes.length) {
+    return fail_("NO_FILE", "Please select a file.", { field: fieldName });
+  }
+  if (Number(bytes.length || 0) > Number(CONFIG.PORTAL_MAX_UPLOAD_BYTES || (5 * 1024 * 1024))) {
+    return fail_("FILE_TOO_LARGE", "File too large (max 5 MB). Please compress and retry.", { field: fieldName });
+  }
+  if (!isPortalUploadTypeAllowed_(mimeType, fileName)) {
+    return fail_("UNSUPPORTED_TYPE", "Unsupported file type. Use PDF/JPG/PNG (or DOC/DOCX if enabled).", { field: fieldName });
+  }
+
+  var ss = getWorkingSpreadsheet_();
+  var sheet = mustGetDataSheet_(ss);
+  var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
+  var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
+  if (!found) return fail_("TOKEN_INVALID", "Invalid or expired portal link token.", { field: fieldName });
+  if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
+    return fail_("ACCESS_LOCKED", "Portal access is locked. Please contact admissions.", { field: fieldName });
+  }
+  if (isPortalLocked_(found.record)) {
+    return fail_("ACCESS_LOCKED", "Portal access is locked. Please contact admissions.", { field: fieldName });
+  }
+  if (isPaymentFreezeActive_(found.record)) {
+    return fail_("PAYMENT_FREEZE", "Uploads are disabled after payment verification.", { field: fieldName });
+  }
+
+  try {
+    var safeName = sanitizePortalUploadFileName_(fileName, fieldName);
+    var uploadRes = savePortalUpload_(applicantId, fieldName, safeName, mimeType || "application/octet-stream", bytes, {
+      ss: ss,
+      sheet: sheet,
+      rowNumber: found.rowNum,
+      rowObj: found.record,
+      dbg: dbg
+    });
+    var applyRes = applyPortalUploadSheetUpdate_(sheet, found.rowNum, found.record, fieldName, uploadRes, {
+      logSheet: logSheet,
+      dbg: dbg
+    });
+    logExecTrace_("UPLOAD_B64_OK", dbg, {
+      dbg: dbg,
+      fileId: clean_(applyRes.fileId || uploadRes.fileId || "")
+    });
+    return {
+      ok: true,
+      dbg: dbg,
+      field: fieldName,
+      fileId: clean_(applyRes.fileId || uploadRes.fileId || ""),
+      fileUrl: clean_(applyRes.fileUrl || uploadRes.fileUrl || ""),
+      name: clean_(uploadRes.fileName || safeName),
+      currentUrls: Array.isArray(applyRes.currentUrls) ? applyRes.currentUrls : []
+    };
+  } catch (e) {
+    return fail_("UPLOAD_FAILED", clean_(stringifyGsError_(e) || "Upload failed."), { field: fieldName });
+  }
+}
+
 /******************** DRIVE UPLOAD (called via google.script.run) ********************/
 function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, base64Data) {
   applicantId = clean_(applicantId);
@@ -956,8 +1188,8 @@ function uploadPortalFile(applicantId, secret, fieldName, fileName, mimeType, ba
   var dbgId = newDebugId_();
 
   try {
-    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-    var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+    var ss = getWorkingSpreadsheet_();
+    var sheet = mustGetDataSheet_(ss);
     var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 
     var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
@@ -1103,8 +1335,8 @@ function portal_deleteUploadedFile(payload) {
     };
   }
 
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var ss = getWorkingSpreadsheet_();
+  var sheet = mustGetDataSheet_(ss);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
   var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
   if (!found) return { ok: false, debugId: dbgId, error: "Record not found.", redirectUrl: buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: dbgId }) };
@@ -1197,14 +1429,21 @@ function renderPortalHtml_(opts) {
   var debugPage = opts.debugPage === true;
   var saved = opts.saved === true;
   var hasErr = opts.errorFlag === true;
+  var lockedFlag = opts.lockedFlag === true;
+  var msgToken = clean_(opts.msgToken || "");
   var dbg = clean_(opts.dbg || "");
   var uploadFail = opts.uploadFail === true;
   var uploadField = clean_(opts.uploadField || "");
+  var uploadResult = opts.uploadResult === true;
+  var uploadOk = opts.uploadOk === true;
+  var uploadDocKey = clean_(opts.uploadDocKey || "");
+  var uploadErrCode = clean_(opts.uploadErrCode || "");
   var subjects = opts.subjects || [];
   var examSites = opts.examSites || [];
   var editFields = opts.editFields || [];
   var docs = opts.docs || [];
   var visibleFields = opts.visibleFields || [];
+  var subjectsLocked = opts.subjectsLocked === true;
   var error = opts.error || "";
   var milestoneStatus = computeOverallStatus_(record);
   var actionUrl = canonicalStudentExecBase_() + "?view=portal";
@@ -1220,7 +1459,10 @@ function renderPortalHtml_(opts) {
   var redactedSecret = redactToken_(secret);
 
   var locked = record._PortalLocked === true;
+  var lockReason = clean_(record._PortalLockReason || "");
+  var isPaymentVerifiedLock = locked && lockReason === "payment_verified";
   var dis = locked ? "disabled" : "";
+  var subjectsDis = (locked || subjectsLocked) ? "disabled" : "";
   var ro = locked ? "readonly" : "";
 
   // subject selections: canonical preferred, else fallback
@@ -1247,21 +1489,26 @@ function renderPortalHtml_(opts) {
     var checked = selected.has(subj.toLowerCase()) ? "checked" : "";
     subjectChecks += ''
       + '<label style="display:block;margin:6px 0;">'
-      + '<input type="checkbox" name="subj" value="' + esc_(subj) + '" ' + checked + " " + dis + " /> "
+      + '<input type="checkbox" name="subj" value="' + esc_(subj) + '" ' + checked + " " + subjectsDis + " /> "
       + esc_(subj)
       + "</label>";
   }
+  var subjectsLockedNotice = subjectsLocked
+    ? '<div style="margin-top:8px;padding:10px;border:1px solid #dbeafe;border-radius:8px;background:#eff6ff;color:#1e3a8a;font-size:13px;">Subjects are locked because your documents have been verified. Please contact administration for any changes.</div>'
+    : "";
 
   var errorBlock = error
     ? '<div style="background:#ffecec;border:1px solid #ffb3b3;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Action required:</b> ' + esc_(error) + "</div>"
     : "";
 
-  var lockReason = clean_(record._PortalLockReason || "");
   var lockedMsg = (lockReason === "portal_access_locked")
     ? "Portal access is locked. Please contact admissions."
-    : "Payment has been verified. No further changes are allowed.";
+    : "Payment is verified. No further changes are needed.";
   var lockedBlock = locked
-    ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Locked:</b> ' + esc_(lockedMsg) + "</div>"
+    ? '<div style="background:#e8f0ff;border:1px solid #b6ccff;padding:12px;border-radius:10px;margin-bottom:16px;"><b>' + (lockReason === "portal_access_locked" ? "Locked:" : "Locked for processing:") + '</b> ' + esc_(lockedMsg) + "</div>"
+    : "";
+  var enrollmentConfirmedBlock = (isPaymentVerifiedLock || (lockedFlag && msgToken === "enrolled" && locked))
+    ? '<div style="background:#eaf7ea;border:1px solid #2e7d32;padding:12px;border-radius:10px;margin-bottom:16px;color:#000;"><b>Enrollment confirmed:</b> Your payment has been verified. Your application is now locked for processing. We will shortly provide you access to online studies.</div>'
     : "";
   var actionWarnBlock = actionWarn
     ? '<div style="background:#fff6e5;border:1px solid #f5c26b;padding:12px;border-radius:10px;margin-bottom:16px;"><b>Warning:</b> ' + esc_(actionWarn) + "</div>"
@@ -1272,9 +1519,26 @@ function renderPortalHtml_(opts) {
   var errText = uploadFail
     ? ("Upload failed. Please try again." + (uploadField ? (" Field: " + uploadField + ".") : ""))
     : "Portal update failed.";
-  var errBlock = hasErr
+  var showErrorBanner = hasErr && !isPaymentVerifiedLock;
+  var errBlock = showErrorBanner
     ? '<div style="background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;">' + esc_(errText) + (dbg ? (" Debug: " + esc_(dbg)) : "") + "</div>"
     : "";
+  var uploadBannerId = "portalUploadResultBanner";
+  var uploadResultBlock = "";
+  if (uploadResult) {
+    var uploadText = uploadOk
+      ? ("Upload successful." + (dbg ? (" Debug: " + dbg) : ""))
+      : ("Upload failed" + (uploadErrCode ? (" (" + uploadErrCode + ")") : "") + ". Please retry." + (dbg ? (" Debug: " + dbg) : ""));
+    if (uploadDocKey) uploadText += " Field: " + uploadDocKey + ".";
+    uploadResultBlock = ''
+      + '<div id="' + uploadBannerId + '" style="'
+      + (uploadOk
+        ? 'background:#eaf7ea;border:1px solid #2e7d32;'
+        : 'background:#ffecec;border:1px solid #b30000;')
+      + 'padding:10px;border-radius:8px;margin:0 0 12px 0;color:#000;">'
+      + '<span>' + esc_(uploadText) + '</span>'
+      + '</div>';
+  }
   var debugComment = debugPage
     ? '<!-- DEBUG_PORTAL_GET reqId=' + esc_(reqId) + ' id=' + esc_(id) + ' s(redacted)=' + esc_(redactedSecret) + ' -->'
     : "";
@@ -1331,6 +1595,7 @@ function renderPortalHtml_(opts) {
     + '<div id="portalErrorBanner" style="display:none;background:#ffecec;border:1px solid #b30000;padding:10px;border-radius:8px;margin-bottom:12px;color:#000;"></div>'
     + savedBlock
     + errBlock
+    + enrollmentConfirmedBlock
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + "<div><b>Applicant ID:</b> " + esc_(id) + "</div>"
     + "<div><b>Secure Link:</b> verified</div>"
@@ -1349,6 +1614,7 @@ function renderPortalHtml_(opts) {
 
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + '<h3 style="margin-top:0;">Documents & Payment Proof</h3>'
+    + uploadResultBlock
     + docsHtml
     + "</div>"
 
@@ -1383,6 +1649,7 @@ function renderPortalHtml_(opts) {
     + "<label><b>Select Subjects (mandatory):</b></label>"
     + '<div style="margin-top:8px;padding:12px;border:1px solid #eee;border-radius:10px;">'
     + subjectChecks
+    + subjectsLockedNotice
     + "</div>"
     + "</div>"
 
@@ -1399,7 +1666,7 @@ function renderPortalHtml_(opts) {
     + '<div style="margin-top:8px;color:#666;font-size:12px;">URL: ' + esc_(actionUrlShort) + "</div>"
 
     + "<script>"
-    + "console.log('PORTAL BUILD:', " + JSON.stringify(buildVersion) + ", '|', " + JSON.stringify(buildLabel) + ");"
+    + "console.log('PORTAL BUILD: ' + " + JSON.stringify(buildVersion) + ");"
     + "function packSubjects(){"
     + "var boxes=[].slice.call(document.querySelectorAll('input[name=\"subj\"]:checked'));"
     + "var vals=boxes.map(function(b){return b.value;}).filter(Boolean);"
@@ -1473,6 +1740,12 @@ function renderPortalHtml_(opts) {
     + "var fieldQ=params.get('field')||'';"
     + "if(hasSaved){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'success',ts:Date.now()})); }"
     + "if(hasError){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,mode:(uploadFailQ?'upload':'update'),field:fieldQ,ts:Date.now()})); }"
+    + "if(params.get('u')==='1'){"
+    + "params.delete('u');"
+    + "params.delete('ok');"
+    + "params.delete('docKey');"
+    + "params.delete('errCode');"
+    + "}"
     + "if(params.has('id') || params.has('s')){"
     + "params.delete('id');"
     + "params.delete('s');"
@@ -1500,6 +1773,8 @@ function renderPortalHtml_(opts) {
     + "var dbgCleanupEl=document.getElementById('dbgCleanupRan'); if(dbgCleanupEl){ dbgCleanupEl.textContent=cleanupRan ? 'true' : 'false'; }"
     + "var dbgAfterEl=document.getElementById('dbgHrefAfterCleanup'); if(dbgAfterEl){ dbgAfterEl.textContent=window.location.href; }"
     + "var dbgHrefEl=document.getElementById('dbgCurrentHref'); if(dbgHrefEl){ dbgHrefEl.textContent=window.location.href; }"
+    + "var uploadBanner=document.getElementById('portalUploadResultBanner');"
+    + "if(uploadBanner){ setTimeout(function(){ try{ uploadBanner.style.display='none'; }catch(_e){} },10000); }"
     + "}"
     + "function initStudentVersionFooter(){"
     + "var full=" + JSON.stringify(buildVersion) + ";"
@@ -1544,11 +1819,9 @@ function renderPortalHtml_(opts) {
 function renderDocsSection_(id, secret, record, docs, locked) {
   var out = "";
   var portalReloadUrl = buildPortalRedirectUrl_(id, secret, {});
-  var studentExecBase = canonicalStudentExecBase_();
-  var portalUploadActionUrl = studentExecBase
-    + (studentExecBase.indexOf("?") >= 0 ? "&" : "?") + "view=portalUpload"
-    + "&id=" + encodeURIComponent(clean_(id || ""))
-    + "&s=" + encodeURIComponent(clean_(secret || ""));
+  var execUrl = clean_(typeof getExecUrl_ === "function" ? getExecUrl_() : "");
+  if (!execUrl) execUrl = clean_(canonicalStudentExecBase_() || "");
+  var uploadAction = execUrl ? (execUrl + (execUrl.indexOf("?") >= 0 ? "&" : "?") + "view=portalUpload") : "?view=portalUpload";
   for (var i = 0; i < docs.length; i++) {
     var d = docs[i];
     var cur = clean_(record[d.field] || "");
@@ -1573,20 +1846,17 @@ function renderDocsSection_(id, secret, record, docs, locked) {
       curLinks = "<div style='margin-top:6px;'><b>Current files:</b> None uploaded</div>";
     }
     var multipleAttr = d.multiple ? " multiple" : "";
-    var multiBadge = d.multiple ? "<div class='muted' style='font-size:12px;margin-top:4px;'>Multi-upload enabled</div>" : "";
+    var multiBadge = d.multiple ? "<div class='muted' style='font-size:12px;margin-top:4px;'>Upload one file at a time (multi-file upload temporarily disabled).</div>" : "";
     var noteHtml = "";
 
     var uploadUi = locked
       ? "<div style='margin-top:10px;color:#666;'><i>Uploads disabled (locked).</i></div>"
       : "<div style='margin-top:10px;'>"
-        + "<form id='uf_" + esc_(d.field) + "' method='post' enctype='multipart/form-data' action='" + esc_(portalUploadActionUrl) + "' target='portalUploadFrame' style='margin:0;'>"
-        + "<input type='hidden' name='id' value='" + esc_(id) + "' />"
-        + "<input type='hidden' name='s' value='" + esc_(secret) + "' />"
-        + "<input type='hidden' name='docKey' value='" + esc_(d.field) + "' />"
+        + "<div id='uf_" + esc_(d.field) + "' style='margin:0;'>"
         + "<input type='hidden' name='dbg' id='dbg_" + esc_(d.field) + "' value='' />"
-        + "<input type='file' name='file' id='f_" + esc_(d.field) + "' data-upload-input='1' data-field='" + esc_(d.field) + "' data-multi='" + (d.multiple ? "1" : "0") + "'" + multipleAttr + " /> "
-        + "<button type='button' id='btn_" + esc_(d.field) + "' data-upload-btn='1' data-field='" + esc_(d.field) + "' data-multi='" + (d.multiple ? "1" : "0") + "'>Upload / Replace</button>"
-        + "</form>"
+        + "<input type='file' name='file' required id='f_" + esc_(d.field) + "' data-upload-input='1' data-field='" + esc_(d.field) + "' data-multi='" + (d.multiple ? "1" : "0") + "' /> "
+        + "<button type='button' id='btn_" + esc_(d.field) + "' data-upload-btn='1' data-field='" + esc_(d.field) + "'>Upload / Replace</button>"
+        + "</div>"
         + noteHtml
         + "<div id='cur_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'>" + curLinks + "</div>"
         + "<div id='msg_" + esc_(d.field) + "' style='margin-top:6px;font-size:12px;'></div>"
@@ -1612,16 +1882,17 @@ function renderDocsSection_(id, secret, record, docs, locked) {
       + "</div>";
   }
 
-  out += "<iframe name='portalUploadFrame' id='portalUploadFrame' style='display:none;width:0;height:0;border:0;' title='portal-upload-frame'></iframe>";
-
   // uploader script
   out += ""
     + "<script>"
     + "var PORTAL_AUTO_UPLOAD=false;"
     + "var PORTAL_LOCKED=" + (locked ? "true" : "false") + ";"
     + "var PORTAL_UPLOAD_MAX_MB=" + String(Number(CONFIG.PORTAL_UPLOAD_MAX_MB || 5)) + ";"
+    + "var PORTAL_MAX_UPLOAD_BYTES=" + String(Number(CONFIG.PORTAL_MAX_UPLOAD_BYTES || (5*1024*1024))) + ";"
     + "var PORTAL_UPLOAD_MAX_SERVER_MS=" + String(Number(CONFIG.PORTAL_UPLOAD_MAX_SERVER_MS || 20000)) + ";"
     + "var PORTAL_UPLOAD_TIMEOUT_MS=" + String(Number(CONFIG.PORTAL_UPLOAD_TIMEOUT_MS || 25000)) + ";"
+    + "var PORTAL_UPLOAD_ID=" + JSON.stringify(clean_(id || "")) + ";"
+    + "var PORTAL_UPLOAD_S=" + JSON.stringify(clean_(secret || "")) + ";"
     + "var DOC_MULTI_MAP={"
     + (docs || []).map(function (x) { return "'" + esc_(x.field) + "':" + (x.multiple ? "true" : "false"); }).join(",")
     + "};"
@@ -1735,76 +2006,80 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "  var files=[].slice.call(input.files||[]);"
     + "  if(!files.length){ if(btn) btn.disabled=false; setRowMsg(fieldName,'Select a file first.',true); return; }"
     + "  if(!isMultiple) files=[files[0]];"
-    + "  var tooBig=files.some(function(f){ return Number(f && f.size || 0) > (8*1024*1024); });"
-    + "  if(tooBig){ if(btn) btn.disabled=false; setUploadUiError_(fieldName,'File too large. Maximum '+String(PORTAL_UPLOAD_MAX_MB||5)+'MB allowed.',{errCode:'file_too_large',stage:'validate'}); return; }"
+    + "  var tooBig=files.some(function(f){ return Number(f && f.size || 0) > Math.max(1,Number(PORTAL_MAX_UPLOAD_BYTES||0)); });"
+    + "  if(tooBig){ if(btn) btn.disabled=false; setUploadUiError_(fieldName,'File too large. Maximum '+String(Math.round((Number(PORTAL_MAX_UPLOAD_BYTES||0)/(1024*1024))||5))+' MB allowed.',{errCode:'FILE_TOO_LARGE',stage:'validate'}); return; }"
     + "  var names=files.map(function(f){ return f.name; }).join(', ');"
     + "  clearPortalError_();"
     + "  setRowMsg(fieldName,'Selected: '+escHtml(names),false);"
-    + "  setUploadStatusPanel_(fieldName,{text:'Ready',stage:'validate',driveMode:'MULTIPART'});"
+    + "  setUploadStatusPanel_(fieldName,{text:'Ready',stage:'validate',driveMode:'B64'});"
     + "  if(btn) btn.disabled=false;"
-    + "  if(PORTAL_AUTO_UPLOAD){ uploadDoc(fieldName, isMultiple); }"
-    + "  else { setRowMsg(fieldName,'Selected: '+escHtml(names)+'<br/>Click Upload / Replace to submit.',false); }"
+    + "  setRowMsg(fieldName,'Selected: '+escHtml(names)+'<br/>Click Upload / Replace to submit.',false);"
     + "}"
-    + "function uploadDoc(fieldName, isMultiple){"
+    + "function uploadFile(fieldName){"
+    + "  if(PORTAL_LOCKED){ setUploadUiError_(fieldName,'Uploads are disabled (locked).',{errCode:'LOCKED',stage:'validate'}); return; }"
     + "  var input=document.getElementById('f_'+fieldName);"
-    + "  var form=document.getElementById('uf_'+fieldName);"
-    + "  if(!form || !input || !input.files || !input.files.length){ setUploadUiError_(fieldName,'Please select a file.',{errCode:'NO_FILE',stage:'validate'}); return; }"
+    + "  var btn=document.getElementById('btn_'+fieldName);"
+    + "  if(!input || !btn){ setUploadUiError_(fieldName,'Upload controls not found.',{errCode:'UI_MISSING',stage:'validate'}); return; }"
+    + "  if(PORTAL_UPLOAD_PENDING[fieldName]){ return; }"
     + "  var files=[].slice.call(input.files||[]);"
-    + "  if(!isMultiple) files=[files[0]];"
-    + "  if(files.some(function(f){ return Number(f && f.size || 0) > (Math.max(1,Number(PORTAL_UPLOAD_MAX_MB||5))*1024*1024); })){ setUploadUiError_(fieldName,'File too large. Maximum '+String(PORTAL_UPLOAD_MAX_MB||5)+'MB allowed.',{errCode:'FILE_TOO_LARGE',stage:'validate'}); return; }"
+    + "  if(!files.length){ setUploadUiError_(fieldName,'Please select a file.',{errCode:'NO_FILE',stage:'validate'}); return; }"
+    + "  var file=files[0];"
+    + "  if(Number(file && file.size || 0) > Math.max(1,Number(PORTAL_MAX_UPLOAD_BYTES||0))){ setUploadUiError_(fieldName,'File too large. Maximum '+String(Math.round((Number(PORTAL_MAX_UPLOAD_BYTES||0)/(1024*1024))||5))+' MB allowed.',{errCode:'FILE_TOO_LARGE',stage:'validate'}); return; }"
     + "  var dbg=makeClientDebugId_();"
     + "  var dbgEl=document.getElementById('dbg_'+fieldName);"
     + "  if(dbgEl) dbgEl.value=dbg;"
-    + "  PORTAL_UPLOAD_PENDING[fieldName]={ dbg:dbg, startedAt:Date.now() };"
+    + "  PORTAL_UPLOAD_PENDING[fieldName]={dbg:dbg,startedAt:Date.now()};"
     + "  setUploadBusy(fieldName,true);"
     + "  clearPortalError_();"
-    + "  setRowMsg(fieldName,'Uploading...',false);"
-    + "  setUploadStatusPanel_(fieldName,{text:'Uploading...',dbg:dbg,stage:'call',driveMode:'MULTIPART'});"
-    + "  try{ form.submit(); }catch(subErr){ setUploadUiError_(fieldName,'Upload failed: '+stringifyGsError_(subErr),{dbg:dbg,errCode:'SUBMIT_FAIL',stage:'call',driveMode:'MULTIPART'}); setUploadBusy(fieldName,false); }"
-    + "}"
-    + "function onPortalUploadIframeResult_(data){"
-    + "  if(!data || data.type!=='PORTAL_UPLOAD_RESULT') return;"
-    + "  var fieldName=String(data.docKey||'');"
-    + "  if(!fieldName) return;"
-    + "  var pending=PORTAL_UPLOAD_PENDING[fieldName]||{};"
-    + "  var dbg=String(data.debugId||data.dbg||pending.dbg||'');"
-    + "  if(data.ok===true){"
-    + "    var urls=Array.isArray(data.currentUrls)?data.currentUrls:getCurrentUrlsFromDom(fieldName);"
-    + "    if(data.fileUrl && urls.indexOf(String(data.fileUrl))===-1) urls.push(String(data.fileUrl));"
-    + "    renderCurrentUrls(fieldName, urls);"
-    + "    markDocStatusPendingReviewUi_(fieldName);"
-    + "    setUploadUiSuccess_(fieldName,'Uploaded (Pending Review).',{dbg:dbg,stage:String(data.stage||'done'),errCode:String(data.errCode||''),driveMode:String(data.driveMode||'MULTIPART'),serverMs:data.serverMs,fileUrl:String(data.fileUrl||'')});"
-    + "    var inEl=document.getElementById('f_'+fieldName);"
-    + "    if(inEl) inEl.value='';"
-    + "  } else {"
-    + "    var code=String(data.code||data.errCode||'UPLOAD_FAILED');"
-    + "    var stage=String(data.stage||'call');"
-    + "    var msg=String(data.message||'Upload failed.');"
-    + "    setUploadUiError_(fieldName, msg+' (code='+code+', dbg='+dbg+')',{dbg:dbg,stage:stage,errCode:code,driveMode:String(data.driveMode||'MULTIPART'),serverMs:data.serverMs,fileUrl:String(data.fileUrl||'')});"
-    + "  }"
-    + "  setUploadBusy(fieldName,false);"
-    + "  delete PORTAL_UPLOAD_PENDING[fieldName];"
-    + "}"
-    + "function bindPortalUploadIframeListener_(){"
-    + "  if(window.__fodePortalUploadIframeBound) return;"
-    + "  window.__fodePortalUploadIframeBound=true;"
-    + "  window.addEventListener('message', function(ev){"
-    + "    try{ onPortalUploadIframeResult_(ev&&ev.data); }catch(_e){}"
-    + "  });"
+    + "  setRowMsg(fieldName,'Reading file...',false);"
+    + "  setUploadStatusPanel_(fieldName,{text:'Reading...',dbg:dbg,stage:'read',driveMode:'B64'});"
+    + "  var reader=new FileReader();"
+    + "  reader.onerror=function(){"
+    + "    delete PORTAL_UPLOAD_PENDING[fieldName];"
+    + "    setUploadBusy(fieldName,false);"
+    + "    setUploadUiError_(fieldName,'Could not read file.',{dbg:dbg,errCode:'READ_FAIL',stage:'read',driveMode:'B64'});"
+    + "  };"
+    + "  reader.onload=function(){"
+    + "    var result=String(reader.result||'');"
+    + "    var comma=result.indexOf(',');"
+    + "    var base64=(comma>=0)?result.slice(comma+1):result;"
+    + "    if(!base64){"
+    + "      delete PORTAL_UPLOAD_PENDING[fieldName];"
+    + "      setUploadBusy(fieldName,false);"
+    + "      setUploadUiError_(fieldName,'Could not read file.',{dbg:dbg,errCode:'READ_EMPTY',stage:'read',driveMode:'B64'});"
+    + "      return;"
+    + "    }"
+    + "    setRowMsg(fieldName,'Uploading...',false);"
+    + "    setUploadStatusPanel_(fieldName,{text:'Uploading...',dbg:dbg,stage:'call',driveMode:'B64'});"
+    + "    google.script.run"
+    + "      .withSuccessHandler(function(res){"
+    + "        delete PORTAL_UPLOAD_PENDING[fieldName];"
+    + "        setUploadBusy(fieldName,false);"
+    + "        if(!res || res.ok!==true){"
+    + "          var code=String((res&&res.code)||'UPLOAD_FAILED');"
+    + "          var dbgOut=String((res&&res.dbg)||dbg);"
+    + "          var msg=String((res&&res.message)||('Upload failed ('+code+').'));"
+    + "          setUploadUiError_(fieldName,msg+(dbgOut?(' Debug: '+dbgOut):''),{dbg:dbgOut,errCode:code,stage:'call',driveMode:'B64'});"
+    + "          return;"
+    + "        }"
+    + "        var urls=(res.currentUrls && res.currentUrls.length)?res.currentUrls:getCurrentUrlsFromDom(fieldName);"
+    + "        if(res.fileUrl && urls.indexOf(String(res.fileUrl))<0){ urls.push(String(res.fileUrl)); }"
+    + "        renderCurrentUrls(fieldName, urls);"
+    + "        markDocStatusPendingReviewUi_(fieldName);"
+    + "        setUploadUiSuccess_(fieldName,'Uploaded (Pending Review).',{dbg:String(res.dbg||dbg),stage:'done',driveMode:'B64',fileUrl:String(res.fileUrl||'')});"
+    + "        setRowMsg(fieldName,'Uploaded: '+escHtml(String(res.name||file.name||'')),false);"
+    + "        try{ input.value=''; }catch(_e){}"
+    + "      })"
+    + "      .withFailureHandler(function(err){"
+    + "        delete PORTAL_UPLOAD_PENDING[fieldName];"
+    + "        setUploadBusy(fieldName,false);"
+    + "        setUploadUiError_(fieldName,'Upload failed: '+(err&&err.message?err.message:err),{dbg:dbg,errCode:'RPC_FAIL',stage:'call',driveMode:'B64'});"
+    + "      })"
+    + "      .portalUploadBase64({id:PORTAL_UPLOAD_ID,s:PORTAL_UPLOAD_S,field:fieldName,name:String(file&&file.name||''),mime:String(file&&file.type||''),base64:base64});"
+    + "  };"
+    + "  reader.readAsDataURL(file);"
     + "}"
     + "function bindPortalUploadUi_(){"
-    + "  bindPortalUploadIframeListener_();"
-    + "  var btns=[].slice.call(document.querySelectorAll('[data-upload-btn]'));"
-    + "  btns.forEach(function(btn){"
-    + "    if(!btn || btn.__fodeBoundUploadClick) return;"
-    + "    btn.__fodeBoundUploadClick=true;"
-    + "    btn.addEventListener('click', function(ev){"
-    + "      if(ev && typeof ev.preventDefault==='function') ev.preventDefault();"
-    + "      var field=String(btn.getAttribute('data-field')||'');"
-    + "      var isMultiple=String(btn.getAttribute('data-multi')||'0')==='1';"
-    + "      uploadDoc(field, isMultiple);"
-    + "    });"
-    + "  });"
     + "  var inputs=[].slice.call(document.querySelectorAll('[data-upload-input]'));"
     + "  inputs.forEach(function(input){"
     + "    if(!input || input.__fodeBoundUploadChange) return;"
@@ -1813,6 +2088,16 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "      var field=String(input.getAttribute('data-field')||'');"
     + "      var isMultiple=String(input.getAttribute('data-multi')||'0')==='1';"
     + "      onDocFileChange(field, isMultiple);"
+    + "    });"
+    + "  });"
+    + "  var btns=[].slice.call(document.querySelectorAll('[data-upload-btn]'));"
+    + "  btns.forEach(function(btn){"
+    + "    if(!btn || btn.__fodeBoundUploadClick) return;"
+    + "    btn.__fodeBoundUploadClick=true;"
+    + "    btn.addEventListener('click', function(){"
+    + "      var field=String(btn.getAttribute('data-field')||'');"
+    + "      if(!field) return;"
+    + "      uploadFile(field);"
     + "    });"
     + "  });"
     + "}"
@@ -1968,17 +2253,70 @@ function getStudentActionUrl_() {
   };
 }
 
+function boundaryFromContentType_(ct) {
+  var s = String(ct || "");
+  var m = s.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  return clean_((m && (m[1] || m[2])) || "");
+}
+
+function boundaryFromContents_(contents) {
+  var line = (typeof firstLine_ === "function")
+    ? firstLine_(contents, 400)
+    : String(contents || "").split(/\r?\n/, 1)[0];
+  if (line.indexOf("--") !== 0) return "";
+  return clean_(line.substring(2));
+}
+
 function parseMultipartForm_(e) {
   try {
-    var postData = (e && e.postData) ? e.postData : null;
-    var contentType = String((postData && (postData.type || postData.contentType)) || "");
-    var raw = String((postData && postData.contents) || "");
-    var m = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
-    var boundary = clean_((m && (m[1] || m[2])) || "");
-    if (!boundary) return { ok: false, code: "MULTIPART_PARSE_FAIL", message: "Missing multipart boundary." };
-    if (!raw) return { ok: false, code: "MULTIPART_PARSE_FAIL", message: "Empty multipart body." };
+    var pd = (e && e.postData) ? e.postData : null;
+    var contentType = String((pd && (pd.type || pd.contentType)) || "");
+    var raw = (pd && typeof pd.contents === "string") ? pd.contents : "";
+    var contentLen = raw ? raw.length : 0;
+    var firstLinePrefix = (typeof firstLine_ === "function") ? firstLine_(raw, 80) : String(raw || "").slice(0, 80);
+    var boundary = boundaryFromContentType_(contentType);
+    var boundaryFoundFrom = boundary ? "type" : "none";
+    var boundaryDerived = false;
+    if (!boundary) {
+      boundary = boundaryFromContents_(raw);
+      boundaryDerived = !!boundary;
+      boundaryFoundFrom = boundary ? "contents" : "none";
+    }
+    if (!boundary) {
+      return {
+        ok: false,
+        code: "MULTIPART_PARSE_FAIL",
+        message: "Multipart parse failed. Missing boundary.",
+        contentTypeSeen: (typeof truncate_ === "function") ? truncate_(contentType, 120) : String(contentType || "").slice(0, 120),
+        contentLen: contentLen,
+        boundaryDerived: false,
+        boundaryFoundFrom: "none",
+        firstLinePrefix: clean_(firstLinePrefix || "")
+      };
+    }
+    if (!raw) {
+      return {
+        ok: false,
+        code: "MULTIPART_PARSE_FAIL",
+        message: "Empty multipart body.",
+        contentTypeSeen: (typeof truncate_ === "function") ? truncate_(contentType, 120) : String(contentType || "").slice(0, 120),
+        contentLen: contentLen,
+        boundaryDerived: boundaryDerived,
+        boundaryFoundFrom: boundaryFoundFrom,
+        firstLinePrefix: clean_(firstLinePrefix || "")
+      };
+    }
 
-    var out = { ok: true, fields: {}, files: {} };
+    var out = {
+      ok: true,
+      fields: {},
+      files: {},
+      contentTypeSeen: (typeof truncate_ === "function") ? truncate_(contentType, 120) : String(contentType || "").slice(0, 120),
+      contentLen: contentLen,
+      boundaryDerived: boundaryDerived,
+      boundaryFoundFrom: boundaryFoundFrom,
+      firstLinePrefix: clean_(firstLinePrefix || "")
+    };
     var delimiter = "--" + boundary;
     var parts = raw.split(delimiter);
     for (var i = 0; i < parts.length; i++) {
@@ -2018,13 +2356,13 @@ function parseMultipartForm_(e) {
       if (fileMatch && fileMatch[1] !== undefined) {
         var fileName = String(fileMatch[1] || "");
         var ct = clean_(headers["content-type"] || "application/octet-stream");
-        var bytes = [];
-        for (var b = 0; b < body.length; b++) bytes.push(body.charCodeAt(b) & 0xff);
+        var blob = Utilities.newBlob(body || "", ct || "application/octet-stream", fileName || "upload.bin");
+        var bytes = blob.getBytes();
         var fileObj = {
           fileName: fileName,
           contentType: ct,
           bytes: bytes,
-          blob: Utilities.newBlob(bytes, ct || "application/octet-stream", fileName || "upload.bin")
+          blob: blob
         };
         if (hasOwn_(out.files, fieldName)) {
           if (!Array.isArray(out.files[fieldName])) out.files[fieldName] = [out.files[fieldName]];
@@ -2041,7 +2379,12 @@ function parseMultipartForm_(e) {
     return {
       ok: false,
       code: "MULTIPART_PARSE_FAIL",
-      message: String(err && err.message ? err.message : err)
+      message: String(err && err.message ? err.message : err),
+      contentTypeSeen: "",
+      contentLen: 0,
+      boundaryDerived: false,
+      boundaryFoundFrom: "none",
+      firstLinePrefix: ""
     };
   }
 }
@@ -2049,34 +2392,180 @@ function parseMultipartForm_(e) {
 function portal_uploadMultipart_(e) {
   var t0 = nowMs_();
   var dbg = makeDebugId_();
+  var reqParams = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var redirectApplicantId = clean_(reqParams.id || reqParams.applicantId || "");
+  var redirectSecret = clean_(reqParams.s || reqParams.secret || "");
+  var diagBase = {
+    runtimeVersion: clean_(CONFIG.VERSION || ""),
+    portalBuildParam: clean_(typeof getParam_ === "function" ? getParam_(e, "portalBuild") : (reqParams.portalBuild || "")),
+    viewParam: clean_(typeof getParam_ === "function" ? getParam_(e, "view") : (reqParams.view || "")),
+    method: "POST"
+  };
+  function diag_(extra) {
+    var out = {};
+    var k;
+    for (k in diagBase) if (Object.prototype.hasOwnProperty.call(diagBase, k)) out[k] = diagBase[k];
+    if (extra && typeof extra === "object") {
+      for (k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) out[k] = extra[k];
+    }
+    return out;
+  }
   function out_(ok, code, message, extra) {
     var x = (extra && typeof extra === "object") ? extra : {};
-    var payload = {
-      type: "PORTAL_UPLOAD_RESULT",
-      ok: !!ok,
-      code: clean_(code || (ok ? "OK" : "UPLOAD_FAILED")),
-      errCode: clean_(x.errCode || code || ""),
-      message: clean_(message || ""),
-      debugId: clean_(x.debugId || dbg),
-      dbg: clean_(x.debugId || dbg),
-      docKey: clean_(x.docKey || ""),
-      fileUrl: clean_(x.fileUrl || ""),
-      fileId: clean_(x.fileId || ""),
-      currentUrls: Array.isArray(x.currentUrls) ? x.currentUrls : [],
-      driveMode: clean_(x.driveMode || ""),
-      stage: clean_(x.stage || ""),
-      recvIdSource: clean_(x.recvIdSource || ""),
-      recvSHashed: clean_(x.recvSHashed || ""),
-      serverMs: Number(x.serverMs || elapsedMs_(t0))
-    };
-    return htmlIframeResult_(payload);
+    var dbgOut = clean_(x.debugId || dbg);
+    var errCodeOut = clean_(x.errCode || code || "");
+    var idOut = clean_(x.applicantId || redirectApplicantId || "");
+    var secretOut = clean_(x.secret || redirectSecret || "");
+    var docKeyOut = clean_(x.docKey || "");
+    logExecTrace_("PORTAL_UPLOAD_RESULT_RENDER", dbgOut || dbg, {
+      dbg: dbgOut || dbg,
+      ok: ok ? 1 : 0,
+      docKey: docKeyOut,
+      runtimeVersion: clean_(CONFIG.VERSION || "")
+    });
+    try {
+      return renderPortalPageResponse_(e, {
+        applicantId: idOut,
+        secret: secretOut,
+        viewName: "portal",
+        uploadResult: {
+          ok: !!ok,
+          dbg: dbgOut || dbg,
+          errCode: ok ? "" : errCodeOut,
+          docKey: docKeyOut,
+          message: clean_(message || "")
+        }
+      });
+    } catch (renderErr) {
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbgOut || dbg, diag_({
+        code: "PORTAL_UPLOAD_RENDER_FAIL",
+        stage: "render",
+        err: clean_(stringifyGsError_(renderErr) || "")
+      }));
+      return htmlOutput_(renderErrorHtml_("Upload processed, but portal page could not be rendered. Debug: " + (dbgOut || dbg)));
+    }
   }
 
   try {
-    var parsed = parseMultipartForm_(e);
+    var pd = (e && e.postData) ? e.postData : null;
+    var pdKeys = (typeof safeKeys_ === "function") ? safeKeys_(pd) : (pd && typeof pd === "object" ? Object.keys(pd) : []);
+    var parameterKeys = (typeof safeKeys_ === "function") ? safeKeys_(reqParams) : (reqParams && typeof reqParams === "object" ? Object.keys(reqParams) : []);
+    var nativeParamFile = (reqParams && typeof reqParams === "object") ? reqParams.file : null;
+    var nativeFileName = "";
+    var nativeFileBytes = [];
+    var nativeFileBytesLen = 0;
+    var nativeFileContentType = "";
+    var hasNativeParameterFile = !!nativeParamFile;
+    try { nativeFileName = (nativeParamFile && nativeParamFile.getName) ? clean_(nativeParamFile.getName()) : ""; } catch (_eName) {}
+    try { nativeFileContentType = (nativeParamFile && nativeParamFile.getContentType) ? clean_(nativeParamFile.getContentType()) : ""; } catch (_eCt) {}
+    try {
+      if (nativeParamFile && nativeParamFile.getBytes) {
+        nativeFileBytes = nativeParamFile.getBytes() || [];
+        nativeFileBytesLen = Number(nativeFileBytes.length || 0);
+      }
+    } catch (_eBytes) {
+      nativeFileBytes = [];
+      nativeFileBytesLen = 0;
+    }
+    var pdContentLen = (pd && typeof pd.contents === "string") ? pd.contents.length : 0;
+    var parsed = null;
+    if (nativeParamFile && nativeFileBytesLen > 0) {
+      parsed = {
+        ok: true,
+        fields: reqParams,
+        files: {
+          file: {
+            fileName: nativeFileName || "portal-upload.bin",
+            contentType: nativeFileContentType || "application/octet-stream",
+            bytes: nativeFileBytes,
+            blob: nativeParamFile
+          }
+        },
+        contentTypeSeen: clean_((pd && (pd.type || pd.contentType)) || ""),
+        contentLen: pdContentLen,
+        boundaryDerived: false,
+        boundaryFoundFrom: "native_parameter_file",
+        firstLinePrefix: ""
+      };
+    } else if (!pd || pdContentLen <= 0) {
+      logExecTrace_("PORTAL_UPLOAD_ENTER", dbg, {
+        dbg: dbg,
+        runtimeVersion: clean_(CONFIG.VERSION || ""),
+        view: clean_(typeof getParam_ === "function" ? getParam_(e, "view") : (reqParams.view || "")),
+        hasPostData: !!pd,
+        postDataKeys: pdKeys,
+        hasParameterFile: hasNativeParameterFile,
+        parameterKeys: parameterKeys,
+        fileName: nativeFileName,
+        fileBytesLen: nativeFileBytesLen,
+        contentTypeSeen: clean_((pd && (pd.type || pd.contentType)) || ""),
+        contentLen: Number(pdContentLen || 0),
+        applicantId: clean_(reqParams.id || reqParams.applicantId || ""),
+        docKey: clean_(reqParams.docKey || reqParams.field || "")
+      });
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({
+        code: "NO_POSTDATA",
+        stage: "parse",
+        contentTypeSeen: clean_((pd && (pd.type || pd.contentType)) || ""),
+        contentLen: Number(pdContentLen || 0)
+      }));
+      return out_(false, "NO_POSTDATA", "Upload payload missing (empty POST). This usually means the browser did not submit the form containing the file input.", {
+        stage: "parse",
+        contentTypeSeen: clean_((pd && (pd.type || pd.contentType)) || ""),
+        contentLen: Number(pdContentLen || 0),
+        postDataKeys: pdKeys,
+        applicantId: clean_(reqParams.id || reqParams.applicantId || ""),
+        secret: clean_(reqParams.s || reqParams.secret || ""),
+        docKey: clean_(reqParams.docKey || reqParams.field || "")
+      });
+    } else {
+      parsed = parseMultipartForm_(e);
+    }
+    var enterFields = (parsed && parsed.fields && typeof parsed.fields === "object") ? parsed.fields : {};
+    logExecTrace_("PORTAL_UPLOAD_ENTER", dbg, {
+      dbg: dbg,
+      runtimeVersion: clean_(CONFIG.VERSION || ""),
+      view: clean_(typeof getParam_ === "function" ? getParam_(e, "view") : (reqParams.view || "")),
+      hasPostData: !!pd,
+      postDataKeys: pdKeys,
+      hasParameterFile: hasNativeParameterFile,
+      parameterKeys: parameterKeys,
+      fileName: nativeFileName,
+      fileBytesLen: nativeFileBytesLen,
+      contentTypeSeen: clean_(parsed && parsed.contentTypeSeen || ((pd && (pd.type || pd.contentType)) || "")),
+      contentLen: Number(parsed && parsed.contentLen || ((pd && typeof pd.contents === "string") ? pd.contents.length : 0)),
+      applicantId: clean_(enterFields.id || enterFields.applicantId || reqParams.id || reqParams.applicantId || ""),
+      docKey: clean_(enterFields.docKey || enterFields.field || reqParams.docKey || reqParams.field || "")
+    });
+    logExecTrace_("PORTAL_UPLOAD_DIAG", dbg, diag_({
+      hasPostData: !!pd,
+      postDataKeys: pdKeys,
+      contentTypeSeen: clean_(parsed && parsed.contentTypeSeen || ((pd && (pd.type || pd.contentType)) || "")),
+      contentLen: Number(parsed && parsed.contentLen || ((pd && typeof pd.contents === "string") ? pd.contents.length : 0)),
+      firstLinePrefix: clean_(parsed && parsed.firstLinePrefix || ((typeof firstLine_ === "function") ? firstLine_((pd && pd.contents) || "", 80) : "")),
+      boundaryFoundFrom: clean_(parsed && parsed.boundaryFoundFrom || "none"),
+      boundaryDerived: !!(parsed && parsed.boundaryDerived)
+    }));
     if (!parsed || parsed.ok !== true) {
-      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "MULTIPART_PARSE_FAIL", stage: "parse", err: clean_(parsed && parsed.message || "") });
-      return out_(false, "MULTIPART_PARSE_FAIL", clean_(parsed && parsed.message || "Could not parse upload form."), { stage: "parse" });
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({
+        code: "MULTIPART_PARSE_FAIL",
+        stage: "parse",
+        err: clean_(parsed && parsed.message || ""),
+        contentTypeSeen: clean_(parsed && parsed.contentTypeSeen || ""),
+        contentLen: Number(parsed && parsed.contentLen || 0),
+        boundaryDerived: !!(parsed && parsed.boundaryDerived),
+        boundaryFoundFrom: clean_(parsed && parsed.boundaryFoundFrom || "none"),
+        firstLinePrefix: clean_(parsed && parsed.firstLinePrefix || "")
+      }));
+      return out_(false, "MULTIPART_PARSE_FAIL", clean_(parsed && parsed.message || "Multipart parse failed. Missing boundary."), {
+        stage: "parse",
+        contentTypeSeen: clean_(parsed && parsed.contentTypeSeen || ""),
+        boundaryDerived: !!(parsed && parsed.boundaryDerived),
+        boundaryFoundFrom: clean_(parsed && parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed && parsed.contentLen || 0),
+        postDataKeys: pdKeys,
+        firstLinePrefix: clean_(parsed && parsed.firstLinePrefix || "")
+      });
     }
 
     var fields = parsed.fields || {};
@@ -2101,6 +2590,8 @@ function portal_uploadMultipart_(e) {
       secret = clean_(queryS || multipartS || "");
       recvIdSource = "missing";
     }
+    redirectApplicantId = applicantId || redirectApplicantId;
+    redirectSecret = secret || redirectSecret;
     var recvSHashed = (typeof secretHashPrefix_ === "function")
       ? secretHashPrefix_(secret)
       : clean_(hashPortalSecret_(secret || "")).slice(0, 8);
@@ -2114,37 +2605,53 @@ function portal_uploadMultipart_(e) {
         stage: "auth",
         docKey: docKey,
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
     if (!docKey) {
       return out_(false, "INVALID_FIELD", "Missing document field.", {
         stage: "validate",
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
 
     if (!fileEntry || !Array.isArray(fileEntry.bytes) || !fileEntry.bytes.length) {
-      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "NO_FILE", stage: "parse", applicantId: applicantId, docKey: docKey });
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({ code: "NO_FILE", stage: "parse", applicantId: applicantId, docKey: docKey }));
       return out_(false, "NO_FILE", "Please select a file.", {
         stage: "parse",
         docKey: docKey,
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
 
-    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-    var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+    var ss = getWorkingSpreadsheet_();
+    var sheet = mustGetDataSheet_(ss);
     var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
     if (!found) {
-      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "TOKEN_INVALID", stage: "auth", applicantId: applicantId, docKey: docKey });
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({ code: "TOKEN_INVALID", stage: "auth", applicantId: applicantId, docKey: docKey }));
       return out_(false, "TOKEN_INVALID", "Invalid or expired portal link token.", {
         stage: "auth",
         docKey: docKey,
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
     if (String(found.record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
@@ -2152,11 +2659,15 @@ function portal_uploadMultipart_(e) {
         stage: "auth",
         docKey: docKey,
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
     if (isPaymentFreezeActive_(found.record)) {
-      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "PAYMENT_FREEZE", stage: "auth", applicantId: applicantId, docKey: docKey });
+      logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({ code: "PAYMENT_FREEZE", stage: "auth", applicantId: applicantId, docKey: docKey }));
       return out_(false, "PAYMENT_FREEZE", "Uploads are disabled after payment verification.", {
         stage: "auth",
         docKey: docKey,
@@ -2188,8 +2699,18 @@ function portal_uploadMultipart_(e) {
         serverMs: Number(res.serverMs || elapsedMs_(t0)),
         driveMode: clean_(res.driveMode || "")
       });
+      logExecTrace_("PORTAL_UPLOAD_OK", dbg, {
+        dbg: clean_(res.dbg || dbg),
+        docKey: docKey,
+        runtimeVersion: clean_(CONFIG.VERSION || ""),
+        applicantId: applicantId,
+        driveMode: clean_(res.driveMode || ""),
+        serverMs: Number(res.serverMs || elapsedMs_(t0))
+      });
       return out_(true, "OK", "Uploaded", {
         debugId: clean_(res.dbg || dbg),
+        applicantId: applicantId,
+        secret: secret,
         docKey: docKey,
         fileUrl: res.fileUrl,
         fileId: res.fileId,
@@ -2198,11 +2719,15 @@ function portal_uploadMultipart_(e) {
         stage: res.stage || "done",
         serverMs: res.serverMs,
         recvIdSource: recvIdSource,
-        recvSHashed: recvSHashed
+        recvSHashed: recvSHashed,
+        contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+        boundaryDerived: !!parsed.boundaryDerived,
+        boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+        contentLen: Number(parsed.contentLen || 0)
       });
     }
 
-    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, {
+    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({
       applicantId: applicantId,
       docKey: docKey,
       fileName: fileName,
@@ -2210,9 +2735,11 @@ function portal_uploadMultipart_(e) {
       stage: clean_(res.stage || "call"),
       errCode: clean_(res.errCode || code),
       serverMs: Number(res.serverMs || elapsedMs_(t0))
-    });
+    }));
     return out_(false, code.toUpperCase(), clean_(res.err || "Upload failed."), {
       debugId: clean_(res.dbg || dbg),
+      applicantId: applicantId,
+      secret: secret,
       docKey: docKey,
       fileUrl: res.fileUrl,
       fileId: res.fileId,
@@ -2222,11 +2749,15 @@ function portal_uploadMultipart_(e) {
       serverMs: res.serverMs,
       errCode: res.errCode || code,
       recvIdSource: recvIdSource,
-      recvSHashed: recvSHashed
+      recvSHashed: recvSHashed,
+      contentTypeSeen: clean_(parsed.contentTypeSeen || ""),
+      boundaryDerived: !!parsed.boundaryDerived,
+      boundaryFoundFrom: clean_(parsed.boundaryFoundFrom || "none"),
+      contentLen: Number(parsed.contentLen || 0)
     });
   } catch (err) {
     var msg = String(err && err.message ? err.message : err);
-    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, { code: "PORTAL_UPLOAD_EXCEPTION", stage: "call", e: safeErr_(err) });
+    logExecTrace_("PORTAL_UPLOAD_FAIL", dbg, diag_({ code: "PORTAL_UPLOAD_EXCEPTION", stage: "call", e: safeErr_(err) }));
     return out_(false, "PORTAL_UPLOAD_EXCEPTION", msg || "Upload failed.", { stage: "call" });
   }
 }
@@ -2244,6 +2775,8 @@ function buildPortalRedirectUrl_(applicantId, secret) {
   if (opts.saved === true) url += "&saved=1";
   var hasError = opts.error === true || opts.err === true;
   if (hasError) url += "&error=1";
+  if (opts.locked === true) url += "&locked=1";
+  if (opts.msg) url += "&msg=" + encodeURIComponent(clean_(opts.msg));
   if (opts.dbg) url += "&dbg=" + encodeURIComponent(clean_(opts.dbg));
   if (opts.uploadFail === true) url += "&uploadFail=1";
   if (opts.field) url += "&field=" + encodeURIComponent(clean_(opts.field));
@@ -2369,7 +2902,7 @@ function outputToJsonObject_(res) {
 
 function logPortalPostEvent_(label, payload) {
   try {
-    var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+    var ss = getWorkingSpreadsheet_();
     var sh = mustGetSheet_(ss, CONFIG.LOG_SHEET);
     log_(sh, label, JSON.stringify(payload || {}));
   } catch (e) {
@@ -2378,8 +2911,9 @@ function logPortalPostEvent_(label, payload) {
 }
 
 function mustGetDataSheet_(ss) {
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
-  if (sheet.getName() !== CONFIG.DATA_SHEET) {
+  var expectedName = clean_(CONFIG.SHEET_TAB_WORKING || CONFIG.DATA_SHEET || "FODE_Data");
+  var sheet = mustGetSheet_(ss, expectedName);
+  if (sheet.getName() !== expectedName) {
     throw new Error("DATA_SHEET mismatch");
   }
   return sheet;
@@ -2542,6 +3076,11 @@ function uniqCsv_(arr) {
 }
 
 /******************** LOCK RULE ********************/
+function isDocsVerified_(row) {
+  var r = row || {};
+  return r["Docs_Verified"] === "Yes";
+}
+
 function getPortalLockReason_(record) {
   var row = record || {};
   if (isPaymentVerifiedDerived_(row)) return "payment_verified";
@@ -2698,7 +3237,7 @@ function sendEmailBestEffort_(toEmail, subject, body, logLabel, meta) {
   var payload = meta && typeof meta === "object" ? meta : {};
   function safeEmailLogPayload_(obj) {
     try {
-      log_(mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET), lbl, JSON.stringify(obj || {}));
+      log_(mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET), lbl, JSON.stringify(obj || {}));
     } catch (_logErr) {
       try { Logger.log("%s %s", lbl, JSON.stringify(obj || {})); } catch (_e) {}
     }
@@ -2737,7 +3276,7 @@ function sendDocsVerifiedPaymentRequiredEmail_(rowObj, rowNumber, actorEmail) {
   var applicantId = clean_(row.ApplicantID || row[SCHEMA.APPLICANT_ID] || "");
   var recipient = clean_(row.Parent_Email_Corrected || row[SCHEMA.PARENT_EMAIL_CORRECTED] || row.Parent_Email || row[SCHEMA.PARENT_EMAIL] || "");
   var quote = computeFodeFeeQuote_(row);
-  var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.DATA_SHEET);
+  var sh = mustGetDataSheet_(getWorkingSpreadsheet_());
   var rowNum = Number(rowNumber || 0) || findRowByApplicantId_(sh, applicantId);
   var portalUrl = "";
   if (rowNum >= 2 && applicantId) {
@@ -2798,7 +3337,7 @@ function notifyAdminPaymentReceiptUploaded_(rowObj, rowNumber, opts) {
     adminUrl || "(admin URL not configured)"
   ].join("\n");
   try {
-    log_(mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET), "PAYMENT_RECEIPT_UPLOADED", JSON.stringify({
+    log_(mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET), "PAYMENT_RECEIPT_UPLOADED", JSON.stringify({
       applicantId: applicantId,
       rowNumber: Number(rowNumber || 0) || "",
       source: clean_(opts.source || ""),
@@ -2872,8 +3411,8 @@ function ensureStableFormId_(rowObj, sh, rowNumber, idx) {
 function readRowSnapshot_(applicantId) {
   var id = clean_(applicantId || "");
   if (!id) return null;
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  var ss = getWorkingSpreadsheet_();
+  var sheet = mustGetDataSheet_(ss);
   var rowNum = findRowByApplicantId_(sheet, id);
   if (!rowNum) return null;
   var rowObj = getRowObject_(sheet, rowNum) || {};

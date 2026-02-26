@@ -10,6 +10,10 @@ function respondDiag_(e) {
   return jsonOut_(diagStatus_());
 }
 
+function doPost_portalUpload_(e) {
+  return portal_uploadMultipart_(e);
+}
+
 function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comment) {
   applicantId = clean_(applicantId);
   fieldName = clean_(fieldName);

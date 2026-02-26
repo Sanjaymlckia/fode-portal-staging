@@ -1,6 +1,78 @@
 /******************** ADMIN APP (REWORKED FOR HASHED PORTAL TOKENS) ********************/
 var ADMIN_DETAIL_SIG = "ADMIN_DETAIL_SIG_20260220_v1";
 
+function makeDebugId_() {
+  return adminDebugId_();
+}
+
+function adminDebugId_() {
+  try {
+    if (typeof newDebugId_ === "function") return newDebugId_();
+  } catch (_e) {}
+  return "ADM-" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyyMMdd-HHmmss") + "-" + Math.floor(Math.random() * 100000);
+}
+
+function ok_(data, debugId) {
+  var out = { ok: true, debugId: String(debugId || adminDebugId_()) };
+  var src = (data && typeof data === "object") ? data : {};
+  for (var k in src) {
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  return out;
+}
+
+function err_(code, message, debugId, extra) {
+  var out = {
+    ok: false,
+    code: clean_(code || "ERROR"),
+    message: clean_(message || "Server returned an error"),
+    debugId: String(debugId || adminDebugId_())
+  };
+  var src = (extra && typeof extra === "object") ? extra : {};
+  for (var k in src) {
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+  }
+  if (!out.error) out.error = out.message;
+  return out;
+}
+
+function parseOverrideFlag_(payload, key) {
+  var p = payload || {};
+  var v = p[key];
+  return v === true || v === 1 || String(v || "").toLowerCase() === "true";
+}
+
+function logAdminApiException_(fnName, debugId, e) {
+  try {
+    logAudit_("ADMIN_API_EXCEPTION", {
+      endpoint: String(fnName || ""),
+      debugId: String(debugId || adminDebugId_()),
+      message: String(e && e.message ? e.message : e),
+      stack: String(e && e.stack ? e.stack : "")
+    });
+  } catch (_logErr) {
+    try {
+      Logger.log("ADMIN_API_EXCEPTION %s %s", String(debugId || ""), String(e && e.message ? e.message : e));
+    } catch (_logErr2) {}
+  }
+}
+
+function withEnvelope_(fnName, fn) {
+  var debugId = makeDebugId_();
+  try {
+    var out = fn(debugId);
+    if (out && typeof out === "object" && typeof out.ok === "boolean") {
+      if (!out.debugId) out.debugId = debugId;
+      return out;
+    }
+    if (out && typeof out === "object") return ok_(out, debugId);
+    return ok_({ value: out }, debugId);
+  } catch (e) {
+    logAdminApiException_(fnName, debugId, e);
+    return err_("EXCEPTION", String(e && e.message ? e.message : e), debugId);
+  }
+}
+
 function renderAdminApp_(e) {
   var email = getActiveUserEmail_();
   if (!isAdmin_(email)) {
@@ -134,18 +206,38 @@ function admin_getApplicantDetail(payload) {
 
     var rowNumber = Number(payload.rowNumber);
     var applicantId = clean_(payload.applicantId || "");
-    if (!rowNumber || rowNumber < 2 || Math.floor(rowNumber) !== rowNumber) {
-      return { ok: false, error: "Missing/invalid RowNumber" };
-    }
 
-    var sheet = SpreadsheetApp.openById(CONFIG.SHEET_ID).getSheetByName(CONFIG.DATA_SHEET);
+    var sheet = openDataSheet_();
     if (!sheet) {
-      return { ok: false, error: "Data sheet not found" };
+      return { ok: false, code: "DATA_SHEET_NOT_FOUND", debugId: newDebugId_(), error: "Data sheet not found" };
     }
 
     var lastRow = sheet.getLastRow();
-    if (rowNumber > lastRow) {
-      return { ok: false, error: "Row out of range: " + rowNumber };
+    var rowNumberValid = !!(rowNumber && rowNumber >= 2 && Math.floor(rowNumber) === rowNumber && rowNumber <= lastRow);
+    if (!rowNumberValid) {
+      if (applicantId) {
+        rowNumber = findRowByApplicantId_(sheet, applicantId);
+        rowNumberValid = !!(rowNumber && rowNumber >= 2);
+      }
+    }
+    if (!rowNumberValid) {
+      var dbgMissing = newDebugId_();
+      if (!applicantId) {
+        return {
+          ok: false,
+          code: "MISSING_ROWNUMBER_AND_ID",
+          message: "Cannot review record: missing rowNumber and ApplicantID.",
+          debugId: dbgMissing,
+          error: "Cannot review record: missing rowNumber and ApplicantID. Debug ID: " + dbgMissing
+        };
+      }
+      return {
+        ok: false,
+        code: "DETAIL_ROW_NOT_FOUND",
+        message: "Could not locate applicant record for review.",
+        debugId: dbgMissing,
+        error: "Could not locate applicant record for review. Debug ID: " + dbgMissing
+      };
     }
 
     var lastCol = sheet.getLastColumn();
@@ -163,7 +255,7 @@ function admin_getApplicantDetail(payload) {
     var values = sheet.getRange(rowNumber, 1, 1, lastCol).getValues();
     var displayRow = sheet.getRange(rowNumber, 1, 1, lastCol).getDisplayValues()[0];
     if (!values || !values.length) {
-      return { ok: false, error: "Row empty for RowNumber=" + rowNumber };
+      return { ok: false, code: "ROW_EMPTY", debugId: newDebugId_(), error: "Row empty for RowNumber=" + rowNumber };
     }
 
     var row = values[0];
@@ -172,7 +264,7 @@ function admin_getApplicantDetail(payload) {
       if (applicantId) {
         return { ok: false, error: "Row not found for ApplicantID=" + applicantId + " RowNumber=" + rowNumber };
       }
-      return { ok: false, error: "Row empty for RowNumber=" + rowNumber };
+      return { ok: false, code: "ROW_EMPTY", debugId: newDebugId_(), error: "Row empty for RowNumber=" + rowNumber };
     }
 
     var issuedAtRaw = row[idx.PortalTokenIssuedAt - 1];
@@ -229,9 +321,13 @@ function admin_getApplicantDetail(payload) {
     var paymentVerifiedBool = paymentBadge === "Verified";
     var overallStored = idx.Overall_Status ? clean_(row[idx.Overall_Status - 1]) : "";
     var canOverride = canOverrideOverall_(adminEmail);
+    var isSuperAdminCaller = canBypassPaymentFreeze_(adminEmail);
     var isOverridden = !!(canOverride && overallStored && overallStored !== overallComputed);
     detailObj.Payment_Verified = paymentVerifiedBool ? "Yes" : "";
     detailObj.Payment_Verified_Bool = paymentVerifiedBool;
+    detailObj.paymentVerified = paymentVerifiedBool;
+    detailObj.isPaymentVerified = paymentVerifiedBool;
+    detailObj.isSuperAdmin = !!isSuperAdminCaller;
     detailObj.Payment_Badge = paymentBadge;
     detailObj.Doc_Verification_Status_Computed = docStageComputed;
     detailObj.Overall_Status_Computed = overallComputed;
@@ -386,29 +482,59 @@ function admin_resetPortalLink(payload) {
 }
 
 function admin_updateDocStatuses(payload) {
+  return withEnvelope_("admin_updateDocStatuses", function(dbgId) {
+    try {
+      Logger.log("SAVE_CALLED " + JSON.stringify({
+        debugId: String(dbgId || ""),
+        keys: payload && typeof payload === "object" ? Object.keys(payload) : null,
+        applicantId: payload && payload.applicantId ? String(payload.applicantId) : "",
+        rowNumber: payload && payload.rowNumber ? Number(payload.rowNumber) : null,
+        actor: String((Session.getActiveUser && Session.getActiveUser().getEmail && Session.getActiveUser().getEmail()) || "")
+      }));
+    } catch (_logErr) {}
+    return admin_updateDocStatuses_impl_(payload, dbgId);
+  });
+}
+
+function admin_updateDocStatuses_impl_(payload, dbgId) {
+  dbgId = String(dbgId || adminDebugId_());
+  try {
   var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  if (!isAdmin_(adminEmail)) return err_("ACCESS_DENIED", "Access denied", dbgId);
 
   payload = payload || {};
   var rowNumber = Number(payload.rowNumber || 0);
   var docs = payload.docs || [];
-  if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
-  if (!Array.isArray(docs)) throw new Error("Invalid docs payload");
+  if (!rowNumber || rowNumber < 2) return err_("VALIDATION", "Invalid rowNumber", dbgId);
+  if (!Array.isArray(docs)) return err_("VALIDATION", "Invalid docs payload", dbgId);
 
   var sh = openDataSheet_();
   var lastCol = sh.getLastColumn();
   var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
   var idx = headerIndex_(headers);
   var cols = resolveStatusCols_(idx);
+  var overridePaymentBeforeDocs = parseOverrideFlag_(payload, "overridePaymentBeforeDocs");
+  var bypassPaymentFreeze = parseOverrideFlag_(payload, "bypassPaymentFreeze") || parseOverrideFlag_(payload, "overridePaymentFreeze");
   var displayRow = sh.getRange(rowNumber, 1, 1, lastCol).getDisplayValues()[0];
   requireHeaders_(idx, ["ApplicantID", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By", "Portal_Access_Status"]);
   var applicantId = clean_(sh.getRange(rowNumber, idx.ApplicantID).getValue());
-  if (!applicantId) throw new Error("Missing ApplicantID in target row.");
-  if (!cols.receipt) {
-    var missingReceiptDbg = newDebugId_();
-    throw new Error("Missing Receipt_Status column mapping. Debug: " + missingReceiptDbg);
+  if (!applicantId) return err_("VALIDATION", "Missing ApplicantID in target row.", dbgId);
+  if (!cols.receipt) return err_("VALIDATION", "Missing Receipt_Status column mapping.", dbgId);
+  var currentRowObj = getRowObject_(sh, rowNumber);
+  var priorRowObj = {};
+  for (var bk in currentRowObj) {
+    if (Object.prototype.hasOwnProperty.call(currentRowObj, bk)) priorRowObj[bk] = currentRowObj[bk];
   }
-  var dbgId = newDebugId_();
+  var paymentFreezeActive = isPaymentFreezeActive_(currentRowObj);
+  var canBypassFreeze = canBypassPaymentFreeze_(adminEmail);
+  if (paymentFreezeActive) {
+    if (!canBypassFreeze) {
+      return err_("PAYMENT_FREEZE", "Payment is verified. Only Super Admin can unlock this record for editing.", dbgId);
+    }
+    if (!bypassPaymentFreeze) {
+      return err_("PAYMENT_FREEZE_REQUIRES_BYPASS", "Payment is verified. Use Unlock to enable Super Admin override before saving.", dbgId);
+    }
+  }
   function hasUploadedFileForMapping_(mapping) {
     if (!mapping || !mapping.file) return false;
     if (!idx[mapping.file]) return false;
@@ -435,9 +561,54 @@ function admin_updateDocStatuses(payload) {
     });
   }
 
+  var wantsReceiptVerified = false;
+  var prospectiveRow = {};
+  for (var key in currentRowObj) {
+    if (Object.prototype.hasOwnProperty.call(currentRowObj, key)) prospectiveRow[key] = currentRowObj[key];
+  }
+  for (var p0 = 0; p0 < prepared.length; p0++) {
+    var prep = prepared[p0];
+    if (prep.mapping && prep.mapping.status) prospectiveRow[prep.mapping.status] = prep.status;
+    if (prep.mapping && prep.mapping.comment) prospectiveRow[prep.mapping.comment] = prep.comment;
+    if (prep.mapping && prep.mapping.status === cols.receipt && prep.status === "Verified") wantsReceiptVerified = true;
+  }
+  if (wantsReceiptVerified) {
+    var prospectiveDocStage = computeDocVerificationStatus_(prospectiveRow);
+    var docsVerifiedAfterSave = (clean_(prospectiveRow.Docs_Verified || "") === "Yes") || prospectiveDocStage === "Verified";
+    if (!docsVerifiedAfterSave) {
+      if (!overridePaymentBeforeDocs) {
+        logAudit_("PAYMENT_BEFORE_DOCS_BLOCK", {
+          applicantId: applicantId,
+          actor: adminEmail || "",
+          rowNumber: rowNumber,
+          debugId: dbgId
+        });
+        return err_("PAYMENT_BEFORE_DOCS_REQUIRES_OVERRIDE", "Docs not verified. Confirm override to verify payment.", dbgId);
+      }
+      logAudit_("PAYMENT_BEFORE_DOCS_OVERRIDE", {
+        applicantId: applicantId,
+        rowNumber: rowNumber,
+        actor: adminEmail || "",
+        debugId: dbgId
+      });
+    }
+  }
+
   for (var p = 0; p < prepared.length; p++) {
     var item = prepared[p];
     adminVerifyDocument(applicantId, item.mapping.file, toRouteStatusKey_(item.status), adminEmail || "admin", item.comment);
+  }
+  if (paymentFreezeActive && canBypassFreeze && bypassPaymentFreeze) {
+    logAudit_("PAYMENT_FREEZE_BYPASS", {
+      endpoint: "admin_updateDocStatuses",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      actor: adminEmail || "",
+      debugId: dbgId,
+      changedFields: prepared.map(function(item) {
+        return item && item.mapping ? String(item.mapping.status || "") : "";
+      }).filter(function(v){ return !!v; })
+    });
   }
 
   var refreshedRow = getRowObject_(sh, rowNumber);
@@ -450,10 +621,8 @@ function admin_updateDocStatuses(payload) {
   if (cols.overall) setCell_(sh, rowNumber, idx, cols.overall, overallComputed);
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
-
-  var savedSnapshot = readRowSnapshot_(applicantId);
-  var freshDetailRes = admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId });
-  var freshDetail = (freshDetailRes && freshDetailRes.ok === true && freshDetailRes.detail) ? freshDetailRes.detail : null;
+  var finalRowObj = getRowObject_(sh, rowNumber);
+  var actions = runVerificationAutomations_(sh, rowNumber, idx, priorRowObj, finalRowObj, dbgId);
 
   log_(openLogSheet_(), "ADMIN_DOC_UPDATE", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " docStage=" + docStage + " payment=" + paymentBadge + " overall=" + overallComputed);
   log_(openLogSheet_(), "DOC_STATUS_SAVE", JSON.stringify({
@@ -463,17 +632,21 @@ function admin_updateDocStatuses(payload) {
     overallComputed: overallComputed,
     dbgId: dbgId
   }));
-  return {
-    ok: true,
-    debugId: dbgId,
+  return ok_({
+    rowNumber: rowNumber,
+    applicantId: applicantId,
+    changedCount: prepared.length,
     docVerificationStatusComputed: docStage,
     paymentBadge: paymentBadge,
     paymentVerified: paymentVerified ? "Yes" : "",
     overallStatusComputed: overallComputed,
     overallStatus: overallComputed,
-    detail: freshDetail,
-    savedSnapshot: savedSnapshot
-  };
+    actions: actions
+  }, dbgId);
+  } catch (e) {
+    logAdminApiException_("admin_updateDocStatuses", dbgId, e);
+    return err_("EXCEPTION", String(e && e.message ? e.message : e), dbgId);
+  }
 }
 
 function admin_setOverallStatus(payload) {
@@ -579,13 +752,23 @@ function admin_verifyPayment(payload) {
 }
 
 function admin_setPaymentVerified(payload) {
+  return withEnvelope_("admin_setPaymentVerified", function(dbgId) {
+    return admin_setPaymentVerified_impl_(payload, dbgId);
+  });
+}
+
+function admin_setPaymentVerified_impl_(payload, dbgId) {
+  dbgId = String(dbgId || adminDebugId_());
+  try {
   var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
-  requireSuperAdmin_(adminEmail);
+  if (!isAdmin_(adminEmail)) return err_("ACCESS_DENIED", "Access denied", dbgId);
+  try { requireSuperAdmin_(adminEmail); } catch (_superErr) { return err_("ACCESS_DENIED", "Access denied: SUPER admin required", dbgId); }
 
   payload = payload || {};
   var rowNumber = Number(payload.rowNumber || 0);
-  if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
+  var overridePaymentBeforeDocs = parseOverrideFlag_(payload, "overridePaymentBeforeDocs");
+  var bypassPaymentFreeze = parseOverrideFlag_(payload, "bypassPaymentFreeze") || parseOverrideFlag_(payload, "overridePaymentFreeze");
+  if (!rowNumber || rowNumber < 2) return err_("VALIDATION", "Invalid rowNumber", dbgId);
   var note = clean_(payload.comment || payload.reason || "");
 
   var sh = openDataSheet_();
@@ -594,12 +777,45 @@ function admin_setPaymentVerified(payload) {
   var idx = headerIndex_(headers);
   requireHeaders_(idx, ["ApplicantID", "Receipt_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By"]);
   var cols = resolveStatusCols_(idx);
-  if (!cols.receipt) {
-    var missingReceiptDbg = newDebugId_();
-    throw new Error("Missing Receipt_Status column mapping. Debug: " + missingReceiptDbg);
-  }
+  if (!cols.receipt) return err_("VALIDATION", "Missing Receipt_Status column mapping.", dbgId);
 
   var beforeRow = getRowObject_(sh, rowNumber);
+  var priorRowObj = {};
+  for (var bk in beforeRow) {
+    if (Object.prototype.hasOwnProperty.call(beforeRow, bk)) priorRowObj[bk] = beforeRow[bk];
+  }
+  var paymentFreezeActive = isPaymentFreezeActive_(beforeRow);
+  if (paymentFreezeActive) {
+    if (!bypassPaymentFreeze) {
+      return err_("PAYMENT_FREEZE_REQUIRES_BYPASS", "Payment is already verified. Use Unlock to enable Super Admin override before saving.", dbgId);
+    }
+    logAudit_("PAYMENT_FREEZE_BYPASS", {
+      endpoint: "admin_setPaymentVerified",
+      applicantId: clean_(beforeRow.ApplicantID || ""),
+      rowNumber: rowNumber,
+      actor: adminEmail || "",
+      debugId: dbgId,
+      changedFields: ["Receipt_Status"]
+    });
+  }
+  var docsVerifiedNow = (clean_(beforeRow.Docs_Verified || "") === "Yes") || computeDocVerificationStatus_(beforeRow) === "Verified";
+  if (!docsVerifiedNow) {
+    if (!overridePaymentBeforeDocs) {
+      logAudit_("PAYMENT_BEFORE_DOCS_BLOCK", {
+        applicantId: clean_(beforeRow.ApplicantID || ""),
+        actor: adminEmail || "",
+        rowNumber: rowNumber,
+        debugId: dbgId
+      });
+      return err_("PAYMENT_BEFORE_DOCS_REQUIRES_OVERRIDE", "Docs not verified. Confirm override to verify payment.", dbgId);
+    }
+    logAudit_("PAYMENT_BEFORE_DOCS_OVERRIDE", {
+      applicantId: clean_(beforeRow.ApplicantID || ""),
+      rowNumber: rowNumber,
+      actor: adminEmail || "",
+      debugId: dbgId
+    });
+  }
   var wasPaymentVerified = derivePaymentBadge_(beforeRow) === "Verified";
 
   // Legacy endpoint is mapped to receipt verification only.
@@ -616,6 +832,8 @@ function admin_setPaymentVerified(payload) {
   if (cols.overall) setCell_(sh, rowNumber, idx, cols.overall, computedOverall);
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_At", new Date());
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
+  var finalRowObj = getRowObject_(sh, rowNumber);
+  var actions = runVerificationAutomations_(sh, rowNumber, idx, priorRowObj, finalRowObj, dbgId);
 
   var transitionToYes = !wasPaymentVerified && paymentVerified;
   var crm = { attempted: false, ok: true, debugId: "" };
@@ -625,20 +843,21 @@ function admin_setPaymentVerified(payload) {
 
   log_(openLogSheet_(), "ADMIN_PAYMENT_VERIFIED", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " via=Receipt_Status transitionToYes=" + (transitionToYes ? "1" : "0"));
   var applicantId = clean_(refreshedRow.ApplicantID || "");
-  var savedSnapshot = applicantId ? readRowSnapshot_(applicantId) : null;
-  var freshDetailRes = applicantId ? admin_getApplicantDetail({ rowNumber: rowNumber, applicantId: applicantId }) : null;
-  var freshDetail = (freshDetailRes && freshDetailRes.ok === true && freshDetailRes.detail) ? freshDetailRes.detail : null;
-  return {
-    ok: true,
+  return ok_({
+    rowNumber: rowNumber,
+    applicantId: applicantId,
     paymentVerified: paymentVerified ? "Yes" : "",
     paymentBadge: paymentBadge,
     docVerificationStatusComputed: docStage,
     overallStatusComputed: computedOverall,
     overallStatus: computedOverall,
-    detail: freshDetail,
-    savedSnapshot: savedSnapshot,
+    actions: actions,
     crm: crm
-  };
+  }, dbgId);
+  } catch (e) {
+    logAdminApiException_("admin_setPaymentVerified", dbgId, e);
+    return err_("EXCEPTION", String(e && e.message ? e.message : e), dbgId);
+  }
 }
 
 function crm_syncOnPaymentVerified_(rowNumber, sh, idx) {
@@ -698,17 +917,262 @@ function crm_syncOnPaymentVerified_(rowNumber, sh, idx) {
 /******************** ADMIN HELPERS ********************/
 
 function openDataSheet_() {
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
-  return mustGetSheet_(ss, CONFIG.DATA_SHEET);
+  return getWorkingSheet_();
 }
 
 function openLogSheet_() {
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = getWorkingSpreadsheet_();
   return mustGetSheet_(ss, CONFIG.LOG_SHEET);
 }
 
 function logAudit_(label, payload) {
   log_(openLogSheet_(), clean_(label || "AUDIT"), JSON.stringify(payload || {}));
+}
+
+function patchIfHeadersPresent_(sh, rowNumber, idx, patchObj) {
+  var patch = {};
+  var src = patchObj || {};
+  for (var k in src) {
+    if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+    if (idx && idx[k]) patch[k] = src[k];
+  }
+  if (!Object.keys(patch).length) return false;
+  applyPatch_(sh, rowNumber, patch);
+  return true;
+}
+
+function joinEmails_(arr) {
+  var list = Array.isArray(arr) ? arr : [];
+  return list.map(function(v){ return safeStr_(v); }).filter(function(v){ return !!v; }).join(",");
+}
+
+function rowStudentName_(row) {
+  var r = row || {};
+  return (safeStr_(r.First_Name || "") + " " + safeStr_(r.Last_Name || "")).trim();
+}
+
+function rowProgramSummary_(row) {
+  var r = row || {};
+  return safeStr_(r.Program || r.Program_Applied_For || r.Intake || r.Intake_Name || "");
+}
+
+function rowSubjectsSummary_(row) {
+  var r = row || {};
+  return safeStr_(r.Subjects_Selected_Canonical || r.Subjects_Selected || "");
+}
+
+function sendQuoteEmail_(rowObj, debugId) {
+  var row = rowObj || {};
+  var to = pickParentEmail_(row);
+  if (!to) {
+    logAdminEvent_("QUOTE_EMAIL_MISSING_RECIPIENT", { applicantId: safeStr_(row.ApplicantID), debugId: debugId });
+    return { ok: true, status: "skipped", reason: "missing_recipient" };
+  }
+  var applicantId = safeStr_(row.ApplicantID);
+  var studentName = rowStudentName_(row) || "Student";
+  var program = rowProgramSummary_(row) || "(program pending)";
+  var subjects = rowSubjectsSummary_(row) || "(subjects not listed)";
+  var subject = "FODE Application Docs Verified - Next Steps (" + applicantId + ")";
+  var body = [
+    "Dear Parent/Guardian,",
+    "",
+    "Your student's FODE application documents have been verified.",
+    "",
+    "Student: " + studentName,
+    "Applicant ID: " + applicantId,
+    "Program/Intake: " + program,
+    "Subjects: " + subjects,
+    "",
+    "Next steps:",
+    "1. Please proceed with payment.",
+    "2. Upload the payment receipt in the student portal.",
+    "3. Wait for payment verification and enrollment processing.",
+    "",
+    "Payment instructions:",
+    safeStr_(CONFIG.PAYMENT_INSTRUCTIONS_TEXT || "Please contact the office for payment instructions."),
+    "",
+    "Support: WhatsApp +675 7860 4013 | Email: mlc@minervacenters.com",
+    "",
+    "Regards,",
+    "Minerva Learning Centers Ltd"
+  ].join("\n");
+  var cc = safeStr_(CONFIG.EMAIL_ADMIN_ALERTS_TO || "");
+  var sent = adminSendEmail_(to, subject, body, { cc: cc });
+  if (!sent.ok) {
+    logAdminEvent_("QUOTE_EMAIL_FAILED", {
+      applicantId: applicantId,
+      to: to,
+      cc: cc,
+      from: safeStr_(sent.from || CONFIG.EMAIL_FROM_ADDRESS || ""),
+      replyTo: safeStr_(sent.replyTo || CONFIG.EMAIL_REPLY_TO || ""),
+      debugId: debugId,
+      error: safeStr_(sent.error || "Quote email failed")
+    });
+    return { ok: false, status: "failed", code: "EMAIL_SEND_FAILED", message: safeStr_(sent.error || "Quote email failed") };
+  }
+  logAdminEvent_("QUOTE_EMAIL_SENT", {
+    applicantId: applicantId,
+    to: to,
+    cc: safeStr_(sent.cc || cc),
+    from: safeStr_(sent.from || CONFIG.EMAIL_FROM_ADDRESS || ""),
+    replyTo: safeStr_(sent.replyTo || CONFIG.EMAIL_REPLY_TO || ""),
+    debugId: debugId
+  });
+  return { ok: true, status: "sent" };
+}
+
+function sendPaymentEmail_(rowObj, debugId) {
+  var row = rowObj || {};
+  var to = pickParentEmail_(row);
+  if (!to) {
+    logAdminEvent_("PAYMENT_EMAIL_MISSING_RECIPIENT", { applicantId: safeStr_(row.ApplicantID), debugId: debugId });
+    return { ok: true, status: "skipped", reason: "missing_recipient" };
+  }
+  var applicantId = safeStr_(row.ApplicantID);
+  var studentName = rowStudentName_(row) || "Student";
+  var subject = "FODE Payment Verified - Enrollment Processing (" + applicantId + ")";
+  var body = [
+    "Dear Parent/Guardian,",
+    "",
+    "We confirm that payment for the FODE application has been verified.",
+    "",
+    "Student: " + studentName,
+    "Applicant ID: " + applicantId,
+    "",
+    "Next steps:",
+    "Your enrollment and study access will now be processed. We will contact you shortly with the next instructions.",
+    "",
+    "Support: WhatsApp +675 7860 4013 | Email: mlc@minervacenters.com",
+    "",
+    "Regards,",
+    "Minerva Learning Centers Ltd"
+  ].join("\n");
+  var cc = joinEmails_(CONFIG.INTERNAL_FINANCE_EMAILS || []);
+  var sent = adminSendEmail_(to, subject, body, { cc: cc });
+  if (!sent.ok) return { ok: false, status: "failed", code: "EMAIL_SEND_FAILED", message: safeStr_(sent.error || "Payment email failed") };
+  logAdminEvent_("PAYMENT_CONFIRM_EMAIL_SENT", { applicantId: applicantId, to: to, cc: cc, debugId: debugId });
+  return { ok: true, status: "sent" };
+}
+
+function triggerInvoiceWebhook_(rowObj, debugId) {
+  var row = rowObj || {};
+  var mode = safeStr_(CONFIG.INVOICE_TRIGGER_MODE || "LOG_ONLY") || "LOG_ONLY";
+  if (mode === "LOG_ONLY") {
+    logAdminEvent_("INVOICE_TRIGGER_LOG_ONLY", { applicantId: safeStr_(row.ApplicantID), debugId: debugId });
+    return { ok: true, mode: mode, httpStatus: 0 };
+  }
+  if (mode !== "WEBHOOK") {
+    return { ok: false, code: "INVOICE_TRIGGER_MODE_INVALID", message: "Invalid invoice trigger mode: " + mode };
+  }
+  var url = safeStr_(CONFIG.INVOICE_WEBHOOK_URL || "");
+  if (!url) return { ok: false, code: "INVOICE_WEBHOOK_URL_MISSING", message: "Invoice webhook URL is not configured" };
+  var payload = {
+    applicantId: safeStr_(row.ApplicantID),
+    firstName: safeStr_(row.First_Name),
+    lastName: safeStr_(row.Last_Name),
+    name: rowStudentName_(row),
+    email: pickParentEmail_(row),
+    program: rowProgramSummary_(row),
+    subjects: rowSubjectsSummary_(row),
+    amountK: safeStr_(row.Fee_Total_Kina || row.Total_Fee_Kina || row.Total_Fee || ""),
+    debugId: String(debugId || "")
+  };
+  var res = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+  var code = Number(res && res.getResponseCode ? res.getResponseCode() : 0);
+  if (code >= 200 && code < 300) return { ok: true, mode: mode, httpStatus: code };
+  return { ok: false, code: "INVOICE_WEBHOOK_HTTP_" + String(code || 0), message: "Invoice webhook failed with HTTP " + String(code || 0), httpStatus: code };
+}
+
+function handleInvoiceTrigger_(sh, rowNumber, idx, rowObj, debugId) {
+  var row = rowObj || {};
+  var applicantId = safeStr_(row.ApplicantID);
+  if (hasValue_(row.CRM_Invoice_Triggered)) {
+    logAdminEvent_("INVOICE_TRIGGER_SKIPPED_ALREADY", { applicantId: applicantId, debugId: debugId });
+    return { status: "skipped", reason: "already_triggered" };
+  }
+  if (CONFIG.INVOICE_TRIGGER_ENABLED !== true) {
+    logAdminEvent_("INVOICE_TRIGGER_DISABLED", { applicantId: applicantId, debugId: debugId });
+    return { status: "disabled", reason: "config_disabled" };
+  }
+
+  var trig = triggerInvoiceWebhook_(row, debugId);
+  if (!trig.ok) {
+    logAdminEvent_("INVOICE_TRIGGER_FAILED", { applicantId: applicantId, debugId: debugId, code: trig.code || "", message: trig.message || "" });
+    return { status: "failed", code: trig.code || "INVOICE_TRIGGER_FAILED", message: trig.message || "Invoice trigger failed" };
+  }
+
+  var ts = nowIso_();
+  patchIfHeadersPresent_(sh, rowNumber, idx, {
+    CRM_Invoice_Triggered: "Yes",
+    Invoice_Sent_At: ts
+  });
+  row.CRM_Invoice_Triggered = "Yes";
+  row.Invoice_Sent_At = ts;
+  var paymentEmail = sendPaymentEmail_(row, debugId);
+  if (!paymentEmail.ok) {
+    logAdminEvent_("INVOICE_TRIGGERED_EMAIL_FAILED", { applicantId: applicantId, debugId: debugId, code: paymentEmail.code || "", message: paymentEmail.message || "" });
+    return { status: "failed", code: paymentEmail.code || "PAYMENT_EMAIL_FAILED", message: paymentEmail.message || "Payment email failed" };
+  }
+  logAdminEvent_("INVOICE_TRIGGERED", { applicantId: applicantId, debugId: debugId, mode: trig.mode || "", httpStatus: trig.httpStatus || 0 });
+  return { status: "triggered", mode: trig.mode || "LOG_ONLY" };
+}
+
+function runVerificationAutomations_(sh, rowNumber, idx, beforeRowObj, afterRowObj, debugId) {
+  var beforeRow = beforeRowObj || {};
+  var afterRow = afterRowObj || {};
+  var actions = {
+    quoteEmail: "skipped",
+    invoice: "skipped"
+  };
+  var applicantId = safeStr_(afterRow.ApplicantID || beforeRow.ApplicantID || "");
+  try {
+    var docsBefore = isYes_(beforeRow.Docs_Verified);
+    var docsAfter = isYes_(afterRow.Docs_Verified) || computeDocVerificationStatus_(afterRow) === "Verified";
+    if (!docsBefore && docsAfter) {
+      if (hasValue_(afterRow.Quote_Sent_At)) {
+        actions.quoteEmail = "skipped";
+        logAdminEvent_("QUOTE_EMAIL_SKIPPED", { applicantId: applicantId, debugId: debugId, reason: "already_sent" });
+      } else if (CONFIG.QUOTE_EMAIL_ENABLED !== true) {
+        actions.quoteEmail = "disabled";
+        logAdminEvent_("QUOTE_EMAIL_SKIPPED", { applicantId: applicantId, debugId: debugId, reason: "disabled" });
+      } else {
+        var qRes = sendQuoteEmail_(afterRow, debugId);
+        if (qRes && qRes.ok) {
+          var qTs = nowIso_();
+          patchIfHeadersPresent_(sh, rowNumber, idx, { Quote_Sent_At: qTs });
+          afterRow.Quote_Sent_At = qTs;
+          actions.quoteEmail = "sent";
+        } else {
+          actions.quoteEmail = "failed";
+        }
+      }
+    }
+  } catch (quoteErr) {
+    actions.quoteEmail = "failed";
+    logAdminEvent_("QUOTE_EMAIL_FAILED", { applicantId: applicantId, debugId: debugId, message: String(quoteErr && quoteErr.message ? quoteErr.message : quoteErr) });
+  }
+
+  try {
+    var payBefore = isYes_(beforeRow.Payment_Verified) || isPaymentVerifiedDerived_(beforeRow) === true;
+    var payAfter = isYes_(afterRow.Payment_Verified) || isPaymentVerifiedDerived_(afterRow) === true;
+    if (!payBefore && payAfter) {
+      var invRes = handleInvoiceTrigger_(sh, rowNumber, idx, afterRow, debugId);
+      actions.invoice = safeStr_(invRes && invRes.status) || "failed";
+      if (invRes && invRes.code) actions.invoiceCode = safeStr_(invRes.code);
+      if (invRes && invRes.message) actions.invoiceMessage = safeStr_(invRes.message);
+    }
+  } catch (invErr) {
+    actions.invoice = "failed";
+    actions.invoiceCode = "INVOICE_TRIGGER_FAILED";
+    actions.invoiceMessage = String(invErr && invErr.message ? invErr.message : invErr);
+    logAdminEvent_("INVOICE_TRIGGER_FAILED", { applicantId: applicantId, debugId: debugId, message: actions.invoiceMessage });
+  }
+  return actions;
 }
 
 function getCol_(idx, candidates) {
@@ -782,6 +1246,209 @@ function buildCsvLine_(cells) {
   }).join(",");
 }
 
+function buildQueueRow_(rowNumber, applicantId, name) {
+  return {
+    rowNumber: Number(rowNumber || 0),
+    applicantId: clean_(applicantId || ""),
+    name: clean_(name || "")
+  };
+}
+
+function nonEmpty_(v) {
+  var s = String(v === null || v === undefined ? "" : v).trim();
+  if (!s) return false;
+  var n = s.toLowerCase();
+  if (n === "0" || n === "false" || n === "n/a") return false;
+  return true;
+}
+
+function hasAnyRequiredDoc_(rowObj) {
+  var row = rowObj || {};
+  var required = [
+    "Birth_ID_Passport_File",
+    "Latest_School_Report_File",
+    "Transfer_Certificate_File",
+    "Passport_Photo_File"
+  ];
+  for (var i = 0; i < required.length; i++) {
+    if (nonEmpty_(row[required[i]])) return true;
+  }
+  return false;
+}
+
+function parseTime_(v) {
+  if (v instanceof Date) return v.getTime();
+  var s = String(v === null || v === undefined ? "" : v).trim();
+  if (!s) return 0;
+  var t = Date.parse(s);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function hasStudentActivity_(row) {
+  var r = row || {};
+  var lastUpdateRaw = r.PortalLastUpdateAt;
+  var lastUpdateTs = parseTime_(lastUpdateRaw);
+  if (!(lastUpdateTs > 0)) return false;
+  var submitted = clean_(r.Portal_Submitted || "");
+  if (!submitted) return true;
+  return submitted === "Yes" || submitted.indexOf("T") > 0;
+}
+
+function applicantSuffix_(id) {
+  var m = String(id || "").match(/(\d+)\s*$/);
+  return m ? (Number(m[1]) || 0) : 0;
+}
+
+function compareQueueItems_(a, b) {
+  var aTime = parseTime_(a && a.portalLastUpdateAt);
+  var bTime = parseTime_(b && b.portalLastUpdateAt);
+  if (bTime !== aTime) return bTime - aTime;
+  var aToken = parseTime_(a && a.portalTokenIssuedAt);
+  var bToken = parseTime_(b && b.portalTokenIssuedAt);
+  if (bToken !== aToken) return bToken - aToken;
+  var aSuffix = applicantSuffix_(a && a.applicantId);
+  var bSuffix = applicantSuffix_(b && b.applicantId);
+  if (bSuffix !== aSuffix) return bSuffix - aSuffix;
+  return Number(a && a.rowNumber || 0) - Number(b && b.rowNumber || 0);
+}
+
+function hasMandatoryDocIssue_(rowObj, idx) {
+  var row = rowObj || {};
+  var mappings = [
+    { file: "Birth_ID_Passport_File", status: "Birth_ID_Status" },
+    { file: "Latest_School_Report_File", status: "Report_Status" }
+  ];
+  for (var i = 0; i < mappings.length; i++) {
+    var m = mappings[i];
+    if (idx && (!idx[m.file] || !idx[m.status])) continue;
+    var hasFile = clean_(row[m.file] || "");
+    var status = clean_(row[m.status] || "");
+    if (hasFile && normalizeDocStatus_(status || "Pending") !== "Verified") return true;
+  }
+  return false;
+}
+
+function admin_getReviewQueues() {
+  var adminEmail = getActiveUserEmail_();
+  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+
+  var sheet = openDataSheet_();
+  var data = sheet.getDataRange().getValues();
+  if (!data || data.length < 2) {
+    return {
+      ok: true,
+      payments: [],
+      docs: [],
+      postPaymentIssues: [],
+      counts: { payments: 0, docs: 0, postPaymentIssues: 0 }
+    };
+  }
+
+  var headers = data[0];
+  var idx = headerIndex_(headers);
+  var payments = [];
+  var docs = [];
+  var anomalies = [];
+  var paidApproved = [];
+  var postPaymentIssues = [];
+  function pushQueueItem_(target, item) {
+    var rowNum = Number(item && item.rowNumber || 0);
+    if (!Number.isFinite(rowNum) || rowNum < 2) {
+      var dbg = newDebugId_();
+      Logger.log("QUEUE_ITEM_MISSING_ROWNUMBER " + JSON.stringify({
+        applicantId: clean_(item && item.applicantId || ""),
+        debugId: dbg
+      }));
+      return;
+    }
+    target.push(item);
+  }
+
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r] || [];
+    var rowObj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var h = clean_(headers[c]);
+      if (!h) continue;
+      rowObj[h] = row[c];
+    }
+
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) continue;
+    var firstName = clean_(rowObj.First_Name || "");
+    var lastName = clean_(rowObj.Last_Name || "");
+    var name = (firstName + " " + lastName).trim();
+
+    var paymentVerifiedDerived = isPaymentVerifiedDerived_(rowObj) === true;
+    var paymentVerifiedRaw = clean_(rowObj.Payment_Verified || "") === "Yes";
+    var receiptUrl = clean_(rowObj.Fee_Receipt_File || "");
+    var docsVerifiedRaw = clean_(rowObj.Docs_Verified || "");
+    var mandatoryDocIssue = hasMandatoryDocIssue_(rowObj, idx);
+
+    var qItem = {
+      rowNumber: r + 1,
+      applicantId: applicantId,
+      name: name,
+      portalLastUpdateAt: rowObj.PortalLastUpdateAt || "",
+      portalTokenIssuedAt: rowObj.PortalTokenIssuedAt || ""
+    };
+
+    var hasActivity = hasStudentActivity_(rowObj);
+    if (
+      docsVerifiedRaw !== "Yes" &&
+      hasActivity &&
+      (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes")
+    ) {
+      pushQueueItem_(docs, qItem);
+    }
+    if (clean_(rowObj.Payment_Verified || "") !== "Yes" && hasActivity && nonEmpty_(receiptUrl)) {
+      pushQueueItem_(payments, qItem);
+    }
+    if (paymentVerifiedRaw && docsVerifiedRaw !== "Yes") {
+      pushQueueItem_(anomalies, qItem);
+    }
+    if (
+      paymentVerifiedRaw &&
+      (
+        clean_(rowObj.Docs_Verified || "") === "Yes" ||
+        clean_(rowObj.Registration_Complete || "") === "Yes" ||
+        clean_(rowObj.Invoice_Approved || "") === "Yes"
+      )
+    ) {
+      pushQueueItem_(paidApproved, qItem);
+    }
+    if (paymentVerifiedDerived && mandatoryDocIssue) {
+      pushQueueItem_(postPaymentIssues, qItem);
+    }
+  }
+  docs.sort(compareQueueItems_);
+  payments.sort(compareQueueItems_);
+  anomalies.sort(compareQueueItems_);
+  paidApproved.sort(compareQueueItems_);
+  postPaymentIssues.sort(compareQueueItems_);
+
+  function stripQueue_(items) {
+    return (items || []).map(function (it) {
+      return buildQueueRow_(it.rowNumber, it.applicantId, it.name);
+    });
+  }
+  return {
+    ok: true,
+    docs: stripQueue_(docs),
+    payments: stripQueue_(payments),
+    anomalies: stripQueue_(anomalies),
+    paidApproved: stripQueue_(paidApproved),
+    postPaymentIssues: stripQueue_(postPaymentIssues),
+    counts: {
+      payments: payments.length,
+      docs: docs.length,
+      anomalies: anomalies.length,
+      paidApproved: paidApproved.length,
+      postPaymentIssues: postPaymentIssues.length
+    }
+  };
+}
+
 function resolveExportRowNumbers_(payload, lastRow) {
   payload = payload || {};
   var scope = clean_(payload.scope || "");
@@ -795,6 +1462,13 @@ function resolveExportRowNumbers_(payload, lastRow) {
   var startRow = Math.max(2, Number(payload.startRow || 2));
   var batchSize = Math.max(1, Number(payload.batchSize || payload.maxRows || payload.limit || 200));
   var maxRows = Math.max(0, Number(payload.maxRows || payload.batchSize || payload.limit || 0));
+
+  if (scope === "range") {
+    var rangeOut = [];
+    var endRowRange = Math.min(lastRow, startRow + batchSize - 1);
+    for (var rr = startRow; rr <= endRowRange; rr++) rangeOut.push(rr);
+    return rangeOut;
+  }
 
   if (scope === "search_only" || scope === "search_first") {
     var seenSearch = {};
@@ -1154,6 +1828,11 @@ function admin_exportPortalLinksCsv(payload) {
   if (!isStudentUrlConfigured_()) throw new Error(getStudentUrlWarning_());
 
   payload = payload || {};
+  Logger.log("EXPORT_PORTAL_LINKS " + JSON.stringify({
+    scope: clean_(payload.scope || ""),
+    startRow: Number(payload.startRow || 0),
+    batchSize: Number(payload.batchSize || 0)
+  }));
   var sh = openDataSheet_();
   var secretsSheet = openPortalSecrets_();
   var lastRow = sh.getLastRow();

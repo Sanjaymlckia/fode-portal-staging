@@ -54,6 +54,29 @@
       backdrop-filter: blur(8px);
       margin-top:14px;
     }
+    .queue-panel{ padding:14px; }
+    .queue-panel h3{ margin:0 0 10px 0; font-size:16px; }
+    .queue-section{
+      margin-top:10px;
+      border:1px solid rgba(148,163,184,.18);
+      border-radius:12px;
+      background: rgba(11,18,32,.35);
+      padding:10px;
+    }
+    .queue-section.expanded{
+      border-color: rgba(14,165,164,.45);
+      box-shadow: inset 0 0 0 1px rgba(14,165,164,.2);
+    }
+    .queue-header{ font-weight:800; font-size:13px; margin-bottom:8px; }
+    .queue-empty{ font-size:12px; color:var(--muted); }
+    .queue-table th, .queue-table td{ padding:8px 6px; font-size:12px; }
+    .queue-section-header{
+      display:flex; justify-content:space-between; align-items:center; gap:8px;
+      width:100%; background:transparent; border:0; color:inherit; padding:0; cursor:pointer;
+      text-align:left;
+    }
+    .queue-section-header .caret{ font-size:12px; color:var(--muted); }
+    .queue-section-body.hidden{ display:none; }
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
     .field{ flex: 1 1 240px; }
     label{ display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
@@ -195,6 +218,15 @@
       <div class="muted" id="studentUrlWarnText" style="margin-top:6px;"></div>
     </div>
 
+    <div id="reviewQueuesPanel" class="card queue-panel">
+      <h3>Review Queues</h3>
+      <div id="queueDocs" class="queue-section"></div>
+      <div id="queuePayments" class="queue-section"></div>
+      <div id="queueAnomalies" class="queue-section"></div>
+      <div id="queuePaidApproved" class="queue-section"></div>
+      <div id="queuePostPayment" class="queue-section"></div>
+    </div>
+
     <div class="card">
       <div class="row">
         <div class="field">
@@ -279,13 +311,18 @@
         <div id="dirtyWarn" class="dirtyWarn hidden">⚠ Unsaved changes — click "Save Document Statuses"</div>
       </div>
 
+      <div id="overallLockInfo" class="box hidden" style="background:#eef6ff;border-color:#bfd8ff;">
+        <div class="k">Overall Status Lock</div>
+        <div class="v" style="font-size:13px;font-weight:600;color:#1f3b63;">Overall status is locked because payment is verified. Unlock the form to make further changes.</div>
+      </div>
+
       <div style="margin-top:12px; font-weight:900;">Documents (status + comment)</div>
       <div id="docs" class="docs"></div>
 
       <div class="row" style="margin-top:12px;">
         <div class="field">
           <label>Set Overall Status</label>
-          <select id="overallStatus">
+          <select id="overallStatus" title="">
             <option>Pending</option>
             <option>Docs_Verified</option>
             <option>Verified</option>
@@ -299,8 +336,8 @@
         </div>
         <button id="btnSaveOverall" class="btn ok" onclick="saveOverall()">Save Overall</button>
         <div style="flex:1;"></div>
-        <button id="btnUnlockPortal" class="btn small" onclick="setPortal('Open')">Unlock</button>
-        <button id="btnLockPortal" class="btn small danger" onclick="setPortal('Locked')">Lock</button>
+        <button id="btnUnlockPortal" class="btn small" onclick="unlockReview_()">Unlock</button>
+        <button id="btnLockPortal" class="btn small danger" onclick="lockReview_()">Lock</button>
       </div>
 
       <div class="row" style="margin-top:10px;">
@@ -323,8 +360,8 @@
         <button id="btnBackfillApply" class="btn small warn" onclick="backfillBatch('apply')">Apply Batch</button>
         <button id="btnBackfillNext" class="btn small" style="display:none;" disabled onclick="runNextBackfillBatch()">Run Next Batch</button>
         <select id="exportScope" style="max-width:260px;">
-          <option value="auto">Export Scope: Search results first</option>
-          <option value="search">Export Scope: Search results only</option>
+          <option value="search_first">Export Scope: Search results first</option>
+          <option value="range">Export Scope: Range (Start row + Batch size)</option>
           <option value="all">Export Scope: All rows</option>
         </select>
         <button class="btn small ok" onclick="exportPortalLinksCsv()">Export Portal Links (CSV)</button>
@@ -363,8 +400,18 @@
     const BUILD_VERSION = "<?= BUILD_VERSION ?>";
     const BUILD_RENDERED_AT = "<?= BUILD_RENDERED_AT ?>";
     const BUILD_SCRIPT_ID = "<?= BUILD_SCRIPT_ID ?>";
+    const QUEUE_PAGE_SIZE = 10;
+    const queuePagerState = {};
+    const queueRenderCache = {};
+    let queueExpandState = {};
     let currentRowNumber = null;
     let currentDetail = null;
+    let modalState = {
+      isLocked: true,
+      isSuperAdmin: false,
+      isPaymentVerified: false,
+      bypassPaymentFreeze: false
+    };
     let isLinkBusy = false;
     let isUiBusy = false;
     let isDirty = false;
@@ -379,6 +426,54 @@
         return;
       }
       el.textContent = txt || "";
+    }
+    function resetModalState_(){
+      modalState = {
+        isLocked: true,
+        isSuperAdmin: false,
+        isPaymentVerified: false,
+        bypassPaymentFreeze: false
+      };
+    }
+
+    function isModalBypassActive_(){
+      return !!(modalState && modalState.isSuperAdmin && modalState.bypassPaymentFreeze && !modalState.isLocked);
+    }
+
+    function canEditModalNow_(){
+      if (!currentRowNumber || !currentDetail) return false;
+      if (isUiBusy) return false;
+      if (!modalState || modalState.isLocked) return false;
+      if (modalState.isPaymentVerified && !isModalBypassActive_()) return false;
+      return true;
+    }
+
+    function syncModalEditControls_(){
+      var allowEdit = canEditModalNow_();
+      Array.from(document.querySelectorAll(".docStatus, .docComment")).forEach(function(el){
+        if (el) el.disabled = !allowEdit;
+      });
+      var overallReasonEl = document.getElementById("overallReason");
+      if (overallReasonEl) overallReasonEl.disabled = !allowEdit;
+
+      var btnSaveDocs = document.getElementById("btnSaveDocs");
+      if (btnSaveDocs) btnSaveDocs.disabled = !allowEdit;
+
+      var btnSaveOverall = document.getElementById("btnSaveOverall");
+      var overallStatusEl = document.getElementById("overallStatus");
+      var allowOverall = allowEdit && !!CAN_OVERRIDE;
+      if (modalState && modalState.isPaymentVerified && !isModalBypassActive_()) allowOverall = false;
+      if (overallStatusEl) {
+        overallStatusEl.disabled = !allowOverall;
+        if (allowOverall) overallStatusEl.title = "";
+      }
+      if (btnSaveOverall) btnSaveOverall.disabled = !allowOverall;
+
+      var btnUnlock = document.getElementById("btnUnlockPortal");
+      var btnLock = document.getElementById("btnLockPortal");
+      var hasRecord = !!currentRowNumber && !!currentDetail;
+      if (btnUnlock) btnUnlock.disabled = !hasRecord || !!isUiBusy;
+      if (btnLock) btnLock.disabled = !hasRecord || !!isUiBusy;
     }
     function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
     function extractDriveFileId_(url){
@@ -449,8 +544,17 @@
       var res = opts && opts.res;
       var targetId = (opts && opts.targetId) || "mMsg";
       var fallbackError = (opts && opts.fallbackError) || "Server returned an error";
+      if (!res) {
+        console.error("INVALID_ENVELOPE null", opts || {});
+        showInlineError_("No response from server.");
+        if (opts && typeof opts.onError === "function") opts.onError("No response from server.", res);
+        if (opts && typeof opts.onDone === "function") opts.onDone();
+        return;
+      }
       if (!isEnvelope_(res)) {
-        var invalidMsg = "Error: Invalid server response. Debug ID: " + getDebugId_(res);
+        var ts = new Date().toLocaleString();
+        var invalidMsg = "Error: Invalid server response. Please retry. If it persists, report this time: " + ts;
+        console.error("INVALID_ENVELOPE", res);
         setMsg(targetId, invalidMsg);
         setMsg("mMsg", invalidMsg);
         setMsg("msg", invalidMsg);
@@ -459,17 +563,31 @@
         return;
       }
       if (res.ok !== true) {
-        var errMsg = "Error: " + getErrorText_(res, fallbackError) + " | Debug ID: " + getDebugId_(res);
+        var codeText = (res && res.code) ? String(res.code) : "ERROR";
+        var errMsg = getErrorText_(res, fallbackError) + " (code: " + codeText + ", dbg: " + getDebugId_(res) + ")";
         setMsg(targetId, errMsg);
+        setMsg("mMsg", "Error: " + errMsg);
+        setMsg("msg", "Error: " + errMsg);
         if (opts && typeof opts.onError === "function") opts.onError(errMsg, res);
         if (opts && typeof opts.onDone === "function") opts.onDone();
         return;
       }
+      clearInlineError_();
+      try { console.log("[AdminUI] API_OK", { context: (opts && opts.context) || "", debugId: res && res.debugId }); } catch (_e) {}
       if (opts && typeof opts.onOk === "function") opts.onOk(res.detail, res);
       if (opts && typeof opts.onDone === "function") opts.onDone();
     }
     function setModalMsg_(txt){ setMsg("mMsg", txt || ""); }
     function setMsg_(txt){ setMsg("msg", txt || ""); }
+    function showInlineError_(txt){
+      var msg = String(txt || "Server returned an error");
+      setMsg("mMsg", "Error: " + msg);
+      setMsg("msg", "Error: " + msg);
+    }
+    function clearInlineError_(){
+      setMsg("mMsg", "");
+      setMsg("msg", "");
+    }
     function updateDirtyGuardUi_(){
       const copyBtn = document.getElementById("btnCopyLink");
       const resetBtn = document.getElementById("btnResetLink");
@@ -502,18 +620,16 @@
     function setActionButtonsEnabled(enabled){
       const ids = [
         "btnSaveOverall",
-        "btnSaveDocs",
         "btnCopyLink",
         "btnResetLink",
-        "btnRefreshDetails",
-        "btnUnlockPortal",
-        "btnLockPortal"
+        "btnRefreshDetails"
       ];
       ids.forEach(function(id){
         const el = document.getElementById(id);
         if (el) el.disabled = !enabled;
       });
       applyPortalLockControls_(currentDetail);
+      syncModalEditControls_();
       updateDirtyGuardUi_();
     }
 
@@ -525,21 +641,34 @@
       }
       setActionButtonsEnabled(!!currentRowNumber);
       applyPortalLockControls_(currentDetail);
+      syncModalEditControls_();
     }
 
     function applyPortalLockControls_(detail){
       const btnUnlock = document.getElementById("btnUnlockPortal");
       const btnLock = document.getElementById("btnLockPortal");
+      const overallStatusEl = document.getElementById("overallStatus");
+      const overallLockInfo = document.getElementById("overallLockInfo");
       const d = detail || currentDetail || null;
       if (!btnUnlock || !btnLock || !d) return;
-      const paymentBadge = d.Payment_Badge || (d.Payment_Verified_Bool ? "Verified" : "Pending");
+      const paymentBadge = d.Payment_Badge || ((d.paymentVerified === true || d.Payment_Verified_Bool) ? "Verified" : "Pending");
       const paymentLocked = paymentBadge === "Verified";
-      if (paymentLocked) {
-        btnUnlock.disabled = true;
-        btnUnlock.title = "Locked after payment verification.";
-      } else {
-        btnUnlock.title = "";
+      const bypassActive = isModalBypassActive_();
+      btnUnlock.title = paymentLocked
+        ? (modalState && modalState.isSuperAdmin
+            ? (bypassActive ? "Super Admin override enabled." : "Payment verified. Super Admin can unlock for audited edits.")
+            : "Payment is verified. Only Super Admin can unlock this record for editing.")
+        : "Unlock editing controls";
+      btnLock.title = bypassActive ? "Lock editing controls and clear Super Admin override" : "Lock editing controls";
+      if (overallLockInfo) overallLockInfo.classList.toggle("hidden", !paymentLocked);
+      if (overallStatusEl) {
+        const canUseOverall = !!CAN_OVERRIDE && !modalState.isLocked && (!paymentLocked || bypassActive) && !isUiBusy;
+        overallStatusEl.disabled = !canUseOverall;
+        overallStatusEl.title = paymentLocked
+          ? (bypassActive ? "Super Admin override enabled (audited)." : "Locked because payment is verified.")
+          : (!CAN_OVERRIDE ? "Computed automatically based on document and payment status" : "");
       }
+      syncModalEditControls_();
     }
 
     function normalizeDetailResponse_(res){
@@ -571,7 +700,9 @@
         })
         .withFailureHandler(function(err){
           if (reqId !== lastRequestId) return;
-          setMsg("mMsg", "Error: " + (err && err.message ? err.message : err));
+          var failText = "Server error: " + (err && err.message ? err.message : err);
+          setMsg("mMsg", failText);
+          setMsg("msg", failText);
           if (opts.linkBusy) setLinkBusy(false);
           setUiBusy_(false);
         });
@@ -589,6 +720,188 @@
       var n = Number(el && el.value);
       if (!Number.isFinite(n) || n < 1) return fallback;
       return Math.floor(n);
+    }
+
+    function loadReviewQueues(){
+      google.script.run
+        .withSuccessHandler(function(res){
+          try {
+            renderReviewQueues(res || {});
+          } catch (e) {
+            console.error("[AdminUI] renderReviewQueues error:", e);
+          }
+        })
+        .withFailureHandler(function(err){
+          console.error("[AdminUI] admin_getReviewQueues failure:", err);
+          var el = document.getElementById("queueDocs");
+          if (el) el.innerHTML = "<div class='queue-header'>Documents to Review</div><div class='queue-empty'>Could not load queues.</div>";
+        })
+        .admin_getReviewQueues();
+    }
+
+    function resetQueuePagerState_(){
+      Object.keys(queuePagerState).forEach(function(k){ delete queuePagerState[k]; });
+      Object.keys(queueRenderCache).forEach(function(k){ delete queueRenderCache[k]; });
+    }
+
+    function setDefaultQueueExpandState_(counts){
+      const c = counts || {};
+      queueExpandState = {
+        queueDocs: Number(c.docs || 0) > 0,
+        queuePayments: false,
+        queueAnomalies: false,
+        queuePaidApproved: false,
+        queuePostPayment: false
+      };
+      if (!queueExpandState.queueDocs && Number(c.payments || 0) > 0) {
+        queueExpandState.queuePayments = true;
+      }
+    }
+
+    function isQueueExpanded_(queueKey){
+      return !!queueExpandState[String(queueKey || "")];
+    }
+
+    function toggleQueueSection(queueKey){
+      var key = String(queueKey || "");
+      queueExpandState[key] = !isQueueExpanded_(key);
+      rerenderQueue_(key);
+    }
+
+    function getQueuePageState_(queueKey){
+      if (!queuePagerState[queueKey]) queuePagerState[queueKey] = { page: 0 };
+      return queuePagerState[queueKey];
+    }
+
+    function renderQueueSection(containerId, title, rows, totalCount){
+      var el = document.getElementById(containerId);
+      if (!el) return;
+      var list = Array.isArray(rows) ? rows : [];
+      var total = Number(totalCount || 0);
+      var queueKey = String(containerId || "");
+      queueRenderCache[queueKey] = {
+        containerId: containerId,
+        title: title,
+        rows: list.slice(),
+        totalCount: total
+      };
+      var pager = getQueuePageState_(queueKey);
+      var totalPages = Math.max(1, Math.ceil(list.length / QUEUE_PAGE_SIZE));
+      if (pager.page >= totalPages) pager.page = totalPages - 1;
+      if (pager.page < 0) pager.page = 0;
+      var start = pager.page * QUEUE_PAGE_SIZE;
+      var end = start + QUEUE_PAGE_SIZE;
+      var pageRows = list.slice(start, end);
+      var expanded = isQueueExpanded_(queueKey);
+      el.classList.toggle("expanded", expanded);
+      var html = "";
+      html += "<button type='button' class='queue-section-header' data-action='queue-toggle' data-queue-key='" + esc(queueKey) + "' title='Toggle section'>";
+      html += "<div class='queue-header'>" + esc(title) + " (" + total + ")</div>";
+      html += "<div class='caret'>" + (expanded ? "▾" : "▸") + "</div>";
+      html += "</button>";
+      html += "<div class='queue-section-body " + (expanded ? "" : "hidden") + "'>";
+      if (!list.length) {
+        html += "<div class='queue-empty'>No records pending</div>";
+      } else {
+        html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Action</th></tr>";
+        pageRows.forEach(function(row){
+          var rowNumber = Number(row && row.rowNumber || 0);
+          var applicantId = String(row && row.applicantId || "");
+          var name = String(row && row.name || "");
+          var dbg = String(row && row.debugId || "");
+          var canReview = !!applicantId || (Number.isFinite(rowNumber) && rowNumber >= 2);
+          var reviewTitle = canReview ? "Open review" : ("RowNumber missing - cannot review." + (dbg ? (" (dbg: " + dbg + ")") : ""));
+          html += "<tr>";
+          html += "<td>" + esc(applicantId) + "</td>";
+          html += "<td>" + esc(name) + "</td>";
+          html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button></td>";
+          html += "</tr>";
+        });
+        html += "</table>";
+        html += "<div class='row' style='margin-top:8px;align-items:center;gap:8px;'>";
+        html += "<button class='btn small' " + (pager.page <= 0 ? "disabled" : "") + " onclick=\"queuePrevPage(" + JSON.stringify(queueKey) + ")\">Prev</button>";
+        html += "<button class='btn small' " + (end >= list.length ? "disabled" : "") + " onclick=\"queueNextPage(" + JSON.stringify(queueKey) + ")\">Next</button>";
+        html += "<div class='muted' style='font-size:12px;'>Page " + (pager.page + 1) + " of " + totalPages + "</div>";
+        html += "</div>";
+      }
+      html += "</div>";
+      el.innerHTML = html;
+    }
+
+    function rerenderQueue_(queueKey){
+      var q = queueRenderCache[String(queueKey || "")];
+      if (!q) return;
+      renderQueueSection(q.containerId, q.title, q.rows, q.totalCount);
+    }
+
+    function queuePrevPage(queueKey){
+      var state = getQueuePageState_(queueKey);
+      if (state.page > 0) state.page--;
+      rerenderQueue_(queueKey);
+    }
+
+    function queueNextPage(queueKey){
+      var q = queueRenderCache[String(queueKey || "")];
+      if (!q) return;
+      var maxPage = Math.max(0, Math.ceil((q.rows || []).length / QUEUE_PAGE_SIZE) - 1);
+      var state = getQueuePageState_(queueKey);
+      if (state.page < maxPage) state.page++;
+      rerenderQueue_(queueKey);
+    }
+
+    function applySmartExpansion(counts){
+      var c = counts || {};
+      setDefaultQueueExpandState_(c);
+      ["queuePayments","queueDocs","queueAnomalies","queuePaidApproved","queuePostPayment"].forEach(function(id){
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle("expanded", isQueueExpanded_(id));
+      });
+    }
+
+    function renderReviewQueues(data){
+      var d = (data && typeof data === "object") ? data : {};
+      var counts = d.counts || {};
+      resetQueuePagerState_();
+      applySmartExpansion(counts);
+      renderQueueSection("queueDocs", "Documents to Review", d.docs, counts.docs);
+      renderQueueSection("queuePayments", "Payments to Verify", d.payments, counts.payments);
+      renderQueueSection("queueAnomalies", "Payment-First Anomalies", d.anomalies, counts.anomalies);
+      renderQueueSection("queuePaidApproved", "Paid & Approved for Enrollment", d.paidApproved, counts.paidApproved);
+      renderQueueSection("queuePostPayment", "Post-Payment Doc Issues", d.postPaymentIssues, counts.postPaymentIssues);
+    }
+
+    function initQueuePanelEvents_(){
+      var panel = document.getElementById("reviewQueuesPanel");
+      if (!panel || panel.dataset.bound === "1") return;
+      panel.dataset.bound = "1";
+      panel.addEventListener("click", function(e){
+        var target = e.target;
+        if (!target || !target.closest) return;
+        var toggleBtn = target.closest('button[data-action="queue-toggle"]');
+        if (toggleBtn) {
+          e.preventDefault();
+          var queueKey = String(toggleBtn.getAttribute("data-queue-key") || "");
+          if (queueKey) toggleQueueSection(queueKey);
+          return;
+        }
+        var btn = target.closest('button[data-action="queue-review"]');
+        if (!btn) return;
+        e.preventDefault();
+        var applicantId = String(btn.getAttribute("data-applicant-id") || "").trim();
+        var rowNumberRaw = String(btn.getAttribute("data-row-number") || "").trim();
+        var rowNumber = Number(rowNumberRaw);
+        if (applicantId) {
+          review(null, applicantId, btn);
+          return;
+        }
+        if (Number.isFinite(rowNumber) && rowNumber >= 2) {
+          review(rowNumber, "", btn);
+          return;
+        }
+        setMsg("msg", "Queue item missing review identifiers. Cannot open Review.");
+        setMsg("mMsg", "Queue item missing review identifiers.");
+      });
     }
 
     function setBackfillLoading_(busy){
@@ -716,14 +1029,26 @@
 
     function review(rowNumber, applicantId, triggerBtn){
       const reqId = ++lastRequestId;
-      currentRowNumber = rowNumber;
+      const rowNum = Number(rowNumber);
+      const id = String(applicantId || "").trim();
+      console.log("[AdminUI] REVIEW_CLICK rowNumber=%s applicantId=%s reqId=%s", rowNumber, id || "", reqId);
+      if (!id && (!Number.isFinite(rowNum) || rowNum < 2)) {
+        const msg = "Cannot open Review: missing rowNumber and ApplicantID.";
+        setMsg("msg", msg);
+        setMsg("mMsg", msg);
+        return;
+      }
+      currentRowNumber = (Number.isFinite(rowNum) && rowNum >= 2) ? rowNum : null;
       currentDetail = null;
       setActionButtonsEnabled(false);
       document.getElementById("portalLinkBox").textContent = "";
       setLinkBusy(false);
       setReviewButtonLoading_(triggerBtn, true);
-      openModalLoading_(applicantId, rowNumber);
+      openModalLoading_(id || "", currentRowNumber || "");
       setMsg("mMsg","Loading...");
+      var detailPayload = {};
+      if (id) detailPayload.applicantId = id;
+      if (Number.isFinite(rowNum) && rowNum >= 2) detailPayload.rowNumber = rowNum;
       google.script.run
         .withSuccessHandler(function(res){
           if (reqId !== lastRequestId) {
@@ -742,7 +1067,7 @@
           }
           var apiResult = handleApiResult_(res, "detail");
           if (!apiResult || apiResult.ok !== true) {
-            clearDocsLoading_("Invalid detail response");
+            clearDocsLoading_("Detail request failed");
             setActionButtonsEnabled(false);
             setReviewButtonLoading_(triggerBtn, false);
             setLinkBusy(false);
@@ -769,6 +1094,7 @@
 
           clearDocsLoading_("");
           currentDetail = detail;
+          currentRowNumber = Number((detail && detail._rowNumber) || rowNum || 0) || null;
           openModal(currentDetail);
           setActionButtonsEnabled(!!currentRowNumber);
           setMsg("mMsg", "");
@@ -791,7 +1117,7 @@
           setLinkBusy(false);
           setActionButtonsEnabled(false);
         })
-        .admin_getApplicantDetail_json({ rowNumber: rowNumber, applicantId: applicantId || "" });
+        .admin_getApplicantDetail_json(detailPayload);
     }
 
     function onResultsClick_(ev){
@@ -803,7 +1129,8 @@
       var applicantId = (btn.getAttribute("data-applicant-id") || "").trim();
       var rawRow = (btn.getAttribute("data-row-number") || "").trim();
       var rowNumber = Number(rawRow);
-      console.log("[AdminUI] Review click ApplicantID=%s RowNumber=%s", applicantId || "(blank)", rawRow || "(blank)");
+      var clickReqId = Date.now();
+      console.log("[AdminUI] REVIEW_CLICK rowNumber=%s applicantId=%s reqId=%s", rawRow || "(blank)", applicantId || "(blank)", clickReqId);
 
       if (!rawRow || !Number.isFinite(rowNumber) || rowNumber < 2) {
         setMsg("msg", "RowNumber missing/invalid. Cannot open Review.");
@@ -826,8 +1153,8 @@
       const overallStatusEl = document.getElementById("overallStatus");
       if (superTools) superTools.style.display = showSuper ? "flex" : "none";
       if (btnReset) btnReset.style.display = showSuper ? "inline-block" : "none";
-      if (btnLock) btnLock.style.display = showSuper ? "inline-block" : "none";
-      if (btnUnlock) btnUnlock.style.display = showSuper ? "inline-block" : "none";
+      if (btnLock) btnLock.style.display = "inline-block";
+      if (btnUnlock) btnUnlock.style.display = "inline-block";
       if (overallStatusEl) {
         overallStatusEl.disabled = !CAN_OVERRIDE;
         if (!CAN_OVERRIDE) {
@@ -851,6 +1178,7 @@
 
     function openModal(d){
       setRoleUi();
+      resetModalState_();
       setDirty_(false);
       setLinkBusy(false);
       setActionButtonsEnabled(!!currentRowNumber);
@@ -862,6 +1190,10 @@
       var overallComputed = d.Overall_Status_Computed || d.Doc_Verification_Status_Computed || d.Doc_Verification_Status || "Pending";
       var docComputed = d.Doc_Verification_Status_Computed || d.Doc_Verification_Status || "Pending";
       var paymentBadge = d.Payment_Badge || (d.Payment_Verified_Bool ? "Verified" : "Pending");
+      modalState.isSuperAdmin = !!(d.isSuperAdmin === true || IS_SUPER);
+      modalState.isPaymentVerified = !!(d.isPaymentVerified === true || d.paymentVerified === true || d.Payment_Verified_Bool || paymentBadge === "Verified");
+      modalState.isLocked = true;
+      modalState.bypassPaymentFreeze = false;
       document.getElementById("mOverall").textContent = String(docComputed || "Pending");
       var overallComputedEl = document.getElementById("mOverallComputed");
       if (overallComputedEl) overallComputedEl.textContent = String(overallComputed || "Pending");
@@ -960,12 +1292,14 @@
       });
 
       document.getElementById("modalBack").style.display = "flex";
+      syncModalEditControls_();
     }
 
     function closeModal(){
       document.getElementById("modalBack").style.display = "none";
       currentRowNumber = null;
       currentDetail = null;
+      resetModalState_();
       setDirty_(false);
       setLinkBusy(false);
       setActionButtonsEnabled(false);
@@ -987,20 +1321,95 @@
         };
       });
 
-      run_("admin_updateDocStatuses", { rowNumber: currentRowNumber, docs }, function(res){
-          setMsg("mMsg","Saved document statuses.");
-          applyAuditNow();
-          setDirty_(false);
-          var freshDetail = res && (res.detail || res.freshDetail);
-          if (freshDetail) {
-            currentDetail = freshDetail;
-            openModal(currentDetail);
-          } else {
-            refreshDetails();
+      const receiptDocBase = (Array.isArray(currentDetail && currentDetail._docs) ? currentDetail._docs : []).find(function(x){
+        return x && x.statusField === "Receipt_Status";
+      });
+      const receiptDocNext = docs.find(function(x){
+        return x && x.statusField === "Receipt_Status";
+      });
+      let overridePaymentBeforeDocs = false;
+      const currentDocStage = String((currentDetail && (currentDetail.Doc_Verification_Status_Computed || currentDetail.Doc_Verification_Status)) || "Pending");
+      const receiptWasVerified = !!(receiptDocBase && String(receiptDocBase.status || "") === "Verified");
+      const receiptToVerified = !!(receiptDocNext && String(receiptDocNext.status || "") === "Verified");
+      if (receiptToVerified && !receiptWasVerified && currentDocStage !== "Verified") {
+        const confirmMsg = "Documents are not verified yet. Verifying payment first is an override and will be logged. Continue?";
+        if (!window.confirm(confirmMsg)) return;
+        overridePaymentBeforeDocs = true;
+      }
+
+      var payload = {
+        rowNumber: currentRowNumber,
+        applicantId: (currentDetail && currentDetail.ApplicantID) || "",
+        docs: docs,
+        overridePaymentBeforeDocs: overridePaymentBeforeDocs,
+        bypassPaymentFreeze: !!(modalState && modalState.bypassPaymentFreeze)
+      };
+      var reqId = "SAVE-" + Date.now() + "-" + Math.floor(Math.random() * 1000000);
+      var callId = ++lastRequestId;
+      console.log("[SAVE] calling admin_updateDocStatuses", {
+        reqId: reqId,
+        applicantId: payload.applicantId || "",
+        rowNumber: payload.rowNumber || null,
+        keys: Object.keys(payload || {})
+      });
+      console.log("[SAVE] payload", payload);
+      setUiBusy_(true);
+      setMsg("mMsg", "Saving document statuses...");
+      google.script.run
+        .withSuccessHandler(function(res){
+          if (callId !== lastRequestId) return;
+          console.log("[SAVE] success raw", { reqId: reqId, res: res });
+          if (!res) {
+            showInlineError_("No response from server. Req: " + reqId);
+            setUiBusy_(false);
+            return;
           }
-          if (res && res.savedSnapshot) console.log("[AdminUI] savedSnapshot", res.savedSnapshot);
-          search();
-      }, { message: "Saving document statuses..." });
+          if (typeof res !== "object" || typeof res.ok !== "boolean") {
+            console.error("[SAVE] invalid envelope", { reqId: reqId, res: res });
+            showInlineError_("Invalid server response. Req: " + reqId);
+            setUiBusy_(false);
+            return;
+          }
+          if (res.ok === true) {
+            clearInlineError_();
+            var actionSummary = "";
+            if (res.actions && typeof res.actions === "object") {
+              var qStatus = String(res.actions.quoteEmail || "skipped");
+              var iStatus = String(res.actions.invoice || "skipped");
+              actionSummary = " | Quote email: " + qStatus + " | Invoice trigger: " + iStatus;
+              if (iStatus === "failed") {
+                actionSummary += (res.actions.invoiceCode ? (" (" + String(res.actions.invoiceCode) + ")") : "");
+              }
+            }
+            setMsg("mMsg", "Saved. Debug: " + (res.debugId || "(none)") + actionSummary);
+            try { console.log("[SAVE] ok", { reqId: reqId, debugId: res.debugId || "", code: res.code || "" }); } catch (_e) {}
+            if (res.actions && typeof res.actions === "object") {
+              setMsg("msg", "Quote email: " + String(res.actions.quoteEmail || "skipped") + " | Invoice trigger: " + String(res.actions.invoice || "skipped"));
+              if (String(res.actions.invoice || "") === "failed" && res.debugId) {
+                console.warn("[SAVE] invoice action failed", { debugId: res.debugId, actions: res.actions });
+              }
+            }
+            applyAuditNow();
+            setDirty_(false);
+            setUiBusy_(false);
+            refreshDetails();
+            search();
+            return;
+          }
+          showInlineError_((res.message || "Save failed")
+            + " (code: " + (res.code || "")
+            + ", dbg: " + (res.debugId || "")
+            + ", req: " + reqId + ")");
+          setUiBusy_(false);
+        })
+        .withFailureHandler(function(err){
+          if (callId !== lastRequestId) return;
+          console.error("[SAVE] failure", { reqId: reqId, err: err });
+          var msg = (err && (err.message || (typeof err.toString === "function" ? err.toString() : ""))) || "Unknown Apps Script failure";
+          showInlineError_("Server failure: " + msg + " (req: " + reqId + ")");
+          setUiBusy_(false);
+        })
+        .admin_updateDocStatuses(payload);
     }
 
     function saveOverall(){
@@ -1060,6 +1469,38 @@
           applyAuditNow();
           search();
       }, { message: "Updating portal access..." });
+    }
+
+    function unlockReview_(){
+      if (!currentRowNumber || !currentDetail) return;
+      var paymentVerified = !!(modalState && modalState.isPaymentVerified);
+      var isSuperAdmin = !!(modalState && modalState.isSuperAdmin);
+      if (paymentVerified && !isSuperAdmin) {
+        modalState.isLocked = true;
+        modalState.bypassPaymentFreeze = false;
+        syncModalEditControls_();
+        setMsg("mMsg", "Payment is verified. Only Super Admin can unlock this record for editing.");
+        return;
+      }
+      modalState.isLocked = false;
+      if (paymentVerified && isSuperAdmin) {
+        modalState.bypassPaymentFreeze = true;
+        setMsg("mMsg", "Super Admin override enabled. Changes will be audited.");
+      } else {
+        modalState.bypassPaymentFreeze = false;
+        setMsg("mMsg", "Editing unlocked.");
+      }
+      applyPortalLockControls_(currentDetail);
+      syncModalEditControls_();
+    }
+
+    function lockReview_(){
+      if (!currentRowNumber || !currentDetail) return;
+      modalState.isLocked = true;
+      modalState.bypassPaymentFreeze = false;
+      applyPortalLockControls_(currentDetail);
+      syncModalEditControls_();
+      setMsg("mMsg", "Editing locked.");
     }
 
     function copyPortalLink(){
@@ -1191,25 +1632,31 @@
         setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
         return;
       }
-      var scopeValue = document.getElementById("exportScope").value || "auto";
-      var startRow = Math.max(2, getBackfillNumber_("bfStartRow", 2));
-      var batchSize = Math.max(1, getBackfillNumber_("bfBatchSize", 200));
-      var scope = (scopeValue === "search")
-        ? "search_only"
-        : (scopeValue === "all" ? "all" : "search_first");
+      var scopeValue = document.getElementById("exportScope").value || "search_first";
+      var scope = (scopeValue === "all" || scopeValue === "range") ? scopeValue : "search_first";
+      var startRowRaw = Number((document.getElementById("bfStartRow") || {}).value);
+      var batchSizeRaw = Number((document.getElementById("bfBatchSize") || {}).value);
+      var startRow = Math.floor(startRowRaw);
+      var batchSize = Math.floor(batchSizeRaw);
+      if (scope === "range") {
+        if (!Number.isFinite(startRow) || startRow < 2) {
+          setMsg("mMsg", "Start row must be 2 or greater for Range export.");
+          return;
+        }
+        if (!Number.isFinite(batchSize) || batchSize < 1) {
+          setMsg("mMsg", "Batch size must be 1 or greater for Range export.");
+          return;
+        }
+      } else {
+        startRow = Math.max(2, getBackfillNumber_("bfStartRow", 2));
+        batchSize = Math.max(1, getBackfillNumber_("bfBatchSize", 200));
+      }
       var payload = {
         scope: scope,
         startRow: startRow,
         batchSize: batchSize,
         currentSearchRowNumbers: lastSearchResults.slice()
       };
-      if (scope === "search_only") {
-        if (!lastSearchResults.length) {
-          setMsg("mMsg", "No current search results to export.");
-          return;
-        }
-      }
-
       run_("admin_exportPortalLinksCsv", payload, function(res){
         handleApiResult_({
           res: res,
@@ -1250,9 +1697,15 @@
       }
     }
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", initVersionBadge_);
+      document.addEventListener("DOMContentLoaded", function(){
+        initVersionBadge_();
+        initQueuePanelEvents_();
+        loadReviewQueues();
+      });
     } else {
       initVersionBadge_();
+      initQueuePanelEvents_();
+      loadReviewQueues();
     }
     setActionButtonsEnabled(false);
     var resultsBody = document.getElementById("tbody");
@@ -1260,4 +1713,3 @@
   </script>
 </body>
 </html>
-

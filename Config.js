@@ -7,11 +7,16 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-24-PNG-STAGING-r116",
-  CHANGELOG_LAST: "r116: portalUpload uses query id/s authoritative source + auth debug recvIdSource",
+  VERSION: "2026-02-26-PNG-STAGING-r124",
+  CHANGELOG_LAST: "r124: send quote emails via GmailApp from fode@kundu.ac (explicit from+replyTo)",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
-  // STAGING spreadsheet (FODE_Data + Webhook_Log)
+  // STAGING/PROD data mode routing (working sheet)
+  DATA_MODE: "STAGING", // "STAGING" | "PROD"
+  SHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
+  SHEET_ID_PROD: "REPLACE_WITH_PROD_SHEET_ID",
+  SHEET_TAB_WORKING: "FODE_Data",
+  // Backward-compatible aliases (legacy callers)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
   DATA_SHEET: "FODE_Data",
   LOG_SHEET: "Webhook_Log",
@@ -32,6 +37,15 @@ var CONFIG = {
   PORTAL_UPLOAD_PREFER_REST: true,
   PORTAL_UPLOAD_DRIVEAPP_RETRY_ENABLED: false,
   PORTAL_UPLOAD_MAX_SERVER_MS: 20000,
+  PORTAL_MAX_UPLOAD_BYTES: 5 * 1024 * 1024,
+  PORTAL_ALLOWED_MIME: [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  ],
+  PORTAL_ALLOWED_EXT: ["pdf", "jpg", "jpeg", "png", "doc", "docx"],
   DRIVE_API_BASE: "https://www.googleapis.com/drive/v3",
   DRIVE_UPLOAD_BASE: "https://www.googleapis.com/upload/drive/v3",
   DRIVE_FIELDS_FOLDER: "id,name,webViewLink",
@@ -63,8 +77,17 @@ var CONFIG = {
 
   FEE_REGISTRATION_KINA: 600,
   FEE_PER_SUBJECT_KINA: 450,
-  EMAIL_ADMIN_ALERTS_TO: "<SET_TO_GOOGLE_GROUP_OR_EMAIL>",
-  EMAIL_FROM_NAME: "Kundu International Academy - FODE",
+  EMAIL_ADMIN_ALERTS_TO: "fode@kundu.ac",
+  EMAIL_FROM_NAME: "Minerva Learning Centers - FODE",
+  EMAIL_FROM_ADDRESS: "fode@kundu.ac",
+  EMAIL_REPLY_TO: "fode@kundu.ac",
+  QUOTE_EMAIL_ENABLED: true,
+  INVOICE_TRIGGER_ENABLED: false,
+  INVOICE_TRIGGER_MODE: "LOG_ONLY", // "LOG_ONLY" | "WEBHOOK"
+  INVOICE_WEBHOOK_URL: "",
+  INTERNAL_FINANCE_EMAILS: [
+    "sanjay@minervacenters.com"
+  ],
   PAYMENT_INSTRUCTIONS_TEXT: "<BANK DETAILS MODE A: literal bank instructions text>",
 
   // Deployment model:

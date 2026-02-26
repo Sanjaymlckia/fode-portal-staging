@@ -10,6 +10,20 @@ function clean_(v) {
   return (v === null || v === undefined) ? "" : String(v).trim();
 }
 
+function getParam_(e, key) {
+  var k = clean_(key);
+  if (!k) return "";
+  return (e && e.parameter && typeof e.parameter === "object" && e.parameter[k] !== undefined) ? e.parameter[k] : "";
+}
+
+function getExecUrl_() {
+  try {
+    return clean_(ScriptApp.getService().getUrl() || "");
+  } catch (_e) {
+    return "";
+  }
+}
+
 function redactToken_(s) {
   var t = clean_(s);
   if (!t) return "";
@@ -209,6 +223,12 @@ function buildUrlWithParams_(baseUrl, params) {
   });
   if (!q.length) return url;
   return url + (url.indexOf("?") >= 0 ? "&" : "?") + q.join("&");
+}
+
+function buildPortalUploadReturnUrl_(baseExecUrl, params) {
+  var base = clean_(baseExecUrl);
+  var p = params && typeof params === "object" ? params : {};
+  return buildUrlWithParams_(base, p);
 }
 
 function urlFetchJson_(url, opts) {
@@ -721,6 +741,33 @@ function htmlIframeResult_(payload) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function htmlMetaRedirect_(url, title, message) {
+  var u = clean_(url || "");
+  var pageTitle = clean_(title || "Redirecting");
+  var msg = clean_(message || "Redirecting...");
+  var hasUrl = !!u;
+  var refreshContent = hasUrl ? ("0;url=" + u) : "";
+  var html = ""
+    + "<!doctype html><html><head><meta charset=\"utf-8\" />"
+    + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />"
+    + (hasUrl ? ("<meta http-equiv=\"refresh\" content=\"" + esc_(refreshContent) + "\" />") : "")
+    + "<title>" + esc_(pageTitle) + "</title>"
+    + "</head><body style=\"font-family:Arial,Helvetica,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#111;\">"
+    + "<h3 style=\"margin:0 0 8px 0;\">" + esc_(pageTitle) + "</h3>"
+    + "<p style=\"margin:0 0 12px 0;\">" + esc_(msg) + "</p>";
+  if (hasUrl) {
+    html += ""
+      + "<p style=\"margin:0 0 12px 0;\"><a href=\"" + esc_(u) + "\" target=\"_top\" style=\"display:inline-block;padding:8px 12px;border-radius:8px;border:1px solid #0b57d0;background:#1a73e8;color:#fff;text-decoration:none;font-weight:600;\">Continue</a></p>"
+      + "<p style=\"margin:0 0 6px 0;font-size:12px;color:#444;\">If the redirect does not start automatically, use the Continue button above.</p>"
+      + "<p style=\"margin:0;font-size:12px;color:#444;\"><b>URL:</b> <span style=\"word-break:break-all;\">" + esc_(u) + "</span></p>";
+  } else {
+    html += "<p style=\"margin:0;font-size:12px;color:#b00020;\">Return URL unavailable. Please reopen your portal link.</p>";
+  }
+  html += "</body></html>";
+  return HtmlService.createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 function esc_(s) {
   return String(s === null || s === undefined ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -731,6 +778,30 @@ function shallowCopy_(obj) {
   var out = {};
   for (var k in obj) out[k] = obj[k];
   return out;
+}
+
+function truncate_(s, n) {
+  var str = String(s === null || s === undefined ? "" : s);
+  var max = Math.max(0, Number(n || 0));
+  if (!max) return "";
+  return str.length > max ? str.slice(0, max) : str;
+}
+
+function firstLine_(s, maxChars) {
+  var str = String(s === null || s === undefined ? "" : s);
+  var idx = str.indexOf("\r\n");
+  if (idx < 0) idx = str.indexOf("\n");
+  if (idx < 0) idx = str.length;
+  return truncate_(str.slice(0, idx), Math.max(0, Number(maxChars || 80)));
+}
+
+function safeKeys_(obj) {
+  try {
+    if (!obj || typeof obj !== "object") return [];
+    return Object.keys(obj);
+  } catch (_e) {
+    return [];
+  }
 }
 
 function isValidEmail_(email) {
@@ -1026,6 +1097,51 @@ function getHeaderIndexMap_(sheet) {
   return map;
 }
 
+function getWorkingSpreadsheetId_() {
+  var mode = clean_(CONFIG.DATA_MODE || "STAGING").toUpperCase();
+  if (mode === "PROD") return clean_(CONFIG.SHEET_ID_PROD || CONFIG.SHEET_ID || "");
+  return clean_(CONFIG.SHEET_ID_STAGING || CONFIG.SHEET_ID || "");
+}
+
+function getWorkingSpreadsheet_() {
+  var mode = clean_(CONFIG.DATA_MODE || "STAGING").toUpperCase();
+  var expectedStagingId = clean_(CONFIG.SHEET_ID_STAGING || "");
+  var chosenId = getWorkingSpreadsheetId_();
+  var dbgId = (typeof newDebugId_ === "function") ? newDebugId_() : "";
+  if (mode === "STAGING" && (!expectedStagingId || chosenId !== expectedStagingId)) {
+    Logger.log("DATA_MODE_GUARD_FAIL " + JSON.stringify({
+      debugId: dbgId,
+      mode: mode,
+      expectedId: expectedStagingId,
+      actualId: chosenId || ""
+    }));
+    throw new Error("STAGING guard: refusing to access non-staging spreadsheet");
+  }
+  var ss = SpreadsheetApp.openById(chosenId);
+  if (mode === "STAGING") {
+    var actualId = "";
+    try { actualId = clean_(ss.getId && ss.getId()); } catch (_idErr) {}
+    if (actualId && actualId !== expectedStagingId) {
+      Logger.log("DATA_MODE_GUARD_FAIL " + JSON.stringify({
+        debugId: dbgId,
+        mode: mode,
+        expectedId: expectedStagingId,
+        actualId: actualId
+      }));
+      throw new Error("STAGING guard: refusing to access non-staging spreadsheet");
+    }
+  }
+  return ss;
+}
+
+function getWorkingSheet_() {
+  var ss = getWorkingSpreadsheet_();
+  var tabName = clean_(CONFIG.SHEET_TAB_WORKING || CONFIG.DATA_SHEET || "FODE_Data");
+  var sh = ss.getSheetByName(tabName);
+  if (!sh) throw new Error("Missing working sheet tab: " + tabName);
+  return sh;
+}
+
 /**
  * Returns an object mapping header -> value for the given row.
  */
@@ -1097,11 +1213,78 @@ function applyPatch_(sheet, rowIndex, patchObj) {
 
 /******************** PHASE 2 — PORTAL LOGGING (NON-FATAL) ********************/
 
+function safeStr_(v) {
+  return String(v === null || v === undefined ? "" : v).trim();
+}
+
+function hasValue_(v) {
+  return !!safeStr_(v);
+}
+
+function isYes_(v) {
+  return safeStr_(v) === "Yes";
+}
+
+function nowIso_() {
+  return new Date().toISOString();
+}
+
+function pickParentEmail_(row) {
+  var r = row || {};
+  return safeStr_(r.Parent_Email_Corrected || r.Parent_Email || "");
+}
+
+function logAdminEvent_(eventName, payload) {
+  try {
+    log_(mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET), safeStr_(eventName || "ADMIN_EVENT"), JSON.stringify(payload || {}));
+  } catch (e) {
+    try { Logger.log(String(eventName || "ADMIN_EVENT") + " " + JSON.stringify(payload || {})); } catch (_e) {}
+  }
+}
+
+function adminSendEmail_(to, subject, body, opts) {
+  var toEmail = safeStr_(to);
+  var subj = String(subject || "");
+  var textBody = String(body || "");
+  var o = (opts && typeof opts === "object") ? opts : {};
+  var fromAddr = safeStr_(CONFIG.EMAIL_FROM_ADDRESS || "");
+  var replyTo = safeStr_(CONFIG.EMAIL_REPLY_TO || "");
+  var cc = safeStr_(o.cc || "");
+  var bcc = safeStr_(o.bcc || "");
+  var htmlBody = safeStr_(o.htmlBody || "");
+  var fromName = safeStr_(CONFIG.EMAIL_FROM_NAME || o.name || "");
+
+  if (!toEmail) {
+    return { ok: false, error: "Missing recipient email", from: fromAddr, replyTo: replyTo, cc: cc };
+  }
+
+  var gmailOpts = {};
+  if (fromName) gmailOpts.name = fromName;
+  if (replyTo) gmailOpts.replyTo = replyTo;
+  if (cc) gmailOpts.cc = cc;
+  if (bcc) gmailOpts.bcc = bcc;
+  if (htmlBody) gmailOpts.htmlBody = htmlBody;
+  if (fromAddr) gmailOpts.from = fromAddr;
+
+  try {
+    GmailApp.sendEmail(toEmail, subj, textBody, gmailOpts);
+    return { ok: true, from: fromAddr, replyTo: replyTo, cc: cc };
+  } catch (e) {
+    return {
+      ok: false,
+      error: String(e && e.message ? e.message : e),
+      from: fromAddr,
+      replyTo: replyTo,
+      cc: cc
+    };
+  }
+}
+
 function appendPortalLog_(eventObj) {
   // Log into the main staging spreadsheet tab for visibility during testing.
   // (The older LOG_SHEET_ID / LOG_SHEET_NAME config is kept for reference but not used here.)
-  assertDriveId_(CONFIG.SHEET_ID, "CONFIG.SHEET_ID");
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  assertDriveId_(getWorkingSpreadsheetId_(), "WORKING_SHEET_ID");
+  var ss = getWorkingSpreadsheet_();
   var sh = ss.getSheetByName(CONFIG.LOG_SHEET);
   if (!sh) throw new Error("Missing log sheet tab in main sheet: " + CONFIG.LOG_SHEET);
 
@@ -1157,7 +1340,7 @@ function portalDebugLog_(tag, obj) {
     if (!(maxBytes > 0)) maxBytes = 2500;
     if (msg.length > maxBytes) msg = msg.slice(0, maxBytes);
 
-    var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+    var sh = mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET);
     log_(sh, "PORTAL_DEBUG", msg);
   } catch (e) {
     // Best-effort only; never break portal flow.
