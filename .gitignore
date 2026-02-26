@@ -1,0 +1,4 @@
+# Local agent scripts (do not commit)
+config.ps1
+fode-agent.ps1
+fode.env.ps1/
