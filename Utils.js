@@ -1271,6 +1271,7 @@ function adminSendEmail_(to, subject, body, opts) {
   var subj = String(subject || "");
   var textBody = String(body || "");
   var o = (opts && typeof opts === "object") ? opts : {};
+  var provider = safeStr_(CONFIG.EMAIL_PROVIDER || "GMAILAPP").toUpperCase();
   var fromAddr = safeStr_(CONFIG.EMAIL_FROM_ADDRESS || "");
   var replyTo = safeStr_(CONFIG.EMAIL_REPLY_TO || "");
   var cc = safeStr_(o.cc || "");
@@ -1282,17 +1283,26 @@ function adminSendEmail_(to, subject, body, opts) {
     return { ok: false, error: "Missing recipient email", from: fromAddr, replyTo: replyTo, cc: cc };
   }
 
-  var gmailOpts = {};
-  if (fromName) gmailOpts.name = fromName;
-  if (replyTo) gmailOpts.replyTo = replyTo;
-  if (cc) gmailOpts.cc = cc;
-  if (bcc) gmailOpts.bcc = bcc;
-  if (htmlBody) gmailOpts.htmlBody = htmlBody;
-  var senderMode = safeStr_(o.senderMode || CONFIG.EMAIL_SENDER_MODE || "DEFAULT").toUpperCase();
-  if (senderMode === "ALIAS" && fromAddr) gmailOpts.from = fromAddr;
-
   try {
-    GmailApp.sendEmail(toEmail, subj, textBody, gmailOpts);
+    if (provider === "MAILAPP") {
+      var mailOpts = {};
+      if (fromName) mailOpts.name = fromName;
+      if (replyTo) mailOpts.replyTo = replyTo;
+      if (cc) mailOpts.cc = cc;
+      if (bcc) mailOpts.bcc = bcc;
+      if (htmlBody) mailOpts.htmlBody = htmlBody;
+      MailApp.sendEmail(toEmail, subj, textBody, mailOpts);
+    } else {
+      var gmailOpts = {};
+      if (fromName) gmailOpts.name = fromName;
+      if (replyTo) gmailOpts.replyTo = replyTo;
+      if (cc) gmailOpts.cc = cc;
+      if (bcc) gmailOpts.bcc = bcc;
+      if (htmlBody) gmailOpts.htmlBody = htmlBody;
+      var senderMode = safeStr_(o.senderMode || CONFIG.EMAIL_SENDER_MODE || "DEFAULT").toUpperCase();
+      if (senderMode === "ALIAS" && fromAddr) gmailOpts.from = fromAddr;
+      GmailApp.sendEmail(toEmail, subj, textBody, gmailOpts);
+    }
     return { ok: true, from: fromAddr, replyTo: replyTo, cc: cc };
   } catch (e) {
     return {

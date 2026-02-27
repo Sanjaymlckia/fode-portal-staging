@@ -76,7 +76,24 @@ function withEnvelope_(fnName, fn) {
 function renderAdminApp_(e) {
   var email = getActiveUserEmail_();
   if (!isAdmin_(email)) {
-    return HtmlService.createHtmlOutput("<h3>Access denied</h3><p>Not authorized.</p>")
+    var debugId = makeDebugId_();
+    var activeUserEmail = "";
+    var effectiveUserEmail = "";
+    var safeUrl = "";
+    try { activeUserEmail = String(Session.getActiveUser().getEmail() || ""); } catch (_au) {}
+    try { effectiveUserEmail = String(Session.getEffectiveUser().getEmail() || ""); } catch (_eu) {}
+    try {
+      safeUrl = String(ScriptApp.getService().getUrl() || "").replace(/[?#].*$/, "");
+    } catch (_urlErr) {}
+    try {
+      logAudit_("ADMIN_ACCESS_DENIED", {
+        activeUserEmail: activeUserEmail,
+        effectiveUserEmail: effectiveUserEmail,
+        url: safeUrl,
+        debugId: debugId
+      });
+    } catch (_logErr) {}
+    return HtmlService.createHtmlOutput("<h3>Access denied</h3><p>Not authorized. Debug ID: " + debugId + "</p>")
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 

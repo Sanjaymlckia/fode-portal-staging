@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-27-PNG-STAGING-r147",
-  CHANGELOG_LAST: "r147: queue-native docs follow-up buttons, bulk send wiring + feedback, compact comments, improved theme",
+  VERSION: "2026-02-27-PNG-STAGING-r151",
+  CHANGELOG_LAST: "r151: webapp access ANYONE to permit @kundu.ac admin logins; strict allowlist enforced",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
@@ -82,7 +82,8 @@ var CONFIG = {
   EMAIL_ADMIN_ALERTS_TO: "fode@kundu.ac",
   EMAIL_ENABLE_PAYMENT_VERIFIED_TRIGGERS: true,
   EMAIL_RELEASE_ADMIN_TO: "sanja@minervacenters.com,ict@minervacenters.com",
-  EMAIL_FROM_NAME: "Minerva Learning Centers - FODE",
+  EMAIL_FROM_NAME: "FODE Admissions",
+  EMAIL_PROVIDER: "MAILAPP", // "MAILAPP" | "GMAILAPP"
   EMAIL_SENDER_MODE: "ALIAS", // "DEFAULT" | "ALIAS"
   EMAIL_FROM_ADDRESS: "fode@kundu.ac",
   EMAIL_REPLY_TO: "fode@kundu.ac",
@@ -115,6 +116,7 @@ var CONFIG = {
   ADMIN_EMAILS: [
     "sanjay@minervacenters.com",
     "enquiries@kundu.ac",
+    "fode_kia@kundu.ac",
     "mlc@minervacenters.com",
     "operations@minervacenters.com",
     "mlccorporate@minervacenters.com"
@@ -122,6 +124,7 @@ var CONFIG = {
   ADMIN_ROLES: {
     "sanjay@minervacenters.com": "SUPER",
     "enquiries@kundu.ac": "VERIFIER",
+    "fode_kia@kundu.ac": "VERIFIER",
     "mlc@minervacenters.com": "VERIFIER",
     "operations@minervacenters.com": "VERIFIER",
     "mlccorporate@minervacenters.com": "VERIFIER"

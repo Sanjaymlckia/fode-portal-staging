@@ -3,11 +3,18 @@
   "dependencies": {},
   "webapp": {
     "executeAs": "USER_ACCESSING",
-    "access": "DOMAIN"
+    "access": "ANYONE"
   },
   "executionApi": {
     "access": "MYSELF"
   },
   "exceptionLogging": "STACKDRIVER",
-  "runtimeVersion": "V8"
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/script.external_request",
+    "https://www.googleapis.com/auth/script.send_mail",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/userinfo.email"
+  ]
 }
