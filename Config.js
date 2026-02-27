@@ -7,14 +7,16 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-26-PNG-STAGING-r124",
-  CHANGELOG_LAST: "r124: send quote emails via GmailApp from fode@kundu.ac (explicit from+replyTo)",
+  VERSION: "2026-02-27-PNG-STAGING-r147",
+  CHANGELOG_LAST: "r147: queue-native docs follow-up buttons, bulk send wiring + feedback, compact comments, improved theme",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "STAGING", // "STAGING" | "PROD"
+  SPREADSHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
   SHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
   SHEET_ID_PROD: "REPLACE_WITH_PROD_SHEET_ID",
+  SHEET_NAME_WORKING: "FODE_Data",
   SHEET_TAB_WORKING: "FODE_Data",
   // Backward-compatible aliases (legacy callers)
   SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
@@ -78,9 +80,24 @@ var CONFIG = {
   FEE_REGISTRATION_KINA: 600,
   FEE_PER_SUBJECT_KINA: 450,
   EMAIL_ADMIN_ALERTS_TO: "fode@kundu.ac",
+  EMAIL_ENABLE_PAYMENT_VERIFIED_TRIGGERS: true,
+  EMAIL_RELEASE_ADMIN_TO: "sanja@minervacenters.com,ict@minervacenters.com",
   EMAIL_FROM_NAME: "Minerva Learning Centers - FODE",
+  EMAIL_SENDER_MODE: "ALIAS", // "DEFAULT" | "ALIAS"
   EMAIL_FROM_ADDRESS: "fode@kundu.ac",
   EMAIL_REPLY_TO: "fode@kundu.ac",
+  EMAIL_STUDENT_SUBJECT_PAYMENT_VERIFIED: "FODE Application - Payment Verified | Next Steps & Bank Details",
+  EMAIL_ADMIN_SUBJECT_PAYMENT_VERIFIED: "FODE - Payment Verified | Release Access for ApplicantID",
+  FODE_FEE_BASE_K: 600,
+  FODE_FEE_PER_SUBJECT_K: 450,
+  FODE_BANK_DETAILS_TEXT: "<paste canonical bank details block here>",
+  FODE_NEXT_STEPS_TEXT: "<paste canonical next steps here>",
+  DOCS_FOLLOWUP_ENABLE: true,
+  DOCS_FOLLOWUP_EMAIL_SUBJECT: "FODE Application - Documents Verified | Quote, Payment Instructions & Next Steps",
+  DOCS_FOLLOWUP_SENDER_MODE: "ALIAS",
+  DOCS_FOLLOWUP_COOLDOWN_MS: 300000,
+  ADMIN_THEME_BLUE_MODE: "IMPROVED_V2",
+  DOCS_FOLLOWUP_SHOW_IN_QUEUES: true,
   QUOTE_EMAIL_ENABLED: true,
   INVOICE_TRIGGER_ENABLED: false,
   INVOICE_TRIGGER_MODE: "LOG_ONLY", // "LOG_ONLY" | "WEBHOOK"

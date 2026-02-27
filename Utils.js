@@ -1099,13 +1099,13 @@ function getHeaderIndexMap_(sheet) {
 
 function getWorkingSpreadsheetId_() {
   var mode = clean_(CONFIG.DATA_MODE || "STAGING").toUpperCase();
-  if (mode === "PROD") return clean_(CONFIG.SHEET_ID_PROD || CONFIG.SHEET_ID || "");
-  return clean_(CONFIG.SHEET_ID_STAGING || CONFIG.SHEET_ID || "");
+  if (mode === "PROD") return clean_(CONFIG.SHEET_ID_PROD || CONFIG.SPREADSHEET_ID_PROD || CONFIG.SHEET_ID || "");
+  return clean_(CONFIG.SPREADSHEET_ID_STAGING || CONFIG.SHEET_ID_STAGING || CONFIG.SHEET_ID || "");
 }
 
 function getWorkingSpreadsheet_() {
   var mode = clean_(CONFIG.DATA_MODE || "STAGING").toUpperCase();
-  var expectedStagingId = clean_(CONFIG.SHEET_ID_STAGING || "");
+  var expectedStagingId = clean_(CONFIG.SPREADSHEET_ID_STAGING || CONFIG.SHEET_ID_STAGING || "");
   var chosenId = getWorkingSpreadsheetId_();
   var dbgId = (typeof newDebugId_ === "function") ? newDebugId_() : "";
   if (mode === "STAGING" && (!expectedStagingId || chosenId !== expectedStagingId)) {
@@ -1136,7 +1136,7 @@ function getWorkingSpreadsheet_() {
 
 function getWorkingSheet_() {
   var ss = getWorkingSpreadsheet_();
-  var tabName = clean_(CONFIG.SHEET_TAB_WORKING || CONFIG.DATA_SHEET || "FODE_Data");
+  var tabName = clean_(CONFIG.SHEET_NAME_WORKING || CONFIG.SHEET_TAB_WORKING || CONFIG.DATA_SHEET || "FODE_Data");
   var sh = ss.getSheetByName(tabName);
   if (!sh) throw new Error("Missing working sheet tab: " + tabName);
   return sh;
@@ -1229,6 +1229,30 @@ function nowIso_() {
   return new Date().toISOString();
 }
 
+function getRowEmailForStudent_(row) {
+  var email = safeStr_(pickParentEmail_(row || "")).toLowerCase();
+  return isValidEmail_(email) ? email : "";
+}
+
+function parseCsvEmails_(s) {
+  var raw = String(s === null || s === undefined ? "" : s);
+  return raw.split(",")
+    .map(function(v){ return safeStr_(v).toLowerCase(); })
+    .filter(function(v){ return isValidEmail_(v); })
+    .join(",");
+}
+
+function buildDocsFollowupKey_(rowOrApplicantId) {
+  var mode = safeStr_((CONFIG && CONFIG.DATA_MODE) || "STAGING").toUpperCase() || "STAGING";
+  var applicantId = "";
+  if (rowOrApplicantId && typeof rowOrApplicantId === "object") {
+    applicantId = safeStr_(rowOrApplicantId.ApplicantID || rowOrApplicantId.applicantId || "");
+  } else {
+    applicantId = safeStr_(rowOrApplicantId || "");
+  }
+  return "DOCS_FOLLOWUP_SENT::" + mode + "::" + (applicantId || "UNKNOWN");
+}
+
 function pickParentEmail_(row) {
   var r = row || {};
   return safeStr_(r.Parent_Email_Corrected || r.Parent_Email || "");
@@ -1264,7 +1288,8 @@ function adminSendEmail_(to, subject, body, opts) {
   if (cc) gmailOpts.cc = cc;
   if (bcc) gmailOpts.bcc = bcc;
   if (htmlBody) gmailOpts.htmlBody = htmlBody;
-  if (fromAddr) gmailOpts.from = fromAddr;
+  var senderMode = safeStr_(o.senderMode || CONFIG.EMAIL_SENDER_MODE || "DEFAULT").toUpperCase();
+  if (senderMode === "ALIAS" && fromAddr) gmailOpts.from = fromAddr;
 
   try {
     GmailApp.sendEmail(toEmail, subj, textBody, gmailOpts);

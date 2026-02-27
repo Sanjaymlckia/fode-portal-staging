@@ -15,6 +15,13 @@
       --danger: <?= BRAND.danger ?>;
       --warn: <?= BRAND.warn ?>;
       --ok: <?= BRAND.ok ?>;
+      --mlcBlue: #66b2ff;
+      --mlcBlueDark: #0f4f94;
+      --tagBg: rgba(102, 178, 255, .22);
+      --tagText: #e7f4ff;
+      --labelText: #d9eaff;
+      --fieldBorder: rgba(122,184,245,.68);
+      --fieldBg: rgba(10,30,54,.74);
       --radius: 14px;
     }
     *{ box-sizing:border-box; }
@@ -79,17 +86,21 @@
     .queue-section-body.hidden{ display:none; }
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
     .field{ flex: 1 1 240px; }
-    label{ display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+    label{ display:block; font-size:12px; color:var(--labelText); margin-bottom:6px; font-weight:700; }
     input, textarea, select{
       width:100%;
       padding:10px 11px;
       border-radius: 12px;
-      border: 1px solid rgba(148,163,184,.22);
-      background: rgba(11,18,32,.55);
+      border: 1px solid var(--fieldBorder);
+      background: var(--fieldBg);
       color: var(--text);
       outline:none;
     }
-    textarea{ min-height:70px; resize:vertical; }
+    input:focus, textarea:focus, select:focus{
+      border-color: var(--mlcBlue);
+      box-shadow: 0 0 0 2px rgba(79,156,255,.18);
+    }
+    textarea{ min-height:52px; resize:vertical; }
     .btn{
       border:none; cursor:pointer;
       padding:10px 12px;
@@ -105,12 +116,56 @@
     .btn.warn{ background: rgba(245,158,11,.16); border-color: rgba(245,158,11,.35); }
     .btn.danger{ background: rgba(239,68,68,.16); border-color: rgba(239,68,68,.35); }
     .btn.small{ padding:8px 10px; font-size:12px; }
+    .btn:hover{ filter:brightness(1.08); }
+    .btn:focus-visible{
+      outline:2px solid rgba(102,178,255,.65);
+      outline-offset:1px;
+    }
     table{ width:100%; border-collapse: collapse; }
     th, td{ text-align:left; padding:10px 8px; font-size:13px; border-bottom: 1px solid rgba(148,163,184,.12); }
     th{ color:var(--muted); font-weight:700; font-size:12px; }
     a{ color: rgba(14,165,164,.95); text-decoration:none; }
     a:hover{ text-decoration:underline; }
     .muted{ color:var(--muted); }
+    .statusTag{
+      display:inline-block;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:11px;
+      font-weight:800;
+      border:1px solid rgba(120,170,235,.45);
+      background: var(--tagBg);
+      color: var(--tagText);
+    }
+    .statusTag.ready{
+      background: rgba(34,197,94,.2);
+      border-color: rgba(34,197,94,.45);
+      color: #d6ffe6;
+    }
+    .statusTag.off{
+      background: rgba(148,163,184,.14);
+      border-color: rgba(148,163,184,.3);
+      color: #d6deea;
+    }
+    .statusTag.sent{
+      background: rgba(56,189,248,.2);
+      border-color: rgba(56,189,248,.48);
+      color: #ddf5ff;
+    }
+    .sendSummary{
+      margin-top:10px;
+      padding:10px 12px;
+      border-radius:10px;
+      border:1px solid rgba(102,178,255,.45);
+      background: rgba(13,43,77,.5);
+      color:#dff0ff;
+      font-size:12px;
+    }
+    .sendSummary.err{
+      border-color: rgba(239,68,68,.55);
+      background: rgba(120,23,34,.38);
+      color: #ffe4e8;
+    }
 
     .modalBack{
       position:fixed; inset:0; background: rgba(0,0,0,.55);
@@ -147,6 +202,13 @@
       grid-template-columns: 1.2fr .8fr 1fr .6fr;
       gap:10px;
       align-items:start;
+    }
+    .docComment{
+      min-height:52px;
+      height:52px;
+      resize:vertical;
+      padding:8px 10px;
+      font-size:12px;
     }
     .docTitle{ font-weight:800; font-size:13px; }
     .docWarn{ margin-top:6px; font-size:12px; opacity:.85; color:var(--warn); }
@@ -225,6 +287,8 @@
       <div id="queueAnomalies" class="queue-section"></div>
       <div id="queuePaidApproved" class="queue-section"></div>
       <div id="queuePostPayment" class="queue-section"></div>
+      <div id="docsSendSummary" class="sendSummary hidden"></div>
+      <div id="docsSendFailures" class="sendSummary hidden" style="margin-top:6px;"></div>
     </div>
 
     <div class="card">
@@ -248,20 +312,30 @@
         <div style="font-weight:900;">Results</div>
         <div class="muted" style="font-size:12px;">Search by ApplicantID for exact match.</div>
       </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px;">
+        <button id="btnSelectAllEligibleDocs" class="btn small" type="button">Select All Eligible (Docs)</button>
+        <button id="btnClearDocsSelection" class="btn small" type="button">Clear Selection</button>
+        <button id="btnSendDocsBulk" class="btn small accent" type="button" disabled>Send Docs Quote to Selected</button>
+        <button id="btnRefreshEligibility" class="btn small" type="button">Refresh Eligibility</button>
+        <button id="btnPaymentFollowupSoon" class="btn small" type="button" disabled title="Payment workflow (coming soon)">Payment workflow (coming soon)</button>
+        <span class="muted" id="docsBulkStatus" style="font-size:12px;"></span>
+      </div>
       <div style="margin-top:10px; overflow:auto;">
         <table>
           <thead>
             <tr>
+              <th style="width:32px;"></th>
               <th>ApplicantID</th>
               <th>Name</th>
               <th>Doc Status</th>
               <th>Payment</th>
               <th>Portal</th>
+              <th>Docs Follow-Up</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="tbody">
-            <tr><td colspan="6" class="muted">No results yet.</td></tr>
+            <tr><td colspan="8" class="muted">No results yet.</td></tr>
           </tbody>
         </table>
       </div>
@@ -400,6 +474,9 @@
     const BUILD_VERSION = "<?= BUILD_VERSION ?>";
     const BUILD_RENDERED_AT = "<?= BUILD_RENDERED_AT ?>";
     const BUILD_SCRIPT_ID = "<?= BUILD_SCRIPT_ID ?>";
+    const DOCS_FOLLOWUP_ENABLED = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_ENABLE)) ?>;
+    const DOCS_FOLLOWUP_SHOW_IN_QUEUES = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_SHOW_IN_QUEUES)) ?>;
+    const DOCS_FOLLOWUP_COOLDOWN_MS = <?!= JSON.stringify(Number((CONFIG && CONFIG.DOCS_FOLLOWUP_COOLDOWN_MS) || 300000)) ?>;
     const QUEUE_PAGE_SIZE = 10;
     const queuePagerState = {};
     const queueRenderCache = {};
@@ -417,6 +494,10 @@
     let isDirty = false;
     let lastRequestId = 0;
     let lastSearchResults = [];
+    let lastSearchRows = [];
+    let selectedDocsRowNumbers = {};
+    let lastDocsSendAttemptByApplicantId = {};
+    let isDocsSendBusy = false;
     let lastBackfillMode = "dry";
 
     function setMsg(id, txt){
@@ -803,20 +884,58 @@
       if (!list.length) {
         html += "<div class='queue-empty'>No records pending</div>";
       } else {
-        html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Action</th></tr>";
-        pageRows.forEach(function(row){
-          var rowNumber = Number(row && row.rowNumber || 0);
-          var applicantId = String(row && row.applicantId || "");
-          var name = String(row && row.name || "");
-          var dbg = String(row && row.debugId || "");
-          var canReview = !!applicantId || (Number.isFinite(rowNumber) && rowNumber >= 2);
-          var reviewTitle = canReview ? "Open review" : ("RowNumber missing - cannot review." + (dbg ? (" (dbg: " + dbg + ")") : ""));
-          html += "<tr>";
-          html += "<td>" + esc(applicantId) + "</td>";
-          html += "<td>" + esc(name) + "</td>";
-          html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button></td>";
-          html += "</tr>";
-        });
+        var isDocsQueue = queueKey === "queueDocs" && DOCS_FOLLOWUP_SHOW_IN_QUEUES;
+        if (isDocsQueue) {
+          var selectedCount = selectedDocsRows_().length;
+          html += "<div class='row' style='margin-bottom:8px;align-items:center;gap:8px;'>";
+          html += "<button class='btn small' type='button' data-action='queue-docs-select-ready'>Select All Ready</button>";
+          html += "<button class='btn small' type='button' data-action='queue-docs-clear'>Clear</button>";
+          html += "<button class='btn small accent' type='button' data-action='queue-docs-send-selected' " + ((isDocsSendBusy || selectedCount === 0) ? "disabled" : "") + ">" + (isDocsSendBusy ? "Sending..." : "Send Quote to Selected") + "</button>";
+          html += "<span class='muted' style='font-size:12px;'>" + String(selectedCount) + " selected</span>";
+          html += "</div>";
+          html += "<table class='queue-table'><tr><th style='width:30px;'></th><th>Applicant</th><th>Name</th><th>Docs Follow-Up</th><th>Action</th></tr>";
+          pageRows.forEach(function(row){
+            var rowNumber = Number(row && row.rowNumber || 0);
+            var applicantId = String((row && (row.ApplicantID || row.applicantId)) || "");
+            var name = String(row && row.name || "");
+            var dbg = String(row && row.debugId || "");
+            var sentAt = String(row && row.docsFollowupSentAt || "");
+            var eligible = !!(row && row.eligibleDocsFollowUp);
+            var canSendQuote = DOCS_FOLLOWUP_ENABLED && eligible && !sentAt;
+            var canReview = !!applicantId || (Number.isFinite(rowNumber) && rowNumber >= 2);
+            var reviewTitle = canReview ? "Open review" : ("RowNumber missing - cannot review." + (dbg ? (" (dbg: " + dbg + ")") : ""));
+            var checkDisabled = (!canSendQuote || isDocsSendBusy) ? "disabled" : "";
+            var checkChecked = selectedDocsRowNumbers[String(rowNumber)] ? "checked" : "";
+            var statusText = sentAt ? "Sent" : (eligible ? "Ready" : "Not ready");
+            var statusClass = sentAt ? "statusTag sent" : (eligible ? "statusTag ready" : "statusTag off");
+            var sendTitle = sentAt ? "Already sent." : (eligible ? "Send docs quote email now." : "All required documents must be Verified first.");
+            html += "<tr>";
+            html += "<td><input type='checkbox' data-action='docs-select-row' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' data-applicant-id='" + esc(applicantId) + "' data-eligible='" + (canSendQuote ? "1" : "0") + "' " + checkChecked + " " + checkDisabled + "></td>";
+            html += "<td>" + esc(applicantId) + "</td>";
+            html += "<td>" + esc(name) + "</td>";
+            html += "<td><span class='" + statusClass + "'>" + esc(statusText) + "</span></td>";
+            html += "<td>"
+              + "<button class='btn small' data-action='send-docs-single' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(sendTitle) + "' " + (canSendQuote && !isDocsSendBusy ? "" : "disabled ") + ">Send Quote</button> "
+              + "<button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button>"
+              + "</td>";
+            html += "</tr>";
+          });
+        } else {
+          html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Action</th></tr>";
+          pageRows.forEach(function(row){
+            var rowNumber = Number(row && row.rowNumber || 0);
+            var applicantId = String(row && row.applicantId || "");
+            var name = String(row && row.name || "");
+            var dbg = String(row && row.debugId || "");
+            var canReview = !!applicantId || (Number.isFinite(rowNumber) && rowNumber >= 2);
+            var reviewTitle = canReview ? "Open review" : ("RowNumber missing - cannot review." + (dbg ? (" (dbg: " + dbg + ")") : ""));
+            html += "<tr>";
+            html += "<td>" + esc(applicantId) + "</td>";
+            html += "<td>" + esc(name) + "</td>";
+            html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button></td>";
+            html += "</tr>";
+          });
+        }
         html += "</table>";
         html += "<div class='row' style='margin-top:8px;align-items:center;gap:8px;'>";
         html += "<button class='btn small' " + (pager.page <= 0 ? "disabled" : "") + " onclick=\"queuePrevPage(" + JSON.stringify(queueKey) + ")\">Prev</button>";
@@ -885,6 +1004,53 @@
           if (queueKey) toggleQueueSection(queueKey);
           return;
         }
+        var queueSendSingle = target.closest('button[data-action="send-docs-single"]');
+        if (queueSendSingle) {
+          e.preventDefault();
+          var qApplicantId = String(queueSendSingle.getAttribute("data-applicant-id") || "").trim();
+          var qRowNumber = Number(queueSendSingle.getAttribute("data-row-number") || 0);
+          if (!Number.isFinite(qRowNumber) || qRowNumber < 2) {
+            setDocsSendSummary_("Cannot send docs quote: invalid row number.", true);
+            return;
+          }
+          sendDocsFollowup_([qRowNumber], "queue-single", [qApplicantId]);
+          return;
+        }
+        var selectReadyBtn = target.closest('button[data-action="queue-docs-select-ready"]');
+        if (selectReadyBtn) {
+          e.preventDefault();
+          var qDocs = (queueRenderCache.queueDocs && queueRenderCache.queueDocs.rows) ? queueRenderCache.queueDocs.rows : [];
+          qDocs.forEach(function(row){
+            var rowNum = Number(row && row.rowNumber || 0);
+            var sentAt = String(row && row.docsFollowupSentAt || "");
+            var canSelect = !!(row && row.eligibleDocsFollowUp) && !sentAt;
+            if (canSelect && Number.isFinite(rowNum) && rowNum >= 2) selectedDocsRowNumbers[String(rowNum)] = true;
+          });
+          rerenderQueue_("queueDocs");
+          updateBulkDocsUi_();
+          return;
+        }
+        var clearBtn = target.closest('button[data-action="queue-docs-clear"]');
+        if (clearBtn) {
+          e.preventDefault();
+          clearDocsSelection_();
+          rerenderQueue_("queueDocs");
+          return;
+        }
+        var sendSelectedBtn = target.closest('button[data-action="queue-docs-send-selected"]');
+        if (sendSelectedBtn) {
+          e.preventDefault();
+          var selectedRows = selectedDocsRows_();
+          var qByRow = {};
+          var qRows = (queueRenderCache.queueDocs && queueRenderCache.queueDocs.rows) ? queueRenderCache.queueDocs.rows : [];
+          qRows.forEach(function(r){ qByRow[String(Number(r && r.rowNumber || 0))] = r || {}; });
+          var ids = selectedRows.map(function(rowNum){
+            var row = qByRow[String(rowNum)] || {};
+            return String((row.ApplicantID || row.applicantId || "") || "");
+          });
+          sendDocsFollowup_(selectedRows, "queue-bulk", ids);
+          return;
+        }
         var btn = target.closest('button[data-action="queue-review"]');
         if (!btn) return;
         e.preventDefault();
@@ -901,6 +1067,15 @@
         }
         setMsg("msg", "Queue item missing review identifiers. Cannot open Review.");
         setMsg("mMsg", "Queue item missing review identifiers.");
+      });
+      panel.addEventListener("change", function(e){
+        var chk = e.target && e.target.closest ? e.target.closest('input[data-action="docs-select-row"]') : null;
+        if (!chk) return;
+        var rowNumber = Number(chk.getAttribute("data-row-number") || 0);
+        if (!Number.isFinite(rowNumber) || rowNumber < 2) return;
+        if (chk.checked) selectedDocsRowNumbers[String(rowNumber)] = true;
+        else delete selectedDocsRowNumbers[String(rowNumber)];
+        updateBulkDocsUi_();
       });
     }
 
@@ -934,8 +1109,10 @@
     function clearSearch(){
       document.getElementById("qApplicantId").value = "";
       document.getElementById("qEmail").value = "";
-      document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No results yet.</td></tr>`;
+      document.getElementById("tbody").innerHTML = `<tr><td colspan="8" class="muted">No results yet.</td></tr>`;
       lastSearchResults = [];
+      lastSearchRows = [];
+      clearDocsSelection_();
       setMsg("msg","");
     }
 
@@ -983,6 +1160,201 @@
         + ' data-row-number="' + String(n) + '">Review</button>';
     }
 
+    function docsFollowupReason_(row){
+      if (!DOCS_FOLLOWUP_ENABLED) return "Docs follow-up is disabled by config.";
+      if (row && row.docsFollowupSentAt) return "Already sent.";
+      return "All required documents must be Verified first.";
+    }
+
+    function renderDocsFollowupCell_(r){
+      var eligible = !!(r && r.eligibleDocsFollowUp);
+      var sentAt = String((r && r.docsFollowupSentAt) || "");
+      var applicantId = esc((r && r.applicantId) || "");
+      var rowNumber = Number(r && r.rowNumber || 0);
+      var canSend = DOCS_FOLLOWUP_ENABLED && eligible;
+      var badgeClass = canSend ? "statusTag ready" : "statusTag off";
+      var badgeText = canSend ? "Ready for quote" : "Not ready";
+      var title = canSend ? "Eligible for manual Docs Follow-Up send." : docsFollowupReason_(r);
+      var html = "";
+      html += '<div class="' + badgeClass + '" title="' + esc(title) + '">' + esc(badgeText) + "</div>";
+      if (sentAt) html += '<div class="muted" style="font-size:11px;margin-top:4px;">Sent: ' + esc(sentAt) + "</div>";
+      html += '<div style="margin-top:6px;">';
+      html += '<button class="btn small" type="button" data-action="send-docs-single" data-applicant-id="' + applicantId + '" data-row-number="' + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + '" ' + (canSend ? "" : "disabled ") + 'title="' + esc(canSend ? "Send docs quote email now." : title) + '">Send Docs Quote</button>';
+      html += "</div>";
+      return html;
+    }
+
+    function clearDocsSelection_(){
+      selectedDocsRowNumbers = {};
+      updateBulkDocsUi_();
+    }
+
+    function selectedDocsRows_(){
+      return Object.keys(selectedDocsRowNumbers)
+        .map(function(k){ return Number(k); })
+        .filter(function(n){ return Number.isFinite(n) && n >= 2; });
+    }
+
+    function updateBulkDocsUi_(){
+      var selected = selectedDocsRows_();
+      var count = selected.length;
+      var btn = document.getElementById("btnSendDocsBulk");
+      if (btn) btn.disabled = isDocsSendBusy || count === 0 || !DOCS_FOLLOWUP_ENABLED;
+      var msg = document.getElementById("docsBulkStatus");
+      if (msg) msg.textContent = DOCS_FOLLOWUP_ENABLED ? (count ? (count + " selected") : "No rows selected") : "Docs follow-up disabled";
+      Array.from(document.querySelectorAll('input[data-action="docs-select-row"]')).forEach(function(chk){
+        var n = Number(chk.getAttribute("data-row-number") || 0);
+        chk.checked = !!selectedDocsRowNumbers[String(n)];
+        chk.disabled = isDocsSendBusy || chk.getAttribute("data-eligible") !== "1";
+      });
+      Array.from(document.querySelectorAll('button[data-action="send-docs-single"]')).forEach(function(btnEl){
+        if (isDocsSendBusy) btnEl.disabled = true;
+      });
+    }
+
+    function setDocsSendBusy_(busy){
+      isDocsSendBusy = !!busy;
+      var ids = ["btnSelectAllEligibleDocs", "btnClearDocsSelection", "btnRefreshEligibility"];
+      ids.forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) el.disabled = isDocsSendBusy;
+      });
+      var sendBtn = document.getElementById("btnSendDocsBulk");
+      if (sendBtn) sendBtn.textContent = isDocsSendBusy ? "Sending..." : "Send Docs Quote to Selected";
+      rerenderQueue_("queueDocs");
+      updateBulkDocsUi_();
+    }
+
+    function getDocsSendCooldownMs_(){
+      var n = Number(DOCS_FOLLOWUP_COOLDOWN_MS || 300000);
+      if (!Number.isFinite(n) || n < 0) return 300000;
+      return n;
+    }
+
+    function canAttemptDocsSend_(applicantId){
+      var id = String(applicantId || "").trim();
+      if (!id) return true;
+      var last = Number(lastDocsSendAttemptByApplicantId[id] || 0);
+      if (!last) return true;
+      return (Date.now() - last) >= getDocsSendCooldownMs_();
+    }
+
+    function rememberDocsSendAttempt_(applicantId){
+      var id = String(applicantId || "").trim();
+      if (!id) return;
+      lastDocsSendAttemptByApplicantId[id] = Date.now();
+    }
+
+    function summarizeDocsFollowupResponse_(res){
+      var list = Array.isArray(res && res.results) ? res.results : [];
+      var summary = (res && res.summary) || {};
+      var sentCount = Number(summary.sentCount || 0);
+      var failedCount = Number(summary.failedCount || 0);
+      var failures = list.filter(function(x){ return !(x && x.ok); });
+      return {
+        sentCount: sentCount,
+        failedCount: failedCount,
+        failures: failures,
+        text: "Docs Quote: Sent " + sentCount + ", Failed " + failedCount
+      };
+    }
+
+    function setDocsSendSummary_(text, isErr){
+      var panel = document.getElementById("docsSendSummary");
+      if (!panel) return;
+      panel.classList.remove("hidden");
+      panel.classList.toggle("err", !!isErr);
+      panel.textContent = String(text || "");
+    }
+
+    function setDocsSendFailures_(rows){
+      var panel = document.getElementById("docsSendFailures");
+      if (!panel) return;
+      var list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        panel.classList.add("hidden");
+        panel.textContent = "";
+        return;
+      }
+      var lines = list.map(function(r){
+        var id = r && (r.ApplicantID || r.applicantId) ? (r.ApplicantID || r.applicantId) : ("row " + String(r && r.rowNumber || ""));
+        return id + " - " + String((r && r.code) || "ERROR") + ": " + String((r && r.message) || "");
+      });
+      panel.classList.remove("hidden");
+      panel.classList.remove("err");
+      panel.textContent = "Failures: " + lines.join(" | ");
+    }
+
+    function refreshAfterDocsFollowup_(){
+      loadReviewQueues();
+      var applicantId = (document.getElementById("qApplicantId") || {}).value || "";
+      var email = (document.getElementById("qEmail") || {}).value || "";
+      if (String(applicantId).trim() || String(email).trim() || (lastSearchRows && lastSearchRows.length)) search();
+    }
+
+    function renderDocsFollowupSummary_(res, sourceLabel){
+      if (!res || typeof res !== "object" || typeof res.ok !== "boolean") {
+        setDocsSendSummary_("Invalid server response.", true);
+        setDocsSendFailures_([]);
+        return;
+      }
+      if (!res.ok) {
+        setDocsSendSummary_("Error: " + String(res.message || "Docs follow-up send failed") + " (code: " + String(res.code || "") + ", dbg: " + String(res.debugId || res.dbg || "") + ")", true);
+        setDocsSendFailures_([]);
+        return;
+      }
+      var s = summarizeDocsFollowupResponse_(res);
+      setDocsSendSummary_("[" + sourceLabel + "] " + s.text + " | dbg: " + String(res.debugId || res.dbg || ""), false);
+      setDocsSendFailures_(s.failures);
+      setMsg("docsBulkStatus", s.text);
+      setMsg("msg", s.text);
+      clearDocsSelection_();
+      refreshAfterDocsFollowup_();
+    }
+
+    function renderDocsFollowupError_(err){
+      var msg = (err && err.message) ? err.message : String(err || "Unknown server error");
+      setDocsSendSummary_("Server failure: " + msg, true);
+      setDocsSendFailures_([]);
+      setMsg("docsBulkStatus", "Server failure: " + msg);
+      setMsg("msg", "Server failure: " + msg);
+    }
+
+    function sendDocsFollowup_(rowNumbers, sourceLabel, applicantIds){
+      if (!DOCS_FOLLOWUP_ENABLED) {
+        setMsg("msg", "Docs follow-up is disabled by config.");
+        return;
+      }
+      var rows = Array.isArray(rowNumbers) ? rowNumbers : [];
+      var ids = Array.isArray(applicantIds) ? applicantIds : [];
+      if (!rows.length) {
+        setDocsSendSummary_("No applicants selected.", true);
+        return;
+      }
+      var blocked = [];
+      ids.forEach(function(id){
+        if (id && !canAttemptDocsSend_(id)) blocked.push(id);
+      });
+      if (blocked.length) {
+        setDocsSendSummary_("Please wait before trying again. Blocked: " + blocked.join(", "), true);
+        return;
+      }
+      ids.forEach(function(id){ rememberDocsSendAttempt_(id); });
+      setDocsSendBusy_(true);
+      setDocsSendSummary_("Sending...", false);
+      setMsg("docsBulkStatus", "Sending...");
+      google.script.run
+        .withSuccessHandler(function(res){
+          setDocsSendBusy_(false);
+          renderDocsFollowupSummary_(res, sourceLabel);
+        })
+        .withFailureHandler(function(err){
+          setDocsSendBusy_(false);
+          renderDocsFollowupError_(err);
+        })
+        .admin_sendDocsFollowupEmails({ mode: rows.length > 1 ? "bulk" : "single", rowNumbers: rows });
+    }
+
     function search(){
       const applicantId = document.getElementById("qApplicantId").value.trim();
       const email = document.getElementById("qEmail").value.trim();
@@ -1003,22 +1375,27 @@
           lastSearchResults = rows
             .map(function(r){ return Number(r && r.rowNumber || 0); })
             .filter(function(n){ return Number.isFinite(n) && n > 1; });
+          lastSearchRows = rows.slice();
+          clearDocsSelection_();
           if (!rows.length){
-            document.getElementById("tbody").innerHTML = `<tr><td colspan="6" class="muted">No matches found.</td></tr>`;
+            document.getElementById("tbody").innerHTML = `<tr><td colspan="8" class="muted">No matches found.</td></tr>`;
             setMsg("msg","No matches.");
             return;
           }
           setMsg("msg", rows.length + " match(es).");
           document.getElementById("tbody").innerHTML = rows.map(r => `
             <tr>
+              <td><input type="checkbox" data-action="docs-select-row" data-row-number="${Number(r.rowNumber || 0)}" data-applicant-id="${esc(r.applicantId)}" data-eligible="${r.eligibleDocsFollowUp ? "1" : "0"}" ${r.eligibleDocsFollowUp ? "" : "disabled"}></td>
               <td>${esc(r.applicantId)}</td>
               <td>${esc(r.name)}</td>
               <td>${esc(r.docStatus)}</td>
               <td>${esc(r.paymentVerified)}</td>
               <td>${esc(r.portalAccess)}</td>
+              <td>${renderDocsFollowupCell_(r)}</td>
               <td>${renderReviewButtonCell_(r)}</td>
             </tr>
           `).join("");
+          updateBulkDocsUi_();
         })
         .withFailureHandler(err => {
           console.error("[AdminUI] admin_searchApplicants failure:", err);
@@ -1121,6 +1498,18 @@
     }
 
     function onResultsClick_(ev){
+      var singleSendBtn = ev.target && ev.target.closest ? ev.target.closest('[data-action="send-docs-single"]') : null;
+      if (singleSendBtn) {
+        ev.preventDefault();
+        var sendApplicantId = String(singleSendBtn.getAttribute("data-applicant-id") || "").trim();
+        var sendRowNumber = Number(singleSendBtn.getAttribute("data-row-number") || 0);
+        if (!Number.isFinite(sendRowNumber) || sendRowNumber < 2) {
+          setMsg("msg", "Cannot send docs quote: invalid row number.");
+          return;
+        }
+        sendDocsFollowup_([sendRowNumber], "results-single", [sendApplicantId]);
+        return;
+      }
       var btn = ev.target && ev.target.closest ? ev.target.closest('[data-action="review"]') : null;
       if (!btn) return;
       ev.preventDefault();
@@ -1142,6 +1531,43 @@
         return;
       }
       review(rowNumber, applicantId, btn);
+    }
+
+    function onResultsChange_(ev){
+      var chk = ev.target && ev.target.closest ? ev.target.closest('input[data-action="docs-select-row"]') : null;
+      if (!chk) return;
+      var rowNumber = Number(chk.getAttribute("data-row-number") || 0);
+      if (!Number.isFinite(rowNumber) || rowNumber < 2) return;
+      if (chk.checked) selectedDocsRowNumbers[String(rowNumber)] = true;
+      else delete selectedDocsRowNumbers[String(rowNumber)];
+      updateBulkDocsUi_();
+    }
+
+    function selectAllEligibleDocs_(){
+      selectedDocsRowNumbers = {};
+      (lastSearchRows || []).forEach(function(r){
+        var rowNumber = Number(r && r.rowNumber || 0);
+        if (!Number.isFinite(rowNumber) || rowNumber < 2) return;
+        if (r && r.eligibleDocsFollowUp) selectedDocsRowNumbers[String(rowNumber)] = true;
+      });
+      updateBulkDocsUi_();
+    }
+
+    function sendSelectedDocs_(){
+      var selectedRows = selectedDocsRows_();
+      if (!selectedRows.length) {
+        setMsg("docsBulkStatus", "No rows selected.");
+        return;
+      }
+      var byRow = {};
+      (lastSearchRows || []).forEach(function(r){
+        byRow[String(Number(r && r.rowNumber || 0))] = r || {};
+      });
+      var applicantIds = selectedRows.map(function(rowNum){
+        var row = byRow[String(rowNum)] || {};
+        return String(row.applicantId || "");
+      });
+      sendDocsFollowup_(selectedRows, "results-bulk", applicantIds);
     }
 
     function setRoleUi(){
@@ -1251,7 +1677,7 @@
           </div>
           <div>
             <label>Comment</label>
-            <textarea class="docComment" placeholder="Comment...">${esc(x.comment)}</textarea>
+            <textarea class="docComment" rows="2" placeholder="Comment...">${esc(x.comment)}</textarea>
           </div>
           <div>
             <div class="muted" style="font-size:12px;">Field map</div>
@@ -1700,16 +2126,43 @@
       document.addEventListener("DOMContentLoaded", function(){
         initVersionBadge_();
         initQueuePanelEvents_();
+        bindDocsFollowupControls_();
         loadReviewQueues();
       });
     } else {
       initVersionBadge_();
       initQueuePanelEvents_();
+      bindDocsFollowupControls_();
       loadReviewQueues();
     }
     setActionButtonsEnabled(false);
     var resultsBody = document.getElementById("tbody");
     if (resultsBody) resultsBody.addEventListener("click", onResultsClick_);
+    if (resultsBody) resultsBody.addEventListener("change", onResultsChange_);
+
+    function bindDocsFollowupControls_(){
+      var selectAllBtn = document.getElementById("btnSelectAllEligibleDocs");
+      var clearBtn = document.getElementById("btnClearDocsSelection");
+      var sendBtn = document.getElementById("btnSendDocsBulk");
+      var refreshBtn = document.getElementById("btnRefreshEligibility");
+      if (selectAllBtn && selectAllBtn.dataset.bound !== "1") {
+        selectAllBtn.dataset.bound = "1";
+        selectAllBtn.addEventListener("click", selectAllEligibleDocs_);
+      }
+      if (clearBtn && clearBtn.dataset.bound !== "1") {
+        clearBtn.dataset.bound = "1";
+        clearBtn.addEventListener("click", function(){ clearDocsSelection_(); });
+      }
+      if (sendBtn && sendBtn.dataset.bound !== "1") {
+        sendBtn.dataset.bound = "1";
+        sendBtn.addEventListener("click", sendSelectedDocs_);
+      }
+      if (refreshBtn && refreshBtn.dataset.bound !== "1") {
+        refreshBtn.dataset.bound = "1";
+        refreshBtn.addEventListener("click", function(){ search(); });
+      }
+      updateBulkDocsUi_();
+    }
   </script>
 </body>
 </html>
