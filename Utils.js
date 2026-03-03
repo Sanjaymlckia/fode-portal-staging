@@ -1242,15 +1242,106 @@ function parseCsvEmails_(s) {
     .join(",");
 }
 
-function buildDocsFollowupKey_(rowOrApplicantId) {
-  var mode = safeStr_((CONFIG && CONFIG.DATA_MODE) || "STAGING").toUpperCase() || "STAGING";
-  var applicantId = "";
-  if (rowOrApplicantId && typeof rowOrApplicantId === "object") {
-    applicantId = safeStr_(rowOrApplicantId.ApplicantID || rowOrApplicantId.applicantId || "");
+function buildDocsFollowupKey_(dataMode, applicantId) {
+  var mode = "";
+  var id = "";
+  if (arguments.length >= 2) {
+    mode = safeStr_(dataMode || "");
+    id = safeStr_(applicantId || "");
+  } else if (dataMode && typeof dataMode === "object") {
+    mode = safeStr_((CONFIG && CONFIG.DATA_MODE) || "STAGING");
+    id = safeStr_(dataMode.ApplicantID || dataMode.applicantId || "");
   } else {
-    applicantId = safeStr_(rowOrApplicantId || "");
+    mode = safeStr_((CONFIG && CONFIG.DATA_MODE) || "STAGING");
+    id = safeStr_(dataMode || "");
   }
-  return "DOCS_FOLLOWUP_SENT::" + mode + "::" + (applicantId || "UNKNOWN");
+  mode = mode.toUpperCase() || "STAGING";
+  return "DOCS_FOLLOWUP_SENT::" + mode + "::" + (id || "UNKNOWN");
+}
+
+function deleteDocsFollowupKey_(dataMode, applicantId) {
+  var key = buildDocsFollowupKey_(dataMode, applicantId);
+  try {
+    PropertiesService.getScriptProperties().deleteProperty(key);
+    return key;
+  } catch (_e) {
+    return key;
+  }
+}
+
+function buildPayverWorkflowKey_(dataMode, applicantId) {
+  var mode = safeStr_(dataMode || "").toUpperCase() || "STAGING";
+  var id = safeStr_(applicantId || "");
+  return "PAYVER_WORKFLOW_SENT::" + mode + "::" + (id || "UNKNOWN");
+}
+
+function handlePaymentVerifiedTrigger_(rowObj, debugId) {
+  var row = rowObj || {};
+  var applicantId = clean_(row["ApplicantID"] || "");
+  var dataMode = clean_(CONFIG.DATA_MODE || "STAGING") || "STAGING";
+  var props = PropertiesService.getScriptProperties();
+  var key = buildPayverWorkflowKey_(dataMode, applicantId);
+
+  if (!applicantId) {
+    logAdminEvent_("PAYVER_WORKFLOW_SKIPPED", { debugId: debugId, reason: "missing ApplicantID" });
+    return { success: false, warnings: ["Missing ApplicantID"], code: "MISSING_APPLICANTID" };
+  }
+
+  if (clean_(props.getProperty(key) || "")) {
+    logAdminEvent_("PAYVER_WORKFLOW_SKIPPED", { applicantId: applicantId, debugId: debugId, reason: "already sent" });
+    return { success: true, warnings: ["Workflow already processed"], code: "ALREADY_SENT" };
+  }
+
+  var warnings = [];
+  var parentEmail = "";
+
+  try {
+    parentEmail = getRowEmailForStudent_(row);
+    if (parentEmail) {
+      var body = "Payment has been verified for "
+        + clean_(row["First_Name"] || "") + " " + clean_(row["Last_Name"] || "")
+        + " (ApplicantID: " + applicantId + ").\n\n"
+        + "Next steps: Please stand by for enrolment/access instructions.";
+      MailApp.sendEmail(parentEmail, clean_(CONFIG.PAYVER_STUDENT_SUBJECT || "Payment Verified - FODE"), body, {
+        replyTo: clean_(CONFIG.EMAIL_REPLY_TO || ""),
+        name: clean_(CONFIG.EMAIL_FROM_NAME || "FODE Admissions")
+      });
+    } else {
+      warnings.push("No parent email");
+      logAdminEvent_("PAYVER_EMAIL_SKIPPED_NO_EMAIL", { applicantId: applicantId, debugId: debugId });
+    }
+
+    var adminBody = ""
+      + "Payment verified.\n"
+      + "Applicant: " + clean_(row["First_Name"] || "") + " " + clean_(row["Last_Name"] || "") + "\n"
+      + "ApplicantID: " + applicantId + "\n"
+      + "Phone: " + clean_(row["Parent_Phone"] || "") + "\n"
+      + "Email: " + (parentEmail || clean_(row["Parent_Email_Corrected"] || "") || clean_(row["Parent_Email"] || "") || "") + "\n\n"
+      + "Action: Release access / proceed to next steps.";
+    MailApp.sendEmail(clean_(CONFIG.EMAIL_RELEASE_ADMIN_TO || ""), clean_(CONFIG.PAYVER_ADMIN_SUBJECT || "Payment Verified - Release Access"), adminBody, {
+      replyTo: clean_(CONFIG.EMAIL_REPLY_TO || ""),
+      name: clean_(CONFIG.EMAIL_FROM_NAME || "FODE Admissions")
+    });
+
+    if (CONFIG.CRM_PUSH_DRY_RUN === true) {
+      var crmPayload = {
+        applicantId: applicantId,
+        name: (clean_(row["First_Name"] || "") + " " + clean_(row["Last_Name"] || "")).trim(),
+        email: parentEmail,
+        stage: "Payment Verified"
+      };
+      logAdminEvent_("CRM_PUSH_DRY_RUN", { applicantId: applicantId, payload: crmPayload, debugId: debugId });
+    }
+
+    props.setProperty(key, new Date().toISOString());
+    logAdminEvent_("PAYVER_WORKFLOW_SENT", { applicantId: applicantId, debugId: debugId });
+    return { success: true, warnings: warnings, code: "SENT" };
+  } catch (e) {
+    var errMsg = String(e && e.message ? e.message : e);
+    logAdminEvent_("PAYVER_WORKFLOW_FAILED", { applicantId: applicantId, debugId: debugId, error: errMsg });
+    warnings.push("Workflow failed: " + errMsg);
+    return { success: false, warnings: warnings, code: "FAILED" };
+  }
 }
 
 function pickParentEmail_(row) {
@@ -1273,11 +1364,11 @@ function adminSendEmail_(to, subject, body, opts) {
   var o = (opts && typeof opts === "object") ? opts : {};
   var provider = safeStr_(CONFIG.EMAIL_PROVIDER || "GMAILAPP").toUpperCase();
   var fromAddr = safeStr_(CONFIG.EMAIL_FROM_ADDRESS || "");
-  var replyTo = safeStr_(CONFIG.EMAIL_REPLY_TO || "");
+  var replyTo = safeStr_(o.replyTo || CONFIG.EMAIL_REPLY_TO || "");
   var cc = safeStr_(o.cc || "");
   var bcc = safeStr_(o.bcc || "");
   var htmlBody = safeStr_(o.htmlBody || "");
-  var fromName = safeStr_(CONFIG.EMAIL_FROM_NAME || o.name || "");
+  var fromName = safeStr_(o.name || CONFIG.EMAIL_FROM_NAME || "");
 
   if (!toEmail) {
     return { ok: false, error: "Missing recipient email", from: fromAddr, replyTo: replyTo, cc: cc };

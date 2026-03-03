@@ -7,15 +7,15 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-02-27-PNG-STAGING-r151",
-  CHANGELOG_LAST: "r151: webapp access ANYONE to permit @kundu.ac admin logins; strict allowlist enforced",
+  VERSION: "2026-03-01-PNG-STAGING-r160",
+  CHANGELOG_LAST: "r160: admin UI polish – removed redundant accordion; added payment badges (UI only)",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "STAGING", // "STAGING" | "PROD"
   SPREADSHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
   SHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
-  SHEET_ID_PROD: "REPLACE_WITH_PROD_SHEET_ID",
+  SHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
   SHEET_NAME_WORKING: "FODE_Data",
   SHEET_TAB_WORKING: "FODE_Data",
   // Backward-compatible aliases (legacy callers)
@@ -89,12 +89,17 @@ var CONFIG = {
   EMAIL_REPLY_TO: "fode@kundu.ac",
   EMAIL_STUDENT_SUBJECT_PAYMENT_VERIFIED: "FODE Application - Payment Verified | Next Steps & Bank Details",
   EMAIL_ADMIN_SUBJECT_PAYMENT_VERIFIED: "FODE - Payment Verified | Release Access for ApplicantID",
+  PAYVER_STUDENT_SUBJECT: "Payment Verified - FODE",
+  PAYVER_ADMIN_SUBJECT: "Payment Verified - Release Access",
+  CRM_PUSH_DRY_RUN: true,
   FODE_FEE_BASE_K: 600,
   FODE_FEE_PER_SUBJECT_K: 450,
   FODE_BANK_DETAILS_TEXT: "<paste canonical bank details block here>",
   FODE_NEXT_STEPS_TEXT: "<paste canonical next steps here>",
   DOCS_FOLLOWUP_ENABLE: true,
   DOCS_FOLLOWUP_EMAIL_SUBJECT: "FODE Application - Documents Verified | Quote, Payment Instructions & Next Steps",
+  DOCS_FOLLOWUP_REPLY_TO: "fode@kundu.ac",
+  DOCS_FOLLOWUP_CC: "fode_kia@kundu.ac",
   DOCS_FOLLOWUP_SENDER_MODE: "ALIAS",
   DOCS_FOLLOWUP_COOLDOWN_MS: 300000,
   ADMIN_THEME_BLUE_MODE: "IMPROVED_V2",
@@ -132,6 +137,7 @@ var CONFIG = {
   SUPER_ADMIN_EMAILS: [
     "sanjay@minervacenters.com"
   ],
+  SUPERADMIN_ALLOW_EMAIL_OVERRIDE_POST_DOCS_VERIFIED: true,
   ELEVATED_OVERRIDE_EMAILS: [
     // Super Admin may add delegate emails here
   ],

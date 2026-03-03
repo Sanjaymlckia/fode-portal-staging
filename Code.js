@@ -18,6 +18,10 @@ Sheet:
 ************************************************************/
 
 
+var PORTAL_SECRETS_SPREADSHEET_ID = "1HEJPtSov-iE5YTpSWWZ89YLIQAw4Eju9DDMG46HkTRc";
+var PORTAL_SECRETS_TAB = "PortalSecrets";
+var STUDENT_EXEC_BASE = "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN";
+
 /******************** ENTRYPOINT: POST ********************/
 function doPost(e) {
   var reqId = makeReqId_();
@@ -332,6 +336,21 @@ function renderPortalPageResponse_(e, opts) {
     return htmlOutput_(renderErrorHtml_(msg));
   }
 
+  var secretRes = getPortalSecretForApplicant_(id);
+  if (!secretRes || secretRes.ok !== true || clean_(secretRes.secret || "") !== secret) {
+    var secretMismatchDbg = newDebugId_();
+    var badCount = incrementInvalidPortalAttempt_(id);
+    if (badCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
+    safePortalLog_({
+      route: "doGet:portal",
+      applicantId: id,
+      email: reqMeta.ip || "",
+      status: "invalid_token",
+      message: "hash_mismatch attempts=" + badCount + " dbg=" + secretMismatchDbg + " | ua=" + (reqMeta.ua || "")
+    }, false);
+    return htmlOutput_(renderErrorHtml_("Invalid or expired link. Please request a new link."));
+  }
+
   var ss = getWorkingSpreadsheet_();
   var sheet = mustGetDataSheet_(ss);
   var rowNum = findRowByApplicantId_(sheet, id);
@@ -349,44 +368,6 @@ function renderPortalPageResponse_(e, opts) {
     return htmlOutput_(renderErrorHtml_(invalidPortalLinkMsg_("applicantNotFound", applicantNotFoundDbg)));
   }
   var rowObj = getRowObject_(sheet, rowNum);
-  if (!clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "")) {
-    safePortalLog_({
-      route: "doGet:portal",
-      applicantId: id,
-      email: reqMeta.ip || "",
-      status: "invalid_token",
-      message: "token_not_initialized | ua=" + (reqMeta.ua || "")
-    }, false);
-    return htmlOutput_(renderErrorHtml_("Link not initialized; contact admissions."));
-  }
-  var issuedAt = rowObj[SCHEMA.PORTAL_TOKEN_ISSUED_AT];
-  if (isPortalTokenExpired_(issuedAt, CONFIG.PORTAL_TOKEN_MAX_AGE_DAYS)) {
-    safePortalLog_({
-      route: "doGet:portal",
-      applicantId: id,
-      email: reqMeta.ip || "",
-      status: "invalid_token",
-      message: "expired | ua=" + (reqMeta.ua || "")
-    }, false);
-    return htmlOutput_(renderExpiredHtml_());
-  }
-
-  var currentHash = clean_(rowObj[SCHEMA.PORTAL_TOKEN_HASH] || "");
-  var inputHash = hashPortalSecret_(secret);
-  if (!currentHash || !inputHash || currentHash !== inputHash) {
-    var secretMismatchDbg = newDebugId_();
-    var badCount = incrementInvalidPortalAttempt_(id);
-    if (badCount > 10) return htmlOutput_(renderErrorHtml_("Too many invalid attempts. Please try again later."));
-    safePortalLog_({
-      route: "doGet:portal",
-      applicantId: id,
-      email: reqMeta.ip || "",
-      status: "invalid_token",
-      message: "hash_mismatch attempts=" + badCount + " dbg=" + secretMismatchDbg + " | ua=" + (reqMeta.ua || "")
-    }, false);
-    return htmlOutput_(renderErrorHtml_(invalidPortalLinkMsg_("secretMismatch", secretMismatchDbg)));
-  }
-
   var record = rowObj;
   if (String(record[SCHEMA.PORTAL_ACCESS_STATUS] || "").trim() === "Locked") {
     var lockedDbg = newDebugId_();
@@ -757,6 +738,10 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
   if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
 
   var updateKeys = Object.keys(updates);
+  var emailBefore = clean_(found.record.Parent_Email_Corrected || "");
+  var emailAfter = hasOwn_(updates, "Parent_Email_Corrected") ? clean_(updates.Parent_Email_Corrected) : emailBefore;
+  var emailChanged = hasOwn_(updates, "Parent_Email_Corrected")
+    && emailAfter.toLowerCase() !== emailBefore.toLowerCase();
   var patchSample = {};
   for (var ps = 0; ps < updateKeys.length && ps < 5; ps++) {
     var patchKey = updateKeys[ps];
@@ -788,6 +773,22 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
       error: String(e && e.message ? e.message : e)
     });
     return failResult(String(e && e.message ? e.message : e), "WRITE_FAILED");
+  }
+  if (emailChanged) {
+    var docsKey = buildDocsFollowupKey_(id);
+    try {
+      PropertiesService.getScriptProperties().deleteProperty(docsKey);
+    } catch (_propDelErr) {}
+    try {
+      log_(logSheet, "DOCS_FOLLOWUP_RESET_EMAIL_CHANGE", JSON.stringify({
+        applicantId: id,
+        rowNumber: rowIndex,
+        key: docsKey,
+        oldEmail: emailBefore,
+        newEmail: emailAfter,
+        debugId: safeDebugId
+      }));
+    } catch (_docsResetLogErr) {}
   }
   try {
     if (Object.prototype.hasOwnProperty.call(updates, "Fee_Receipt_File")) {
@@ -1832,6 +1833,12 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     var cmBlock = cm ? ("<div style='margin-top:6px;'><b>Admin comment:</b> " + esc_(cm) + "</div>") : "";
 
     var urlList = normalizeToUrlList_(cur);
+    Logger.log("PORTAL_DOC_LINK " + JSON.stringify({
+      applicantId: clean_(id || ""),
+      field: clean_(d.field || ""),
+      hasValidUrl: urlList.length > 0,
+      urlCount: urlList.length
+    }));
     var curLinks = "";
     if (urlList.length) {
       var linksHtml = [];
@@ -1839,11 +1846,11 @@ function renderDocsSection_(id, secret, record, docs, locked) {
         var delBtn = (!locked)
           ? " <button type='button' onclick=\"deleteDocUrl('" + esc_(d.field) + "','" + esc_(encodeURIComponent(urlList[u])) + "')\">Delete</button>"
           : "";
-        linksHtml.push("<span><a target='_blank' href='" + esc_(urlList[u]) + "'>Open " + String(u + 1) + "</a>" + delBtn + "</span>");
+        linksHtml.push("<span><a href='" + esc_(urlList[u]) + "' target='_blank' rel='noopener noreferrer'>Open " + String(u + 1) + "</a>" + delBtn + "</span>");
       }
       curLinks = "<div style='margin-top:6px;'><b>Current files:</b> " + linksHtml.join("<br/>") + "</div>";
     } else {
-      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> None uploaded</div>";
+      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> Not uploaded</div>";
     }
     var multipleAttr = d.multiple ? " multiple" : "";
     var multiBadge = d.multiple ? "<div class='muted' style='font-size:12px;margin-top:4px;'>Upload one file at a time (multi-file upload temporarily disabled).</div>" : "";
@@ -1991,9 +1998,9 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     + "function renderCurrentUrls(fieldName, urls){"
     + "  var box=document.getElementById('cur_'+fieldName);"
     + "  if(!box) return;"
-    + "  if(!urls || !urls.length){ box.innerHTML='<b>Current files:</b> None uploaded'; return; }"
+    + "  if(!urls || !urls.length){ box.innerHTML='<b>Current files:</b> Not uploaded'; return; }"
     + "  var parts=urls.map(function(u,i){"
-    + "    var line='<a target=\"_blank\" href=\"'+escHtml(u)+'\">Open '+(i+1)+'</a>';"
+    + "    var line='<a href=\"'+escHtml(u)+'\" target=\"_blank\" rel=\"noopener noreferrer\">Open '+(i+1)+'</a>';"
     + "    if(!PORTAL_LOCKED){ line += ' <button type=\"button\" onclick=\"deleteDocUrl(\\''+fieldName+'\\',\\''+encodeURIComponent(u)+'\\')\">Delete</button>'; }"
     + "    return line;"
     + "  });"
@@ -2924,14 +2931,100 @@ function htmlOutput_(html) {
 }
 
 /******************** LOOKUP ********************/
+function resolvePortalSecretColumnIndex_(idx) {
+  var map = idx || {};
+  if (map.Secret) return map.Secret;
+  if (map.Secret_Hash) return map.Secret_Hash;
+  return 0;
+}
+
+function getPortalSecretForApplicant_(applicantId) {
+  var debugId = newDebugId_();
+  var idNorm = clean_(applicantId || "");
+  if (!idNorm) return { ok: false, code: "NO_SECRET", debugId: debugId };
+  try {
+    var ss = SpreadsheetApp.openById(PORTAL_SECRETS_SPREADSHEET_ID);
+    var sh = ss.getSheetByName(PORTAL_SECRETS_TAB);
+    if (!sh) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    var lastCol = sh.getLastColumn();
+    var lastRow = sh.getLastRow();
+    if (lastCol < 1 || lastRow < 2) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idx = {};
+    for (var i = 0; i < headers.length; i++) {
+      var h = clean_(headers[i]);
+      if (h) idx[h] = i + 1;
+    }
+    var secretCol = resolvePortalSecretColumnIndex_(idx);
+    if (!idx.ApplicantID) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    if (!secretCol) return { ok: false, code: "SECRET_COLUMN_MISSING", debugId: debugId };
+    var data = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    var idLower = idNorm.toLowerCase();
+    for (var r = 0; r < data.length; r++) {
+      var rowId = clean_(data[r][idx.ApplicantID - 1]);
+      if (rowId && rowId.toLowerCase() === idLower) {
+        var secret = clean_(data[r][secretCol - 1]);
+        if (!secret) return { ok: false, code: "NO_SECRET", debugId: debugId };
+        return { ok: true, secret: secret };
+      }
+    }
+    return { ok: false, code: "NO_SECRET", debugId: debugId };
+  } catch (_e) {
+    return { ok: false, code: "NO_SECRET", debugId: debugId };
+  }
+}
+
+function setPortalSecretForApplicant_(applicantId, newSecret) {
+  var debugId = newDebugId_();
+  var idNorm = clean_(applicantId || "");
+  var secretNorm = clean_(newSecret || "");
+  if (!idNorm || !secretNorm) return { ok: false, code: "NO_SECRET", debugId: debugId };
+  try {
+    var ss = SpreadsheetApp.openById(PORTAL_SECRETS_SPREADSHEET_ID);
+    var sh = ss.getSheetByName(PORTAL_SECRETS_TAB);
+    if (!sh) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    var lastCol = sh.getLastColumn();
+    var lastRow = sh.getLastRow();
+    if (lastCol < 1 || lastRow < 2) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    var idx = {};
+    for (var i = 0; i < headers.length; i++) {
+      var h = clean_(headers[i]);
+      if (h) idx[h] = i + 1;
+    }
+    var secretCol = resolvePortalSecretColumnIndex_(idx);
+    if (!idx.ApplicantID) return { ok: false, code: "NO_SECRET", debugId: debugId };
+    if (!secretCol) return { ok: false, code: "SECRET_COLUMN_MISSING", debugId: debugId };
+    var data = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    var idLower = idNorm.toLowerCase();
+    for (var r = 0; r < data.length; r++) {
+      var rowId = clean_(data[r][idx.ApplicantID - 1]);
+      if (rowId && rowId.toLowerCase() === idLower) {
+        sh.getRange(r + 2, secretCol).setValue(secretNorm);
+        return { ok: true };
+      }
+    }
+    return { ok: false, code: "NO_SECRET", debugId: debugId };
+  } catch (_e) {
+    return { ok: false, code: "NO_SECRET", debugId: debugId };
+  }
+}
+
+function buildStudentPortalUrl_(applicantId, secret) {
+  return STUDENT_EXEC_BASE
+    + "/exec?view=portal&id="
+    + encodeURIComponent(clean_(applicantId || ""))
+    + "&s="
+    + encodeURIComponent(clean_(secret || ""));
+}
+
 function findPortalRowByIdSecret_(sheet, applicantId, secret) {
   var rowNum = findRowByApplicantId_(sheet, applicantId);
   if (!rowNum) return null;
+  var secretRes = getPortalSecretForApplicant_(applicantId);
+  if (!secretRes || secretRes.ok !== true) return null;
+  if (clean_(secretRes.secret || "") !== clean_(secret || "")) return null;
   var record = getRowObject_(sheet, rowNum);
-  var currentHash = clean_(record[SCHEMA.PORTAL_TOKEN_HASH] || "");
-  if (!currentHash) return null;
-  var inputHash = hashPortalSecret_(clean_(secret || ""));
-  if (!inputHash || currentHash !== inputHash) return null;
   return { rowNum: rowNum, record: record };
 }
 

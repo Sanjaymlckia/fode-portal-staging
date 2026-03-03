@@ -270,7 +270,7 @@ function admin_getApplicantDetail(payload) {
     var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     var idx = headerIndex_(headers);
     requireHeaders_(idx, [
-      "ApplicantID", "First_Name", "Last_Name", "Parent_Email_Corrected",
+      "ApplicantID", "First_Name", "Last_Name", "Parent_Email", "Parent_Email_Corrected",
       "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
       "PortalTokenIssuedAt",
       "Birth_ID_Passport_File", "Latest_School_Report_File", "Transfer_Certificate_File", "Passport_Photo_File", "Fee_Receipt_File",
@@ -306,6 +306,7 @@ function admin_getApplicantDetail(payload) {
       ApplicantID: rowApplicantId,
       First_Name: clean_(row[idx.First_Name - 1]),
       Last_Name: clean_(row[idx.Last_Name - 1]),
+      Parent_Email: clean_(row[idx.Parent_Email - 1]),
       Parent_Email_Corrected: clean_(row[idx.Parent_Email_Corrected - 1]),
       Birth_ID_Status: idx.Birth_ID_Status ? clean_(row[idx.Birth_ID_Status - 1]) : "",
       Birth_Status: idx.Birth_Status ? clean_(row[idx.Birth_Status - 1]) : "",
@@ -340,6 +341,7 @@ function admin_getApplicantDetail(payload) {
       };
     });
 
+    detailObj.Effective_Email = clean_(detailObj.Parent_Email_Corrected || detailObj.Parent_Email || "");
     detailObj.Parent_Email_Corrected = String(detailObj.Parent_Email_Corrected || "");
     var docStageComputed = computeDocVerificationStatus_(detailObj);
     var paymentBadge = derivePaymentBadge_(detailObj);
@@ -424,11 +426,60 @@ function admin_getApplicantDetail_json(payload) {
  * Alias maintained for UI: "Generate Portal Link"
  */
 function admin_generatePortalLink(payload) {
-  return admin_resetPortalLink(payload);
+  return admin_getPortalLink(payload);
 }
 
 function admin_resetPortalSecret(payload) {
   return admin_resetPortalLink(payload);
+}
+
+function admin_getPortalLink(payload) {
+  payload = payload || {};
+  var debugId = clean_(payload.debugId || "") || adminDebugId_();
+  var applicantIdForLog = clean_(payload.applicantId || payload.id || "");
+  var callerEmail = "";
+  try { callerEmail = String(Session.getActiveUser().getEmail() || ""); } catch (_callerErr) {}
+  Logger.log("PORTAL_LINK_START " + JSON.stringify({
+    debugId: debugId,
+    applicantId: applicantIdForLog,
+    caller: callerEmail
+  }));
+  try {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    var rowNumber = Number(payload.rowNumber || 0);
+    if (!rowNumber || rowNumber < 2) return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+
+    var sh = openDataSheet_();
+    ensureHeadersExist_(sh, ["ApplicantID"]);
+    var rowObj = getRowObject_(sh, rowNumber);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+
+    var secretRes = getPortalSecretForApplicant_(applicantId);
+    if (!secretRes || secretRes.ok !== true) return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    var portalUrl = buildStudentPortalUrl_(applicantId, secretRes.secret);
+    logAdminEvent_("PORTAL_URL_GENERATED", {
+      operatorEmail: adminEmail || "",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      debugId: debugId
+    });
+    return {
+      ok: true,
+      link: portalUrl,
+      portalUrl: portalUrl,
+      applicantId: applicantId,
+      debugId: debugId
+    };
+  } catch (e) {
+    Logger.log("PORTAL_LINK_THROW " + JSON.stringify({
+      debugId: debugId,
+      message: String(e),
+      stack: String((e && e.stack) || "")
+    }));
+    return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+  }
 }
 
 /**
@@ -440,70 +491,59 @@ function admin_resetPortalSecret(payload) {
  * - Updates Doc_Last_Verified_At / By
  */
 function admin_resetPortalLink(payload) {
-  var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
-  requireSuperAdmin_(adminEmail);
-
   payload = payload || {};
-  var rowNumber = Number(payload.rowNumber || 0);
-  if (!rowNumber || rowNumber < 2) throw new Error("Invalid rowNumber");
-  if (!isStudentUrlConfigured_()) throw new Error(getStudentUrlWarning_());
+  var debugId = clean_(payload.debugId || "") || adminDebugId_();
+  var applicantIdForLog = clean_(payload.applicantId || payload.id || "");
+  var callerEmail = "";
+  try { callerEmail = String(Session.getActiveUser().getEmail() || ""); } catch (_callerErr) {}
+  Logger.log("PORTAL_RESET_START " + JSON.stringify({
+    debugId: debugId,
+    applicantId: applicantIdForLog,
+    caller: callerEmail
+  }));
+  try {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) return { ok: false, code: "PORTAL_RESET_ERROR", debugId: debugId, message: "Link generation failed" };
+    var rowNumber = Number(payload.rowNumber || 0);
+    if (!rowNumber || rowNumber < 2) return { ok: false, code: "PORTAL_RESET_ERROR", debugId: debugId, message: "Link generation failed" };
 
-  var sh = openDataSheet_();
-  ensureHeadersExist_(sh, ["PortalTokenHash", "PortalTokenIssuedAt", "Portal_Access_Status"]);
-  var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
+    var sh = openDataSheet_();
+    ensureHeadersExist_(sh, ["ApplicantID"]);
+    var rowObj = getRowObject_(sh, rowNumber);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) return { ok: false, code: "PORTAL_RESET_ERROR", debugId: debugId, message: "Link generation failed" };
 
-  // Require hashed-token columns (NOT PortalSecret)
-  requireHeaders_(idx, [
-    "ApplicantID",
-    "PortalTokenHash",
-    "PortalTokenIssuedAt",
-    "Doc_Last_Verified_At",
-    "Doc_Last_Verified_By"
-  ]);
+    var newSecret = Utilities.getUuid();
+    var setRes = setPortalSecretForApplicant_(applicantId, newSecret);
+    if (!setRes || setRes.ok !== true) return { ok: false, code: "PORTAL_RESET_ERROR", debugId: debugId, message: "Link generation failed" };
 
-  var applicantId = clean_(sh.getRange(rowNumber, idx["ApplicantID"]).getValue());
-  if (!applicantId) throw new Error("ApplicantID missing");
-  var rowObj = getRowObject_(sh, rowNumber);
-  var parentEmail = clean_(rowObj[SCHEMA.PARENT_EMAIL] || "");
-  var parentEmailCorrected = clean_(rowObj[SCHEMA.PARENT_EMAIL_CORRECTED] || "");
-  var fullName = (clean_(rowObj.First_Name) + " " + clean_(rowObj.Last_Name)).trim();
-  var emailForSecret = parentEmailCorrected || parentEmail;
-
-  // Generate new secret and store hash + issue time
-  var secret = newPortalSecret_();
-  var secretHash = hashPortalSecret_(secret);
-  var issuedAt = new Date();
-  var patch = {};
-  patch["PortalTokenHash"] = secretHash;
-  patch["PortalTokenIssuedAt"] = issuedAt;
-  patch["Doc_Last_Verified_At"] = new Date();
-  patch["Doc_Last_Verified_By"] = adminEmail || "admin";
-  applyPatch_(sh, rowNumber, patch);
-  syncPortalSecretsActive_(applicantId, emailForSecret, fullName, secret, secretHash);
-
-  var refreshedRow = getRowObject_(sh, rowNumber);
-  var issuedAtRef = refreshedRow.PortalTokenIssuedAt ? new Date(refreshedRow.PortalTokenIssuedAt) : issuedAt;
-  var tokenAgeDays = 0;
-  if (issuedAtRef && !isNaN(issuedAtRef.getTime())) {
-    tokenAgeDays = Math.floor((new Date().getTime() - issuedAtRef.getTime()) / (24 * 60 * 60 * 1000));
+    var portalUrl = buildStudentPortalUrl_(applicantId, newSecret);
+    logAdminEvent_("PORTAL_URL_RESET", {
+      operatorEmail: adminEmail || "",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      debugId: debugId
+    });
+    logAdminEvent_("PORTAL_URL_GENERATED", {
+      operatorEmail: adminEmail || "",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      debugId: debugId
+    });
+    return {
+      ok: true,
+      link: portalUrl,
+      portalUrl: portalUrl,
+      debugId: debugId
+    };
+  } catch (e) {
+    Logger.log("PORTAL_RESET_THROW " + JSON.stringify({
+      debugId: debugId,
+      message: String(e),
+      stack: String((e && e.stack) || "")
+    }));
+    return { ok: false, code: "PORTAL_RESET_ERROR", debugId: debugId, message: "Link generation failed" };
   }
-  var link = buildPortalLink_(applicantId, secret);
-  log_(openLogSheet_(), "ADMIN_PORTAL_LINK_RESET",
-    "row=" + rowNumber + " applicantId=" + applicantId + " by=" + (adminEmail || "admin"));
-
-  return {
-    ok: true,
-    link: link,
-    portalUrl: link,
-    newPortalUrl: link,
-    newSecret: secret,
-    applicantId: applicantId,
-    issuedAt: issuedAtRef && !isNaN(issuedAtRef.getTime()) ? issuedAtRef.toISOString() : issuedAt.toISOString(),
-    secretIssuedAt: issuedAtRef && !isNaN(issuedAtRef.getTime()) ? issuedAtRef.toISOString() : issuedAt.toISOString(),
-    tokenAgeDays: tokenAgeDays,
-    warning: ""
-  };
 
 }
 
@@ -660,6 +700,17 @@ function admin_updateDocStatuses_impl_(payload, dbgId) {
   setCell_(sh, rowNumber, idx, "Doc_Last_Verified_By", adminEmail || "admin");
   var finalRowObj = getRowObject_(sh, rowNumber);
   var actions = runVerificationAutomations_(sh, rowNumber, idx, priorRowObj, finalRowObj, dbgId);
+  var beforeVerified = (clean_(priorRowObj["Payment_Verified"]) === "Yes");
+  var afterVerified = (clean_(finalRowObj["Payment_Verified"]) === "Yes");
+  var transition = (!beforeVerified && afterVerified);
+  var workflowWarnings = [];
+  if (transition && CONFIG.EMAIL_ENABLE_PAYMENT_VERIFIED_TRIGGERS === true) {
+    var wf = handlePaymentVerifiedTrigger_(finalRowObj, dbgId);
+    actions.payverWorkflow = safeStr_(wf && wf.code || "");
+    if (wf && Array.isArray(wf.warnings) && wf.warnings.length) {
+      workflowWarnings = workflowWarnings.concat(wf.warnings);
+    }
+  }
 
   log_(openLogSheet_(), "ADMIN_DOC_UPDATE", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " docStage=" + docStage + " payment=" + paymentBadge + " overall=" + overallComputed);
   log_(openLogSheet_(), "DOC_STATUS_SAVE", JSON.stringify({
@@ -680,7 +731,7 @@ function admin_updateDocStatuses_impl_(payload, dbgId) {
     overallStatus: overallComputed,
     actions: actions,
     emailTriggered: !!(actions && actions.emailTriggered),
-    warnings: (actions && Array.isArray(actions.warnings)) ? actions.warnings : [],
+    warnings: ((actions && Array.isArray(actions.warnings)) ? actions.warnings : []).concat(workflowWarnings),
     dbg: dbgId
   }, dbgId);
   } catch (e) {
@@ -856,8 +907,6 @@ function admin_setPaymentVerified_impl_(payload, dbgId) {
       debugId: dbgId
     });
   }
-  var wasPaymentVerified = derivePaymentBadge_(beforeRow) === "Verified";
-
   // Legacy endpoint is mapped to receipt verification only.
   setCell_(sh, rowNumber, idx, "Receipt_Status", "Verified");
   if (idx.Receipt_Comment && note) setCell_(sh, rowNumber, idx, "Receipt_Comment", note);
@@ -875,10 +924,17 @@ function admin_setPaymentVerified_impl_(payload, dbgId) {
   var finalRowObj = getRowObject_(sh, rowNumber);
   var actions = runVerificationAutomations_(sh, rowNumber, idx, priorRowObj, finalRowObj, dbgId);
 
-  var transitionToYes = !wasPaymentVerified && paymentVerified;
-  var crm = { attempted: false, ok: true, debugId: "" };
-  if (transitionToYes) {
-    crm = crm_syncOnPaymentVerified_(rowNumber, sh, idx);
+  var beforeVerified = (clean_(priorRowObj["Payment_Verified"]) === "Yes");
+  var afterVerified = (clean_(finalRowObj["Payment_Verified"]) === "Yes");
+  var transitionToYes = (!beforeVerified && afterVerified);
+  var workflowWarnings = [];
+  var crm = { attempted: false, ok: true, debugId: "", dryRun: CONFIG.CRM_PUSH_DRY_RUN === true };
+  if (transitionToYes && CONFIG.EMAIL_ENABLE_PAYMENT_VERIFIED_TRIGGERS === true) {
+    var wf = handlePaymentVerifiedTrigger_(finalRowObj, dbgId);
+    actions.payverWorkflow = safeStr_(wf && wf.code || "");
+    if (wf && Array.isArray(wf.warnings) && wf.warnings.length) {
+      workflowWarnings = workflowWarnings.concat(wf.warnings);
+    }
   }
 
   log_(openLogSheet_(), "ADMIN_PAYMENT_VERIFIED", "row=" + rowNumber + " by=" + (adminEmail || "admin") + " via=Receipt_Status transitionToYes=" + (transitionToYes ? "1" : "0"));
@@ -893,7 +949,7 @@ function admin_setPaymentVerified_impl_(payload, dbgId) {
     overallStatus: computedOverall,
     actions: actions,
     emailTriggered: !!(actions && actions.emailTriggered),
-    warnings: (actions && Array.isArray(actions.warnings)) ? actions.warnings : [],
+    warnings: ((actions && Array.isArray(actions.warnings)) ? actions.warnings : []).concat(workflowWarnings),
     dbg: dbgId,
     crm: crm
   }, dbgId);
@@ -1133,7 +1189,8 @@ function triggerInvoiceWebhook_(rowObj, debugId) {
 
 function getDocsFollowupSentAt_(rowObj) {
   var row = rowObj || {};
-  var key = buildDocsFollowupKey_(row);
+  var applicantId = clean_(row.ApplicantID || row.applicantId || "");
+  var key = buildDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
   try {
     return safeStr_(PropertiesService.getScriptProperties().getProperty(key) || "");
   } catch (_e) {
@@ -1146,12 +1203,13 @@ function computeEligibleDocsFollowUp_(rowObj, sentAtOpt) {
   var row = rowObj || {};
   var docsVerified = isYes_(row.Docs_Verified) || computeDocVerificationStatus_(row) === "Verified";
   if (!docsVerified) return false;
+  if (!getRowEmailForStudent_(row)) return false;
   var sentAt = safeStr_(sentAtOpt || getDocsFollowupSentAt_(row));
   if (sentAt) return false;
   return true;
 }
 
-function composeDocsFollowupBody_(rowObj) {
+function composeDocsFollowupBody_(rowObj, portalUrl) {
   var row = rowObj || {};
   var applicantId = safeStr_(row.ApplicantID || "");
   var studentName = rowStudentName_(row) || "Student";
@@ -1159,10 +1217,7 @@ function composeDocsFollowupBody_(rowObj) {
   var baseK = Number(CONFIG.FODE_FEE_BASE_K || 600);
   var perSubjectK = Number(CONFIG.FODE_FEE_PER_SUBJECT_K || 450);
   var totalK = baseK + (subjectCount * perSubjectK);
-  var bankText = safeStr_(CONFIG.FODE_BANK_DETAILS_TEXT || "");
-  if (!bankText) bankText = "Bank details: (to be provided by admin)";
-  var nextStepsText = safeStr_(CONFIG.FODE_NEXT_STEPS_TEXT || "");
-  if (!nextStepsText) nextStepsText = "Next steps: Complete payment and upload receipt in the student portal.";
+  var url = safeStr_(portalUrl || "");
   return [
     "Dear Parent/Guardian,",
     "",
@@ -1179,11 +1234,23 @@ function composeDocsFollowupBody_(rowObj) {
     "- Subject count: " + String(subjectCount),
     "- Estimated total: K" + String(totalK),
     "",
-    bankText,
+    "Student Portal Link:",
+    url,
     "",
-    nextStepsText,
+    "Bank Details:",
+    "Kundu International Academy",
+    "Account Number: 7027138796",
+    "BSP BANK, BSP Haus, Konedobu, Port Moresby",
+    "BSB No: 088950",
     "",
-    "For support, contact: " + safeStr_(CONFIG.EMAIL_REPLY_TO || "fode@kundu.ac"),
+    "Next steps:",
+    "1. Pay the total fee shown in your quote by bank deposit/transfer.",
+    "2. In the payment reference, write: Applicant ID + Student Name.",
+    "3. After payment, reopen your student portal link above and upload your payment receipt.",
+    "4. Once receipt is verified, we will confirm enrolment and release program access.",
+    "5. Keep this email and your portal link safe for re-uploads/updates.",
+    "",
+    "Support: fode@kundu.ac",
     "",
     "Regards,",
     "FODE Admissions"
@@ -1259,10 +1326,26 @@ function admin_sendDocsFollowupEmails(payload) {
         continue;
       }
 
+      var secretRes = getPortalSecretForApplicant_(applicantId);
+      if (!secretRes || secretRes.ok !== true) {
+        logAdminEvent_("DOCS_FOLLOWUP_CLICK", {
+          operator: baseAudit.operator,
+          applicantId: applicantId,
+          rowNumber: rowNumber,
+          outcome: "PORTAL_LINK_ERROR",
+          debugId: dbgId
+        });
+        results.push({ ok: false, code: "PORTAL_LINK_ERROR", message: "Portal link error.", applicantId: applicantId, ApplicantID: applicantId, rowNumber: rowNumber });
+        failedCount++;
+        continue;
+      }
+      var portalUrl = buildStudentPortalUrl_(applicantId, secretRes.secret);
       var subject = safeStr_(CONFIG.DOCS_FOLLOWUP_EMAIL_SUBJECT || "FODE Application - Documents Verified | Quote, Payment Instructions & Next Steps");
-      var body = composeDocsFollowupBody_(rowObj);
+      var body = composeDocsFollowupBody_(rowObj, portalUrl);
       var sendOpts = {
-        cc: safeStr_(CONFIG.EMAIL_ADMIN_ALERTS_TO || ""),
+        cc: safeStr_(CONFIG.DOCS_FOLLOWUP_CC || ""),
+        replyTo: safeStr_(CONFIG.DOCS_FOLLOWUP_REPLY_TO || CONFIG.EMAIL_REPLY_TO || ""),
+        name: safeStr_(CONFIG.EMAIL_FROM_NAME || "FODE Admissions"),
         senderMode: safeStr_(CONFIG.DOCS_FOLLOWUP_SENDER_MODE || CONFIG.EMAIL_SENDER_MODE || "DEFAULT")
       };
       var sent = adminSendEmail_(to, subject, body, sendOpts);
@@ -1280,7 +1363,7 @@ function admin_sendDocsFollowupEmails(payload) {
         continue;
       }
 
-      var key = buildDocsFollowupKey_(rowObj);
+      var key = buildDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
       var ts = nowIso_();
       PropertiesService.getScriptProperties().setProperty(key, ts);
       logAdminEvent_("DOCS_FOLLOWUP_CLICK", {
@@ -1295,7 +1378,9 @@ function admin_sendDocsFollowupEmails(payload) {
         applicantId: applicantId,
         rowNumber: rowNumber,
         to: to,
-        cc: safeStr_(CONFIG.EMAIL_ADMIN_ALERTS_TO || ""),
+        portalUrl: portalUrl,
+        cc: safeStr_(CONFIG.DOCS_FOLLOWUP_CC || ""),
+        replyTo: safeStr_(CONFIG.DOCS_FOLLOWUP_REPLY_TO || CONFIG.EMAIL_REPLY_TO || ""),
         sentKey: key,
         sentAt: ts,
         debugId: dbgId
@@ -1307,6 +1392,73 @@ function admin_sendDocsFollowupEmails(payload) {
     return ok_({
       summary: { sentCount: sentCount, failedCount: failedCount },
       results: results,
+      dbg: dbgId
+    }, dbgId);
+  });
+}
+
+function admin_updateParentEmailCorrected(payload) {
+  return withEnvelope_("admin_updateParentEmailCorrected", function (dbgId) {
+    var operatorEmail = getActiveUserEmail_();
+    if (!isAdmin_(operatorEmail)) return err_("ACCESS_DENIED", "Access denied", dbgId);
+    requireSuperAdmin_(operatorEmail);
+    if (!(CONFIG && CONFIG.SUPERADMIN_ALLOW_EMAIL_OVERRIDE_POST_DOCS_VERIFIED === true)) {
+      return err_("FEATURE_DISABLED", "Email override is disabled by config.", dbgId);
+    }
+
+    payload = payload || {};
+    var rowNumber = Number(payload.rowNumber || 0);
+    var applicantIdInput = clean_(payload.applicantId || "");
+    var newEmail = clean_(payload.newEmail || "").toLowerCase();
+    var reason = clean_(payload.reason || "");
+    if (!rowNumber || rowNumber < 2) return err_("VALIDATION", "rowNumber is required.", dbgId);
+    if (!applicantIdInput) return err_("VALIDATION", "applicantId is required.", dbgId);
+    if (!newEmail) return err_("VALIDATION", "newEmail is required.", dbgId);
+    if (!reason) return err_("VALIDATION", "reason is required.", dbgId);
+    var emailOk = false;
+    if (typeof isValidEmail_ === "function") emailOk = !!isValidEmail_(newEmail);
+    else emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail);
+    if (!emailOk) return err_("VALIDATION", "Invalid email format.", dbgId);
+
+    var sh = openDataSheet_();
+    var idx = headerIndex_(sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]);
+    requireHeaders_(idx, ["ApplicantID", "Parent_Email", "Parent_Email_Corrected", "Docs_Verified", "Payment_Verified"]);
+    var rowObj = getRowObject_(sh, rowNumber);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) return err_("ROW_NOT_FOUND", "Applicant row not found.", dbgId);
+    if (applicantId !== applicantIdInput) {
+      return err_("VALIDATION", "ApplicantID mismatch for row.", dbgId);
+    }
+
+    var beforeEmail = clean_(rowObj.Parent_Email_Corrected || rowObj.Parent_Email || "");
+    var beforeDocsVerified = clean_(rowObj.Docs_Verified || "");
+    var beforePaymentVerified = clean_(rowObj.Payment_Verified || "");
+    applyPatch_(sh, rowNumber, { Parent_Email_Corrected: newEmail });
+
+    var deletedKey = deleteDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
+    logAdminEvent_("EMAIL_OVERRIDE_SUPERADMIN", {
+      operatorEmail: operatorEmail || "",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      beforeEmail: beforeEmail,
+      afterEmail: newEmail,
+      beforeDocsVerified: beforeDocsVerified,
+      beforePaymentVerified: beforePaymentVerified,
+      reason: reason,
+      debugId: dbgId
+    });
+    logAdminEvent_("DOCS_FOLLOWUP_RESET_EMAIL_OVERRIDE", {
+      operatorEmail: operatorEmail || "",
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      key: deletedKey,
+      debugId: dbgId
+    });
+
+    return ok_({
+      applicantId: applicantId,
+      newEmail: newEmail,
+      docsFollowupReset: true,
       dbg: dbgId
     }, dbgId);
   });
@@ -1511,15 +1663,8 @@ function runVerificationAutomations_(sh, rowNumber, idx, beforeRowObj, afterRowO
     var payBefore = isYes_(beforeRow.Payment_Verified) || isPaymentVerifiedDerived_(beforeRow) === true;
     var payAfter = isYes_(afterRow.Payment_Verified) || isPaymentVerifiedDerived_(afterRow) === true;
     if (!payBefore && payAfter) {
-      var payEmailRes = handlePaymentVerifiedEmailTriggers_(afterRow, debugId);
-      actions.paymentVerifiedEmails = safeStr_(payEmailRes && payEmailRes.status) || "failed";
-      if (payEmailRes && Array.isArray(payEmailRes.warnings) && payEmailRes.warnings.length) {
-        actions.warnings = actions.warnings.concat(payEmailRes.warnings);
-      }
-      if (payEmailRes && payEmailRes.ok === false) {
-        actions.paymentVerifiedEmailsCode = safeStr_(payEmailRes.code || "EMAIL_SEND_FAILED");
-        actions.paymentVerifiedEmailsMessage = safeStr_(payEmailRes.message || "Payment verified email trigger failed");
-      }
+      // Payment verified email workflow is triggered explicitly in save handlers.
+      actions.paymentVerifiedEmails = "handled_in_save_handler";
       var invRes = handleInvoiceTrigger_(sh, rowNumber, idx, afterRow, debugId);
       actions.invoice = safeStr_(invRes && invRes.status) || "failed";
       if (invRes && invRes.code) actions.invoiceCode = safeStr_(invRes.code);
@@ -1693,133 +1838,221 @@ function hasMandatoryDocIssue_(rowObj, idx) {
   return false;
 }
 
-function admin_getReviewQueues() {
-  var adminEmail = getActiveUserEmail_();
-  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+function getDashboardCacheKey_(adminEmail) {
+  return "ADMIN_DASHBOARD::" + clean_(adminEmail || "").toLowerCase();
+}
 
-  var sheet = openDataSheet_();
-  var data = sheet.getDataRange().getValues();
-  if (!data || data.length < 2) {
-    return {
-      ok: true,
-      payments: [],
-      docs: [],
-      postPaymentIssues: [],
-      counts: { payments: 0, docs: 0, postPaymentIssues: 0 }
-    };
-  }
+function sliceQueueByOffset_(rows, offset, limit) {
+  var list = Array.isArray(rows) ? rows : [];
+  var from = Math.max(0, Number(offset || 0));
+  var size = Math.max(1, Number(limit || 20));
+  return list.slice(from, from + size);
+}
 
-  var headers = data[0];
-  var idx = headerIndex_(headers);
-  var payments = [];
-  var docs = [];
-  var anomalies = [];
-  var paidApproved = [];
-  var postPaymentIssues = [];
-  function pushQueueItem_(target, item) {
-    var rowNum = Number(item && item.rowNumber || 0);
-    if (!Number.isFinite(rowNum) || rowNum < 2) {
-      var dbg = newDebugId_();
-      Logger.log("QUEUE_ITEM_MISSING_ROWNUMBER " + JSON.stringify({
-        applicantId: clean_(item && item.applicantId || ""),
-        debugId: dbg
-      }));
-      return;
+function mergeQueuePageMeta_(queues, offset, limit) {
+  var names = ["docs", "payments", "anomalies", "paidApproved", "postPaymentIssues"];
+  var hasMore = false;
+  var nextOffset = "";
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var total = Number((queues && queues.counts && queues.counts[name]) || 0);
+    if (offset + limit < total) {
+      hasMore = true;
+      nextOffset = offset + limit;
+      break;
     }
-    target.push(item);
-  }
-
-  for (var r = 1; r < data.length; r++) {
-    var row = data[r] || [];
-    var rowObj = {};
-    for (var c = 0; c < headers.length; c++) {
-      var h = clean_(headers[c]);
-      if (!h) continue;
-      rowObj[h] = row[c];
-    }
-
-    var applicantId = clean_(rowObj.ApplicantID || "");
-    if (!applicantId) continue;
-    var firstName = clean_(rowObj.First_Name || "");
-    var lastName = clean_(rowObj.Last_Name || "");
-    var name = (firstName + " " + lastName).trim();
-
-    var paymentVerifiedDerived = isPaymentVerifiedDerived_(rowObj) === true;
-    var paymentVerifiedRaw = clean_(rowObj.Payment_Verified || "") === "Yes";
-    var receiptUrl = clean_(rowObj.Fee_Receipt_File || "");
-    var docsVerifiedRaw = clean_(rowObj.Docs_Verified || "");
-    var mandatoryDocIssue = hasMandatoryDocIssue_(rowObj, idx);
-
-    var docsFollowupSentAt = getDocsFollowupSentAt_(rowObj);
-    var eligibleDocsFollowUp = computeEligibleDocsFollowUp_(rowObj, docsFollowupSentAt);
-    var qItem = {
-      rowNumber: r + 1,
-      applicantId: applicantId,
-      name: name,
-      ApplicantID: applicantId,
-      portalLastUpdateAt: rowObj.PortalLastUpdateAt || "",
-      portalTokenIssuedAt: rowObj.PortalTokenIssuedAt || "",
-      eligibleDocsFollowUp: !!eligibleDocsFollowUp,
-      docsFollowupSentAt: safeStr_(docsFollowupSentAt || "")
-    };
-
-    var hasActivity = hasStudentActivity_(rowObj);
-    if (
-      docsVerifiedRaw !== "Yes" &&
-      hasActivity &&
-      (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes")
-    ) {
-      pushQueueItem_(docs, qItem);
-    }
-    if (clean_(rowObj.Payment_Verified || "") !== "Yes" && hasActivity && nonEmpty_(receiptUrl)) {
-      pushQueueItem_(payments, qItem);
-    }
-    if (paymentVerifiedRaw && docsVerifiedRaw !== "Yes") {
-      pushQueueItem_(anomalies, qItem);
-    }
-    if (
-      paymentVerifiedRaw &&
-      (
-        clean_(rowObj.Docs_Verified || "") === "Yes" ||
-        clean_(rowObj.Registration_Complete || "") === "Yes" ||
-        clean_(rowObj.Invoice_Approved || "") === "Yes"
-      )
-    ) {
-      pushQueueItem_(paidApproved, qItem);
-    }
-    if (paymentVerifiedDerived && mandatoryDocIssue) {
-      pushQueueItem_(postPaymentIssues, qItem);
-    }
-  }
-  docs.sort(compareQueueItems_);
-  payments.sort(compareQueueItems_);
-  anomalies.sort(compareQueueItems_);
-  paidApproved.sort(compareQueueItems_);
-  postPaymentIssues.sort(compareQueueItems_);
-
-  function stripQueue_(items) {
-    return (items || []).map(function (it) {
-      return buildQueueRow_(it.rowNumber, it.applicantId, it.name, {
-        ApplicantID: clean_(it.ApplicantID || it.applicantId || ""),
-        eligibleDocsFollowUp: !!it.eligibleDocsFollowUp,
-        docsFollowupSentAt: safeStr_(it.docsFollowupSentAt || "")
-      });
-    });
   }
   return {
-    ok: true,
-    docs: stripQueue_(docs),
-    payments: stripQueue_(payments),
-    anomalies: stripQueue_(anomalies),
-    paidApproved: stripQueue_(paidApproved),
-    postPaymentIssues: stripQueue_(postPaymentIssues),
-    counts: {
-      payments: payments.length,
-      docs: docs.length,
-      anomalies: anomalies.length,
-      paidApproved: paidApproved.length,
-      postPaymentIssues: postPaymentIssues.length
+    hasMore: hasMore,
+    nextOffset: hasMore ? nextOffset : ""
+  };
+}
+
+function admin_getReviewQueues(payload) {
+  var adminEmail = getActiveUserEmail_();
+  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  payload = payload || {};
+  var offset = Math.max(0, Number(payload.offset || 0));
+  var limit = Math.max(1, Number(payload.limit || 20));
+  var force = Number(payload.force || 0) === 1;
+  var cache = CacheService.getUserCache();
+  var cacheKey = getDashboardCacheKey_(adminEmail);
+  var fullData = null;
+  if (!force) {
+    try {
+      var cached = cache.get(cacheKey);
+      if (cached) fullData = JSON.parse(cached);
+    } catch (_cacheReadErr) {}
+  }
+
+  if (!fullData || typeof fullData !== "object") {
+    var sheet = openDataSheet_();
+    var data = sheet.getDataRange().getValues();
+    if (!data || data.length < 2) {
+      fullData = {
+        docs: [],
+        payments: [],
+        anomalies: [],
+        paidApproved: [],
+        postPaymentIssues: [],
+        counts: { payments: 0, docs: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 }
+      };
+    } else {
+      var headers = data[0];
+      var idx = headerIndex_(headers);
+      var payments = [];
+      var docs = [];
+      var anomalies = [];
+      var paidApproved = [];
+      var postPaymentIssues = [];
+      function pushQueueItem_(target, item) {
+        var rowNum = Number(item && item.rowNumber || 0);
+        if (!Number.isFinite(rowNum) || rowNum < 2) return;
+        target.push(item);
+      }
+
+      for (var r = 1; r < data.length; r++) {
+        var row = data[r] || [];
+        var rowObj = {};
+        for (var c = 0; c < headers.length; c++) {
+          var h = clean_(headers[c]);
+          if (!h) continue;
+          rowObj[h] = row[c];
+        }
+
+        var applicantId = clean_(rowObj.ApplicantID || "");
+        if (!applicantId) continue;
+        var firstName = clean_(rowObj.First_Name || "");
+        var lastName = clean_(rowObj.Last_Name || "");
+        var name = (firstName + " " + lastName).trim();
+        var parentEmail = clean_(rowObj.Parent_Email || "");
+        var correctedEmail = clean_(rowObj.Parent_Email_Corrected || "");
+        var effectiveEmail = correctedEmail || parentEmail;
+
+        var paymentVerifiedDerived = isPaymentVerifiedDerived_(rowObj) === true;
+        var paymentVerifiedRaw = clean_(rowObj.Payment_Verified || "") === "Yes";
+        var receiptUrl = clean_(rowObj.Fee_Receipt_File || "");
+        var docsVerifiedRaw = clean_(rowObj.Docs_Verified || "");
+        var mandatoryDocIssue = hasMandatoryDocIssue_(rowObj, idx);
+
+        var docsVerifiedForFollowup = isYes_(rowObj.Docs_Verified) || computeDocVerificationStatus_(rowObj) === "Verified";
+        var hasValidEmailForFollowup = !!getRowEmailForStudent_(rowObj);
+        var docsFollowupEligibleBase = CONFIG.DOCS_FOLLOWUP_ENABLE === true && docsVerifiedForFollowup && hasValidEmailForFollowup;
+        var docsFollowupSentAt = getDocsFollowupSentAt_(rowObj);
+        var eligibleDocsFollowUp = docsFollowupEligibleBase && !safeStr_(docsFollowupSentAt || "");
+        var qItem = {
+          rowNumber: r + 1,
+          applicantId: applicantId,
+          name: name,
+          ApplicantID: applicantId,
+          parentEmail: parentEmail,
+          correctedEmail: correctedEmail,
+          effectiveEmail: effectiveEmail,
+          portalLastUpdateAt: rowObj.PortalLastUpdateAt || "",
+          portalTokenIssuedAt: rowObj.PortalTokenIssuedAt || "",
+          docsFollowupEligibleBase: !!docsFollowupEligibleBase,
+          eligibleDocsFollowUp: !!eligibleDocsFollowUp,
+          docsFollowupSentAt: safeStr_(docsFollowupSentAt || "")
+        };
+
+        var hasActivity = hasStudentActivity_(rowObj);
+        if (
+          docsVerifiedRaw !== "Yes" &&
+          hasActivity &&
+          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes")
+        ) {
+          pushQueueItem_(docs, qItem);
+        }
+        if (clean_(rowObj.Payment_Verified || "") !== "Yes" && hasActivity && nonEmpty_(receiptUrl)) {
+          pushQueueItem_(payments, qItem);
+        }
+        if (paymentVerifiedRaw && docsVerifiedRaw !== "Yes") {
+          pushQueueItem_(anomalies, qItem);
+        }
+        if (
+          paymentVerifiedRaw &&
+          (
+            clean_(rowObj.Docs_Verified || "") === "Yes" ||
+            clean_(rowObj.Registration_Complete || "") === "Yes" ||
+            clean_(rowObj.Invoice_Approved || "") === "Yes"
+          )
+        ) {
+          pushQueueItem_(paidApproved, qItem);
+        }
+        if (paymentVerifiedDerived && mandatoryDocIssue) {
+          pushQueueItem_(postPaymentIssues, qItem);
+        }
+      }
+      docs.sort(compareQueueItems_);
+      payments.sort(compareQueueItems_);
+      anomalies.sort(compareQueueItems_);
+      paidApproved.sort(compareQueueItems_);
+      postPaymentIssues.sort(compareQueueItems_);
+
+      function stripQueue_(items) {
+        return (items || []).map(function (it) {
+          return buildQueueRow_(it.rowNumber, it.applicantId, it.name, {
+            ApplicantID: clean_(it.ApplicantID || it.applicantId || ""),
+            parentEmail: clean_(it.parentEmail || ""),
+            correctedEmail: clean_(it.correctedEmail || ""),
+            effectiveEmail: clean_(it.effectiveEmail || ""),
+            docsFollowupEligibleBase: !!it.docsFollowupEligibleBase,
+            eligibleDocsFollowUp: !!it.eligibleDocsFollowUp,
+            docsFollowupSentAt: safeStr_(it.docsFollowupSentAt || "")
+          });
+        });
+      }
+      fullData = {
+        docs: stripQueue_(docs),
+        payments: stripQueue_(payments),
+        anomalies: stripQueue_(anomalies),
+        paidApproved: stripQueue_(paidApproved),
+        postPaymentIssues: stripQueue_(postPaymentIssues),
+        counts: {
+          payments: payments.length,
+          docs: docs.length,
+          anomalies: anomalies.length,
+          paidApproved: paidApproved.length,
+          postPaymentIssues: postPaymentIssues.length
+        }
+      };
     }
+    try {
+      cache.put(cacheKey, JSON.stringify(fullData), 300);
+    } catch (_cacheWriteErr) {}
+  }
+
+  var pageMeta = mergeQueuePageMeta_(fullData, offset, limit);
+  function refreshDocsFollowupRuntime_(rows) {
+    return (rows || []).map(function (row) {
+      var out = {};
+      var src = row && typeof row === "object" ? row : {};
+      for (var k in src) {
+        if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+      }
+      var applicantId = clean_(out.ApplicantID || out.applicantId || "");
+      var key = buildDocsFollowupKey_(applicantId);
+      var sentAt = "";
+      try { sentAt = safeStr_(PropertiesService.getScriptProperties().getProperty(key) || ""); } catch (_propErr) {}
+      out.docsFollowupSentAt = sentAt;
+      var eligibleBase = !!out.docsFollowupEligibleBase;
+      out.eligibleDocsFollowUp = eligibleBase && !sentAt;
+      return out;
+    });
+  }
+
+  return {
+    ok: true,
+    docs: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.docs, offset, limit)),
+    payments: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.payments, offset, limit)),
+    anomalies: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.anomalies, offset, limit)),
+    paidApproved: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.paidApproved, offset, limit)),
+    postPaymentIssues: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.postPaymentIssues, offset, limit)),
+    counts: fullData.counts || { payments: 0, docs: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 },
+    offset: offset,
+    limit: limit,
+    hasMore: pageMeta.hasMore,
+    nextOffset: pageMeta.nextOffset
   };
 }
 
