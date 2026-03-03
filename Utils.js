@@ -396,7 +396,8 @@ function logPortalUploadError_(dbgId, applicantId, fieldName, msg, extraObj) {
       compact[k] = s.length > 400 ? s.slice(0, 400) : s;
     });
     if (Object.keys(compact).length) payload.extra = compact;
-    var sh = mustGetSheet_(SpreadsheetApp.openById(CONFIG.SHEET_ID), CONFIG.LOG_SHEET);
+    var ss = getWorkingSpreadsheet_();
+    var sh = mustGetSheet_(ss, CONFIG.LOG_SHEET);
     log_(sh, "PORTAL_UPLOAD_FAIL", JSON.stringify(payload));
   } catch (e) {
     // Best-effort only; never break upload flow.
@@ -1049,12 +1050,12 @@ function test_Smoke() {
   Logger.log("CONFIG.VERSION = " + (CONFIG.VERSION || "MISSING"));
 
   // Validate IDs
-  assertDriveId_(CONFIG.SHEET_ID, "CONFIG.SHEET_ID");
+  assertDriveId_(getWorkingSpreadsheetId_(), "WORKING_SHEET_ID");
   assertDriveId_(CONFIG.LOG_SHEET_ID, "CONFIG.LOG_SHEET_ID");
   assertDriveId_(CONFIG.ROOT_FOLDER_ID, "CONFIG.ROOT_FOLDER_ID");
 
   // Open main spreadsheet + data sheet
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = getWorkingSpreadsheet_();
   var dataSh = ss.getSheetByName(CONFIG.DATA_SHEET);
   if (!dataSh) throw new Error("Missing DATA_SHEET tab: " + CONFIG.DATA_SHEET);
   Logger.log("DATA_SHEET OK: " + CONFIG.DATA_SHEET);

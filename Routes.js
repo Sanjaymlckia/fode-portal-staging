@@ -29,7 +29,7 @@ function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comme
     throw new Error("Invalid status. Allowed: " + Object.keys(CONFIG.DOC_STATUS).join(", "));
   }
 
-  var ss = SpreadsheetApp.openById(CONFIG.SHEET_ID);
+  var ss = getWorkingSpreadsheet_();
   var sheet = mustGetSheet_(ss, CONFIG.DATA_SHEET);
   var logSheet = mustGetSheet_(ss, CONFIG.LOG_SHEET);
 

@@ -7,8 +7,8 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-01-PNG-STAGING-r160",
-  CHANGELOG_LAST: "r160: admin UI polish – removed redundant accordion; added payment badges (UI only)",
+  VERSION: "2026-03-03-PNG-STAGING-r162",
+  CHANGELOG_LAST: "r162: remove CONFIG.SHEET_ID bypasses; enforce working spreadsheet getter in Routes/Utils",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
