@@ -267,6 +267,7 @@ function doGet(e) {
   Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
 
   if (view === "diag") return respondDiag_(e);
+  if (view === "file") return doGet_file_(e);
   if (view === "driveapiprobe") return doGet_driveApiProbe_(e);
   if (view === "drivedeepprobe") return doGet_driveDeepProbe_(e);
   if (view === "driveprobe") return doGet_driveProbe_(e);
@@ -1833,6 +1834,8 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     var cmBlock = cm ? ("<div style='margin-top:6px;'><b>Admin comment:</b> " + esc_(cm) + "</div>") : "";
 
     var urlList = normalizeToUrlList_(cur);
+    var secureOpenUrl = buildTokenGatedFileUrl_(execUrl, id, secret, d.field, "open");
+    var secureDownloadUrl = buildTokenGatedFileUrl_(execUrl, id, secret, d.field, "download");
     Logger.log("PORTAL_DOC_LINK " + JSON.stringify({
       applicantId: clean_(id || ""),
       field: clean_(d.field || ""),
@@ -1841,14 +1844,19 @@ function renderDocsSection_(id, secret, record, docs, locked) {
     }));
     var curLinks = "";
     if (urlList.length) {
-      var linksHtml = [];
+      var deleteControls = [];
       for (var u = 0; u < urlList.length; u++) {
         var delBtn = (!locked)
-          ? " <button type='button' onclick=\"deleteDocUrl('" + esc_(d.field) + "','" + esc_(encodeURIComponent(urlList[u])) + "')\">Delete</button>"
+          ? " <button type='button' onclick=\"deleteDocUrl('" + esc_(d.field) + "','" + esc_(encodeURIComponent(urlList[u])) + "')\">Delete " + String(u + 1) + "</button>"
           : "";
-        linksHtml.push("<span><a href='" + esc_(urlList[u]) + "' target='_blank' rel='noopener noreferrer'>Open " + String(u + 1) + "</a>" + delBtn + "</span>");
+        if (delBtn) deleteControls.push(delBtn);
       }
-      curLinks = "<div style='margin-top:6px;'><b>Current files:</b> " + linksHtml.join("<br/>") + "</div>";
+      curLinks = "<div style='margin-top:6px;'>"
+        + "<b>Current files:</b> " + String(urlList.length) + " uploaded."
+        + (secureOpenUrl ? (" <a href='" + esc_(secureOpenUrl) + "' target='_blank' rel='noopener noreferrer'>Open</a>") : "")
+        + (secureDownloadUrl ? (" | <a href='" + esc_(secureDownloadUrl) + "' target='_blank' rel='noopener noreferrer'>Download</a>") : "")
+        + (deleteControls.length ? ("<div style='margin-top:6px;'>" + deleteControls.join(" ") + "</div>") : "")
+        + "</div>";
     } else {
       curLinks = "<div style='margin-top:6px;'><b>Current files:</b> Not uploaded</div>";
     }
@@ -3030,11 +3038,15 @@ function buildStudentPortalUrl_(applicantId, secret) {
 function admin_getStudentPortalLink(applicantId) {
   var debugId = newDebugId_();
   try {
+    var rawApplicant = applicantId;
+    if (applicantId && typeof applicantId === "object") {
+      rawApplicant = applicantId.applicantId || applicantId.id || "";
+    }
     var adminEmail = getActiveUserEmail_();
     if (!isAdmin_(adminEmail)) {
       return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
     }
-    var idNorm = clean_(applicantId || "");
+    var idNorm = clean_(rawApplicant || "");
     if (!idNorm) {
       return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
     }

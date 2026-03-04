@@ -53,6 +53,11 @@
       border:1px solid rgba(14,165,164,.35);
       vertical-align:middle;
     }
+    .verBadge.mismatch{
+      color:#fff1f2;
+      background: rgba(239,68,68,.25);
+      border-color: rgba(239,68,68,.55);
+    }
     .card{
       background: rgba(17,26,46,.85);
       border: 1px solid rgba(148,163,184,.18);
@@ -562,6 +567,7 @@
     const BUILD_VERSION = "<?= BUILD_VERSION ?>";
     const BUILD_RENDERED_AT = "<?= BUILD_RENDERED_AT ?>";
     const BUILD_SCRIPT_ID = "<?= BUILD_SCRIPT_ID ?>";
+    const DEPLOY_VERSION_NUMBER = <?!= JSON.stringify(Number((CONFIG && CONFIG.DEPLOY_VERSION_NUMBER) || 0)) ?>;
     const DOCS_FOLLOWUP_ENABLED = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_ENABLE)) ?>;
     const DOCS_FOLLOWUP_SHOW_IN_QUEUES = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_SHOW_IN_QUEUES)) ?>;
     const DOCS_FOLLOWUP_COOLDOWN_MS = <?!= JSON.stringify(Number((CONFIG && CONFIG.DOCS_FOLLOWUP_COOLDOWN_MS) || 300000)) ?>;
@@ -596,6 +602,7 @@
     let selectedDocsRowNumbers = {};
     let lastDocsSendAttemptByApplicantId = {};
     let isDocsSendBusy = false;
+    let currentPortalLinkInfo = null;
     // Session-only fallback for "Sent" state when no persistent sent field is present in payload.
     let docsFollowupSentRows = new Set();
     let lastBackfillMode = "dry";
@@ -657,26 +664,74 @@
       if (btnLock) btnLock.disabled = !hasRecord || !!isUiBusy;
     }
     function esc(s){ return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;"); }
-    function extractDriveFileId_(url){
+    function normalizeStudentBaseUrl_(url){
       var raw = String(url || "").trim();
       if (!raw) return "";
-      var m = raw.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
-      if (m && m[1]) return m[1];
-      try {
-        var parsed = new URL(raw);
-        var id = parsed.searchParams.get("id");
-        if (id && /^[a-zA-Z0-9_-]+$/.test(id)) return id;
-      } catch (e) {}
-      m = raw.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
-      if (m && m[1]) return m[1];
-      return "";
+      return raw.replace("https://script.google.com/macros/", "https://script.google.com/a/macros/minervacenters.com/");
     }
-    function drivePreviewUrl_(url){
-      var id = extractDriveFileId_(url);
-      return id ? ("https://drive.google.com/file/d/" + id + "/preview") : "";
+    function parsePortalLinkInfo_(link){
+      var raw = String(link || "").trim();
+      if (!raw) return null;
+      try {
+        var u = new URL(raw);
+        var id = String(u.searchParams.get("id") || "").trim();
+        var s = String(u.searchParams.get("s") || "").trim();
+        if (!id || !s) return null;
+        return {
+          applicantId: id,
+          secret: s,
+          baseUrl: normalizeStudentBaseUrl_(u.origin + u.pathname)
+        };
+      } catch (e) {
+        return null;
+      }
+    }
+    function buildFileProxyUrlFromPortalInfo_(portalInfo, field, mode){
+      var info = portalInfo && typeof portalInfo === "object" ? portalInfo : null;
+      if (!info || !info.baseUrl || !info.applicantId || !info.secret || !field) return "";
+      var m = (mode === "download") ? "download" : "open";
+      return info.baseUrl
+        + "?view=file"
+        + "&mode=" + encodeURIComponent(m)
+        + "&id=" + encodeURIComponent(String(info.applicantId || ""))
+        + "&s=" + encodeURIComponent(String(info.secret || ""))
+        + "&field=" + encodeURIComponent(String(field || ""));
+    }
+    function getPortalLinkInfoForApplicant_(applicantId, onDone){
+      var id = String(applicantId || "").trim();
+      var done = (typeof onDone === "function") ? onDone : function(){};
+      if (!id) { done(null); return; }
+      if (currentPortalLinkInfo && currentPortalLinkInfo.applicantId === id) {
+        done(currentPortalLinkInfo);
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function(res){
+          var link = (res && (res.url || res.portalUrl || res.link)) ? String(res.url || res.portalUrl || res.link) : "";
+          var info = parsePortalLinkInfo_(link);
+          if (info && info.applicantId === id) {
+            currentPortalLinkInfo = info;
+            done(info);
+            return;
+          }
+          done(null);
+        })
+        .withFailureHandler(function(_err){
+          done(null);
+        })
+        .admin_getStudentPortalLink({ applicantId: id });
+    }
+    function enrichDocsWithProxyUrls_(docs, portalInfo){
+      return (Array.isArray(docs) ? docs : []).map(function(x){
+        var row = Object.assign({}, x || {});
+        var fileKey = String(row.file || "").trim();
+        row.fileProxyOpenUrl = buildFileProxyUrlFromPortalInfo_(portalInfo, fileKey, "open");
+        row.fileProxyDownloadUrl = buildFileProxyUrlFromPortalInfo_(portalInfo, fileKey, "download");
+        return row;
+      });
     }
     function openDocPreview_(label, url){
-      var previewUrl = drivePreviewUrl_(url);
+      var previewUrl = String(url || "").trim();
       if (!previewUrl) {
         alert("No preview available");
         return;
@@ -1666,6 +1721,7 @@
       }
       currentRowNumber = (Number.isFinite(rowNum) && rowNum >= 2) ? rowNum : null;
       currentDetail = null;
+      currentPortalLinkInfo = null;
       setActionButtonsEnabled(false);
       document.getElementById("portalLinkBox").textContent = "";
       setLinkBusy(false);
@@ -1919,15 +1975,31 @@
       document.getElementById("portalLinkBox").textContent = "";
       applyPortalLockControls_(d);
 
-      const docs = Array.isArray(d._docs) ? d._docs : [];
-      document.getElementById("docs").innerHTML = docs.map((x, i) => `
+      const baseDocs = Array.isArray(d._docs) ? d._docs : [];
+      renderDocCards_(enrichDocsWithProxyUrls_(baseDocs, currentPortalLinkInfo));
+      getPortalLinkInfoForApplicant_(d.ApplicantID || "", function(portalInfo){
+        if (!currentDetail || String((currentDetail && currentDetail.ApplicantID) || "") !== String(d.ApplicantID || "")) return;
+        var docsWithProxy = enrichDocsWithProxyUrls_(Array.isArray(currentDetail._docs) ? currentDetail._docs : [], portalInfo);
+        renderDocCards_(docsWithProxy);
+      });
+
+      document.getElementById("modalBack").style.display = "flex";
+      syncModalEditControls_();
+    }
+
+    function renderDocCards_(docs){
+      var list = Array.isArray(docs) ? docs : [];
+      document.getElementById("docs").innerHTML = list.map((x, i) => `
         <div class="doc" data-i="${i}">
           <div>
             <div class="docTitle">${esc(x.label)}</div>
             <div class="muted" style="font-size:12px; margin-top:4px;">
               ${x.hasFile
-                ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">Open</a>
-                   <button type="button" class="btn small docPreviewBtn" data-label="${esc(x.label)}" data-url="${esc(x.url)}">Preview</button>`
+                ? (x.fileProxyOpenUrl
+                    ? `<a href="${esc(x.fileProxyOpenUrl)}" target="_blank" rel="noopener">Open</a>
+                       <a href="${esc(x.fileProxyDownloadUrl || x.fileProxyOpenUrl)}" target="_blank" rel="noopener">Download</a>
+                       <button type="button" class="btn small docPreviewBtn" data-label="${esc(x.label)}" data-url="${esc(x.fileProxyOpenUrl)}">Preview</button>`
+                    : `<span class="muted">Resolving secure link...</span>`)
                 : `Not uploaded`}
             </div>
             ${!x.hasFile ? `<div class="docWarn">Cannot verify: no file uploaded.</div>` : ``}
@@ -1983,15 +2055,13 @@
           openDocPreview_(this.getAttribute("data-label") || "", this.getAttribute("data-url") || "");
         });
       });
-
-      document.getElementById("modalBack").style.display = "flex";
-      syncModalEditControls_();
     }
 
     function closeModal(){
       document.getElementById("modalBack").style.display = "none";
       currentRowNumber = null;
       currentDetail = null;
+      currentPortalLinkInfo = null;
       resetModalState_();
       setDirty_(false);
       setLinkBusy(false);
@@ -2425,8 +2495,17 @@
     function initVersionBadge_() {
       var badge = document.getElementById("versionBadge");
       if (badge) {
-        badge.textContent = VERSION_SHORT;
-        badge.title = VERSION;
+        var deployNum = Number(DEPLOY_VERSION_NUMBER || 0);
+        var expectedToken = deployNum > 0 ? ("r" + String(deployNum)) : "";
+        var hasMatch = !!(expectedToken && String(VERSION || "").indexOf(expectedToken) >= 0);
+        if (!hasMatch) {
+          badge.textContent = "VERSION MISMATCH";
+          badge.classList.add("mismatch");
+        } else {
+          badge.textContent = VERSION_SHORT + " | v" + String(deployNum);
+          badge.classList.remove("mismatch");
+        }
+        badge.title = "Build: " + String(VERSION || "-") + " | Deploy v" + String(deployNum || 0);
       }
     }
     if (document.readyState === "loading") {

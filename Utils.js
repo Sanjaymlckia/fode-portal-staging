@@ -1539,14 +1539,55 @@ function removeUrlFromCell_(existingValue, urlToRemove) {
   return urls.join("\n");
 }
 
-function extractDriveFileId_(url) {
-  var s = clean_(url);
+function extractDriveFileId_(urlOrId) {
+  var s = clean_(urlOrId);
   if (!s) return "";
-  var m1 = s.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) return s;
+  var m1 = s.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
   if (m1 && m1[1]) return m1[1];
-  var m2 = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  var m2 = s.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
   if (m2 && m2[1]) return m2[1];
+  var m3 = s.match(/\/uc\?(?:[^#]*&)?id=([a-zA-Z0-9_-]+)/i);
+  if (m3 && m3[1]) return m3[1];
   return "";
+}
+
+function getFileBlobByUrlOrId_(urlOrId, dbg, label) {
+  var dbgId = clean_(dbg || "");
+  var tag = clean_(label || "");
+  var fileId = extractDriveFileId_(urlOrId);
+  if (!fileId) {
+    Logger.log("FILE_BLOB_FAIL dbg=%s label=%s fileId=%s err=%s", dbgId, tag, "", "Invalid file id/url");
+    return { ok: false, err: "Invalid file id/url", fileId: "" };
+  }
+  try {
+    var file = DriveApp.getFileById(fileId);
+    var fileName = clean_(file.getName() || "") || ("file_" + fileId);
+    var blob = file.getBlob().setName(fileName);
+    var mimeType = clean_(blob.getContentType() || file.getMimeType() || "application/octet-stream");
+    return {
+      ok: true,
+      fileId: fileId,
+      fileName: fileName,
+      mimeType: mimeType,
+      blob: blob
+    };
+  } catch (e) {
+    var errMsg = clean_(stringifyGsError_(e) || "File access failed");
+    Logger.log("FILE_BLOB_FAIL dbg=%s label=%s fileId=%s err=%s", dbgId, tag, fileId, errMsg);
+    return { ok: false, err: errMsg, fileId: fileId };
+  }
+}
+
+function buildTokenGatedFileUrl_(baseUrl, applicantId, secret, fieldKey, mode) {
+  var base = clean_(baseUrl || "");
+  if (!base) return "";
+  return base
+    + "?view=file"
+    + "&mode=" + encodeURIComponent(clean_(mode || "open") || "open")
+    + "&id=" + encodeURIComponent(clean_(applicantId || ""))
+    + "&s=" + encodeURIComponent(clean_(secret || ""))
+    + "&field=" + encodeURIComponent(clean_(fieldKey || ""));
 }
 
 function isFileInFolderChain_(file, folderId) {
