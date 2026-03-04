@@ -350,8 +350,8 @@
         <div>WebApp: <?= WEBAPP_URL ?> <span id="versionBadge" class="verBadge"></span></div>
         <div>Build: <?= BUILD_VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
         <div class="diagLinks">Diagnostics:
-          <a href="<?= WEBAPP_URL_ADMIN ?>?view=whoami" target="_blank" rel="noopener">Admin whoami</a> |
-          <a href="<?= WEBAPP_URL_STUDENT ?>?view=whoami" target="_blank" rel="noopener">Student whoami</a>
+          <a href="<?!= ((CONFIG && CONFIG.WEBAPP_URL_ADMIN) ? CONFIG.WEBAPP_URL_ADMIN : '') ?>?view=whoami" target="_blank" rel="noopener">Admin whoami</a> |
+          <a href="<?!= ((CONFIG && CONFIG.WEBAPP_URL_STUDENT) ? CONFIG.WEBAPP_URL_STUDENT : '') ?>?view=whoami" target="_blank" rel="noopener">Student whoami</a>
         </div>
       </div>
     </div>
@@ -573,6 +573,13 @@
     const BUILD_VERSION = "<?= BUILD_VERSION ?>";
     const BUILD_RENDERED_AT = "<?= BUILD_RENDERED_AT ?>";
     const BUILD_SCRIPT_ID = "<?= BUILD_SCRIPT_ID ?>";
+    const CFG_WEBAPP_URL_ADMIN = <?!= JSON.stringify(String((CONFIG && CONFIG.WEBAPP_URL_ADMIN) || "")) ?>;
+    const CFG_WEBAPP_URL_STUDENT = <?!= JSON.stringify(String((CONFIG && CONFIG.WEBAPP_URL_STUDENT) || "")) ?>;
+    const CFG_WEBAPP_URL_STUDENT_EXEC = <?!= JSON.stringify(String((CONFIG && (CONFIG.WEBAPP_URL_STUDENT_EXEC || CONFIG.WEBAPP_URL_STUDENT)) || "")) ?>;
+
+    window.WEBAPP_URL_ADMIN = window.WEBAPP_URL_ADMIN || CFG_WEBAPP_URL_ADMIN || "";
+    window.WEBAPP_URL_STUDENT = window.WEBAPP_URL_STUDENT || CFG_WEBAPP_URL_STUDENT || "";
+    window.WEBAPP_URL_STUDENT_EXEC = window.WEBAPP_URL_STUDENT_EXEC || CFG_WEBAPP_URL_STUDENT_EXEC || "";
     const DEPLOY_VERSION_NUMBER = <?!= JSON.stringify(Number((CONFIG && CONFIG.DEPLOY_VERSION_NUMBER) || 0)) ?>;
     const DOCS_FOLLOWUP_ENABLED = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_ENABLE)) ?>;
     const DOCS_FOLLOWUP_SHOW_IN_QUEUES = <?!= JSON.stringify(!!(CONFIG && CONFIG.DOCS_FOLLOWUP_SHOW_IN_QUEUES)) ?>;

@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-04-PNG-STAGING-r170",
-  CHANGELOG_LAST: "r170: canonical /macros URLs + whoami diagnostic + stop /a/macros domain rewrites",
-  DEPLOY_VERSION_NUMBER: 170,
+  VERSION: "2026-03-04-PNG-STAGING-r171",
+  CHANGELOG_LAST: "r171: fix AdminUI missing WEBAPP_URL_ADMIN; enforce canonical /macros links",
+  DEPLOY_VERSION_NUMBER: 171,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
