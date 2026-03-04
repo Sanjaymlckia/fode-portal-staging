@@ -20,7 +20,7 @@ Sheet:
 
 var PORTAL_SECRETS_SPREADSHEET_ID = "1HEJPtSov-iE5YTpSWWZ89YLIQAw4Eju9DDMG46HkTRc";
 var PORTAL_SECRETS_TAB = "PortalSecrets";
-var STUDENT_EXEC_BASE = "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN";
+var STUDENT_EXEC_BASE = "https://script.google.com/a/macros/minervacenters.com/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g";
 
 /******************** ENTRYPOINT: POST ********************/
 function doPost(e) {
@@ -2249,9 +2249,8 @@ function getStudentActionUrl_() {
   var hasStudentExec = /^https:\/\/script\.google\.com\//i.test(studentExec);
   if (hasStudentExec) return { url: getStudentBaseUrl_() || studentExec, isStudentReady: true, warning: "" };
   var studentUrl = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
-  var adminUrl = clean_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.WEBAPP_URL || "");
   var isStudentReady = /^https:\/\/script\.google\.com\//i.test(studentUrl);
-  var url = isStudentReady ? (getStudentBaseUrl_() || studentUrl) : adminUrl;
+  var url = isStudentReady ? (getStudentBaseUrl_() || studentUrl) : "";
   var warning = isStudentReady ? "" : "Student URL not configured. Saving may not work for external users.";
   return {
     url: url,
@@ -3017,11 +3016,51 @@ function setPortalSecretForApplicant_(applicantId, newSecret) {
 }
 
 function buildStudentPortalUrl_(applicantId, secret) {
-  return STUDENT_EXEC_BASE
-    + "/exec?view=portal&id="
+  var base = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  if (!base) throw new Error("Missing CONFIG.WEBAPP_URL_STUDENT");
+  // normalize to domain-style, in case someone pastes /macros/ accidentally
+  base = base.replace("https://script.google.com/macros/", "https://script.google.com/a/macros/minervacenters.com/");
+  return base
+    + "?view=portal&id="
     + encodeURIComponent(clean_(applicantId || ""))
     + "&s="
     + encodeURIComponent(clean_(secret || ""));
+}
+
+function admin_getStudentPortalLink(applicantId) {
+  var debugId = newDebugId_();
+  try {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) {
+      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    }
+    var idNorm = clean_(applicantId || "");
+    if (!idNorm) {
+      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    }
+    var sh = mustGetDataSheet_(getWorkingSpreadsheet_());
+    var rowNumber = findRowByApplicantId_(sh, idNorm);
+    if (!rowNumber) {
+      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    }
+    var secretRes = getPortalSecretForApplicant_(idNorm);
+    if (!secretRes || secretRes.ok !== true || !clean_(secretRes.secret || "")) {
+      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    }
+    var url = buildStudentPortalUrl_(idNorm, secretRes.secret);
+    return {
+      ok: true,
+      url: url,
+      link: url,
+      portalUrl: url,
+      applicantId: idNorm,
+      rowNumber: rowNumber,
+      debugId: debugId
+    };
+  } catch (e) {
+    Logger.log("ADMIN_GET_STUDENT_PORTAL_LINK_FAIL " + debugId + " err=" + (e && e.message ? e.message : e));
+    return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+  }
 }
 
 function findPortalRowByIdSecret_(sheet, applicantId, secret) {

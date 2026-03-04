@@ -65,12 +65,12 @@ var CONFIG = {
   // - WEBAPP_URL_ADMIN: admin deployment (/exec), executeAs=USER_ACCESSING, access=DOMAIN
   // - WEBAPP_URL_STUDENT: student deployment (/exec), executeAs=ME, access=ANYONE/ANYONE_ANONYMOUS
   // WEBAPP_URL is kept for backward compatibility and mirrors WEBAPP_URL_ADMIN.
-  WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
-  WEBAPP_URL: "https://script.google.com/macros/s/AKfycbzcL4sXLW2mEPg5ADA5YS16m2Avcd4RxnLp-vKn45_sXqgtdW9AP_lsuGImyP3y1U3k/exec",
-  WEBAPP_URL_STUDENT: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
-  WEBAPP_URL_STUDENT_EXEC: "https://script.google.com/macros/s/AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN/exec",
+  WEBAPP_URL_ADMIN: "https://script.google.com/a/macros/minervacenters.com/s/AKfycbwUaqGym6dZSfqltKuI3sX4V31ijl9AOy9bDTPMzqmDToZVjMZc-xezclftg1EIJ8Tx/exec",
+  WEBAPP_URL: "https://script.google.com/a/macros/minervacenters.com/s/AKfycbwUaqGym6dZSfqltKuI3sX4V31ijl9AOy9bDTPMzqmDToZVjMZc-xezclftg1EIJ8Tx/exec",
+  WEBAPP_URL_STUDENT: "https://script.google.com/a/macros/minervacenters.com/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec",
+  WEBAPP_URL_STUDENT_EXEC: "https://script.google.com/a/macros/minervacenters.com/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec",
   SCRIPT_ID: "1NwyKK4NV27SD7WaXlpgn_1cCMJ9ezX0erLjvMBB6DDGq9VDt12y5qtcK",
-  DEPLOYMENT_ID_STUDENT: "AKfycby_AgQDFHyKxT5WV9O230By9w6R-kiTIJe_aui1a-WlZLnuJQ-I7Xh4VDFb1oe1m2LN",
+  DEPLOYMENT_ID_STUDENT: "AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g",
   ZOHO_API_BASE: "https://www.zohoapis.com/crm/v2",
   ZOHO_OAUTH_BASE: "https://accounts.zoho.com/oauth/v2",
   DEAL_STAGE: "Qualification",

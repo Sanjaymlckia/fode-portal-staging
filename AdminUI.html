@@ -2207,8 +2207,13 @@
         setMsg("mMsg", STUDENT_URL_WARNING || "Student URL not configured.");
         return;
       }
-      run_("admin_getPortalLink", { rowNumber: currentRowNumber }, function(res){
-          const link = (res && (res.portalUrl || res.link)) ? (res.portalUrl || res.link) : "";
+      var applicantId = String((currentDetail && currentDetail.ApplicantID) || "").trim();
+      if (!applicantId) {
+        setMsg("mMsg", "ApplicantID missing.");
+        return;
+      }
+      run_("admin_getStudentPortalLink", { applicantId: applicantId }, function(res){
+          const link = (res && (res.url || res.portalUrl || res.link)) ? (res.url || res.portalUrl || res.link) : "";
           if (!res || res.ok !== true || !link) {
             setMsg("mMsg", "Portal link error. Debug: " + String((res && res.debugId) || ""));
             return;
