@@ -7,13 +7,14 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-03-PNG-STAGING-r162",
-  CHANGELOG_LAST: "r162: remove CONFIG.SHEET_ID bypasses; enforce working spreadsheet getter in Routes/Utils",
+  VERSION: "2026-03-04-PNG-STAGING-r164",
+  CHANGELOG_LAST: "r164: harden getWorkingSpreadsheet_ routing + validation + diagnostics (no schema change)",
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "STAGING", // "STAGING" | "PROD"
   SPREADSHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
+  SPREADSHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
   SHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
   SHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
   SHEET_NAME_WORKING: "FODE_Data",

@@ -1105,33 +1105,50 @@ function getWorkingSpreadsheetId_() {
 }
 
 function getWorkingSpreadsheet_() {
-  var mode = clean_(CONFIG.DATA_MODE || "STAGING").toUpperCase();
-  var expectedStagingId = clean_(CONFIG.SPREADSHEET_ID_STAGING || CONFIG.SHEET_ID_STAGING || "");
-  var chosenId = getWorkingSpreadsheetId_();
-  var dbgId = (typeof newDebugId_ === "function") ? newDebugId_() : "";
-  if (mode === "STAGING" && (!expectedStagingId || chosenId !== expectedStagingId)) {
-    Logger.log("DATA_MODE_GUARD_FAIL " + JSON.stringify({
-      debugId: dbgId,
-      mode: mode,
-      expectedId: expectedStagingId,
-      actualId: chosenId || ""
-    }));
-    throw new Error("STAGING guard: refusing to access non-staging spreadsheet");
+  var dbgId = (typeof newDebugId_ === "function") ? newDebugId_() : ("DBG-" + Utilities.getUuid().slice(0, 8));
+  var rawMode = (CONFIG && CONFIG.DATA_MODE !== undefined) ? String(CONFIG.DATA_MODE) : "STAGING";
+  var mode = clean_(rawMode).toUpperCase();
+  if (mode !== "PROD" && mode !== "STAGING") {
+    Logger.log("GET_WORKING_SS_BAD_MODE " + dbgId + " rawMode=" + rawMode + " -> default STAGING");
+    mode = "STAGING";
   }
-  var ss = SpreadsheetApp.openById(chosenId);
-  if (mode === "STAGING") {
-    var actualId = "";
-    try { actualId = clean_(ss.getId && ss.getId()); } catch (_idErr) {}
-    if (actualId && actualId !== expectedStagingId) {
-      Logger.log("DATA_MODE_GUARD_FAIL " + JSON.stringify({
-        debugId: dbgId,
-        mode: mode,
-        expectedId: expectedStagingId,
-        actualId: actualId
-      }));
-      throw new Error("STAGING guard: refusing to access non-staging spreadsheet");
-    }
+
+  var spreadsheetId = (mode === "PROD")
+    ? clean_(CONFIG.SPREADSHEET_ID_PROD || "")
+    : clean_(CONFIG.SPREADSHEET_ID_STAGING || "");
+  Logger.log("GET_WORKING_SS_START " + dbgId + " mode=" + mode + " spreadsheetId=" + spreadsheetId);
+
+  if (!spreadsheetId) {
+    Logger.log("GET_WORKING_SS_FAIL " + dbgId + " mode=" + mode + " spreadsheetId= err=missing spreadsheetId");
+    throw new Error("Missing spreadsheetId for mode=" + mode + ". DebugId=" + dbgId);
   }
+
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(spreadsheetId);
+  } catch (e) {
+    Logger.log("GET_WORKING_SS_FAIL " + dbgId + " mode=" + mode + " spreadsheetId=" + spreadsheetId + " err=" + (e && e.message ? e.message : e));
+    throw new Error("Cannot open working spreadsheet for mode=" + mode + ". DebugId=" + dbgId);
+  }
+
+  if (!ss) {
+    Logger.log("GET_WORKING_SS_FAIL " + dbgId + " mode=" + mode + " spreadsheetId=" + spreadsheetId + " err=SpreadsheetApp.openById returned null");
+    throw new Error("Cannot open working spreadsheet for mode=" + mode + ". DebugId=" + dbgId);
+  }
+
+  var ssName = "";
+  var ssId = "";
+  try { ssName = clean_(ss.getName()); } catch (_nameErr) {}
+  try { ssId = clean_(ss.getId()); } catch (_idErr) {}
+  Logger.log("GET_WORKING_SS_OK " + dbgId + " ssName=" + ssName + " ssId=" + ssId);
+
+  var requiredTab = clean_(CONFIG.SHEET_TAB_WORKING || CONFIG.SHEET_NAME_WORKING || "FODE_Data");
+  var sheet = ss.getSheetByName(requiredTab);
+  if (!sheet) {
+    Logger.log("GET_WORKING_SS_MISSING_TAB " + dbgId + " requiredTab=" + requiredTab + " ssName=" + ssName);
+    throw new Error("Working spreadsheet missing tab '" + requiredTab + "'. DebugId=" + dbgId);
+  }
+
   return ss;
 }
 
