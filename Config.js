@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-04-PNG-STAGING-r167",
-  CHANGELOG_LAST: "r167: token-gated file proxy (no public sharing) + version sync guard",
-  DEPLOY_VERSION_NUMBER: 167,
+  VERSION: "2026-03-04-PNG-STAGING-r168",
+  CHANGELOG_LAST: "r168: file proxy MIME allowlist + token-failure diagnostics",
+  DEPLOY_VERSION_NUMBER: 168,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)

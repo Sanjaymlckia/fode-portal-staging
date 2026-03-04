@@ -114,6 +114,7 @@ function doGet_file_(e) {
     var sheet = mustGetDataSheet_(ss);
     var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
     if (!found) {
+      Logger.log("FILE_PROXY_TOKEN_FAIL dbg=" + dbg + " id=" + applicantId + " field=" + fieldKey);
       return htmlOutput_(renderFileProxyMessageHtml_("Invalid or expired portal link.", dbg));
     }
     var rawValue = clean_((found.record && found.record[fieldKey]) || "");
@@ -133,6 +134,11 @@ function doGet_file_(e) {
     }
     var fileName = safeFileName_(blob.getName() || fileRes.fileName || ("document_" + fieldKey));
     var mimeType = clean_(blob.getContentType() || fileRes.mimeType || "application/octet-stream");
+    var allowedMimes = ["application/pdf", "image/jpeg", "image/png", "image/gif"];
+    if (allowedMimes.indexOf(mimeType) < 0) {
+      return HtmlService.createHtmlOutput("<h2>Unsupported file type.</h2><p>Debug: " + esc_(dbg) + "</p>")
+        .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    }
     var b64 = Utilities.base64Encode(bytes);
     Logger.log("FILE_PROXY_OK dbg=%s applicantId=%s field=%s fileId=%s size=%s mode=%s", dbg, applicantId, fieldKey, clean_(fileRes.fileId || ""), String(bytes.length), mode);
     return htmlOutput_(renderFileProxyBlobHtml_(b64, mimeType, fileName, mode, dbg));
