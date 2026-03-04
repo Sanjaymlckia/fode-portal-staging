@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-04-PNG-STAGING-r168",
-  CHANGELOG_LAST: "r168: file proxy MIME allowlist + token-failure diagnostics",
-  DEPLOY_VERSION_NUMBER: 168,
+  VERSION: "2026-03-04-PNG-STAGING-r169",
+  CHANGELOG_LAST: "r169: file proxy diagnostics (redacted UI + Drive error detail)",
+  DEPLOY_VERSION_NUMBER: 169,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)

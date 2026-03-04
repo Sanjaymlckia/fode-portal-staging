@@ -89,27 +89,38 @@ function adminVerifyDocument(applicantId, fieldName, newStatus, adminUser, comme
 
 function doGet_file_(e) {
   var dbg = newDebugId_();
-  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
-  var applicantId = clean_(params.id || "");
-  var secret = clean_(params.s || "");
-  var fieldKey = clean_(params.field || "");
-  var mode = clean_(params.mode || "open").toLowerCase();
-  if (mode !== "download") mode = "open";
-
-  if (!applicantId || !secret || !fieldKey) {
-    return htmlOutput_(renderFileProxyMessageHtml_("Missing file link parameters.", dbg));
-  }
-
-  var allowedFields = {};
-  (CONFIG.DOC_FIELDS || []).forEach(function (d) {
-    var k = clean_(d && d.file || "");
-    if (k) allowedFields[k] = true;
-  });
-  if (!allowedFields[fieldKey]) {
-    return htmlOutput_(renderFileProxyMessageHtml_("Invalid file field.", dbg));
-  }
+  var eff = "";
+  var act = "";
+  try { eff = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_effErr) {}
+  try { act = clean_(Session.getActiveUser().getEmail() || ""); } catch (_actErr) {}
+  var effSafe = eff ? eff.replace(/@.*$/, "@...") : "unknown";
+  var actSafe = act ? act.replace(/@.*$/, "@...") : "unknown";
+  var applicantId = "";
+  var fieldKey = "";
+  var mode = "open";
+  var fileId = "";
 
   try {
+    var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+    applicantId = clean_(params.id || "");
+    var secret = clean_(params.s || "");
+    fieldKey = clean_(params.field || "");
+    mode = clean_(params.mode || "open").toLowerCase();
+    if (mode !== "download") mode = "open";
+
+    if (!applicantId || !secret || !fieldKey) {
+      return htmlOutput_(renderFileProxyMessageHtml_("Missing file link parameters.", dbg));
+    }
+
+    var allowedFields = {};
+    (CONFIG.DOC_FIELDS || []).forEach(function (d) {
+      var k = clean_(d && d.file || "");
+      if (k) allowedFields[k] = true;
+    });
+    if (!allowedFields[fieldKey]) {
+      return htmlOutput_(renderFileProxyMessageHtml_("Invalid file field.", dbg));
+    }
+
     var ss = getWorkingSpreadsheet_();
     var sheet = mustGetDataSheet_(ss);
     var found = findPortalRowByIdSecret_(sheet, applicantId, secret);
@@ -118,10 +129,12 @@ function doGet_file_(e) {
       return htmlOutput_(renderFileProxyMessageHtml_("Invalid or expired portal link.", dbg));
     }
     var rawValue = clean_((found.record && found.record[fieldKey]) || "");
+    fileId = extractDriveFileId_(rawValue);
     var fileRes = getFileBlobByUrlOrId_(rawValue, dbg, "fileProxy:" + fieldKey);
     if (!fileRes || fileRes.ok !== true || !fileRes.blob) {
       return htmlOutput_(renderFileProxyMessageHtml_("File unavailable.", dbg));
     }
+    fileId = clean_(fileRes.fileId || fileId);
 
     var blob = fileRes.blob;
     var bytes = blob.getBytes();
@@ -143,8 +156,18 @@ function doGet_file_(e) {
     Logger.log("FILE_PROXY_OK dbg=%s applicantId=%s field=%s fileId=%s size=%s mode=%s", dbg, applicantId, fieldKey, clean_(fileRes.fileId || ""), String(bytes.length), mode);
     return htmlOutput_(renderFileProxyBlobHtml_(b64, mimeType, fileName, mode, dbg));
   } catch (err) {
-    Logger.log("FILE_PROXY_FAIL dbg=%s applicantId=%s field=%s err=%s", dbg, applicantId, fieldKey, stringifyGsError_(err));
-    return htmlOutput_(renderFileProxyMessageHtml_("File unavailable.", dbg));
+    var errMsg = stringifyGsError_(err);
+    Logger.log("FILE_PROXY_DIAG dbg=%s eff=%s act=%s id=%s field=%s fileId=%s err=%s", dbg, eff, act, applicantId, fieldKey, fileId, errMsg);
+    return HtmlService.createHtmlOutput(renderFileProxyDiagHtml_({
+      dbg: dbg,
+      effSafe: effSafe,
+      actSafe: actSafe,
+      applicantId: applicantId,
+      fieldKey: fieldKey,
+      mode: mode,
+      fileId: fileId,
+      err: errMsg
+    })).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 }
 
@@ -160,6 +183,35 @@ function renderFileProxyMessageHtml_(message, dbg) {
     + '<div style="margin-top:10px;color:#444;font-size:12px;">DebugId: ' + esc_(debugId || "-") + '</div>'
     + '</body></html>';
   return html;
+}
+
+function renderFileProxyDiagHtml_(ctx) {
+  var c = ctx && typeof ctx === "object" ? ctx : {};
+  var dbg = clean_(c.dbg || "");
+  var effSafe = clean_(c.effSafe || "unknown");
+  var actSafe = clean_(c.actSafe || "unknown");
+  var applicantId = clean_(c.applicantId || "");
+  var fieldKey = clean_(c.fieldKey || "");
+  var mode = clean_(c.mode || "open");
+  var fileId = clean_(c.fileId || "");
+  var err = clean_(c.err || "Unknown error");
+  return ''
+    + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<style>body{font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px;}'
+    + '.card{max-width:860px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:16px;}'
+    + 'h2{margin:0 0 12px 0;color:#fecaca}.k{color:#93c5fd;font-weight:700}.v{color:#e2e8f0;word-break:break-word}.row{margin:8px 0}'
+    + '.err{margin-top:12px;padding:10px;border:1px solid #7f1d1d;background:#3f1d1d;border-radius:8px;color:#fee2e2}</style></head>'
+    + '<body><div class="card"><h2>FILE PROXY ERROR</h2>'
+    + '<div class="row"><span class="k">Debug ID:</span> <span class="v">' + esc_(dbg) + '</span></div>'
+    + '<div class="row"><span class="k">Executing as:</span> <span class="v">' + esc_(effSafe) + '</span></div>'
+    + '<div class="row"><span class="k">Logged in as:</span> <span class="v">' + esc_(actSafe) + '</span></div>'
+    + '<div class="row"><span class="k">Applicant ID:</span> <span class="v">' + esc_(applicantId || "-") + '</span></div>'
+    + '<div class="row"><span class="k">Field:</span> <span class="v">' + esc_(fieldKey || "-") + '</span></div>'
+    + '<div class="row"><span class="k">Mode:</span> <span class="v">' + esc_(mode || "open") + '</span></div>'
+    + '<div class="row"><span class="k">File ID:</span> <span class="v">' + esc_(fileId || "not extracted") + '</span></div>'
+    + '<div class="err"><span class="k">Error:</span> ' + esc_(err) + '</div>'
+    + '</div></body></html>';
 }
 
 function renderFileProxyBlobHtml_(b64, mimeType, fileName, mode, dbg) {
