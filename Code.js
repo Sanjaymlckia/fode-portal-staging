@@ -257,6 +257,32 @@ function doPost(e) {
 
 /******************** ENTRYPOINT: GET ********************/
 function doGet(e) {
+  var serviceUrl = "";
+  try {
+    serviceUrl = clean_(ScriptApp.getService().getUrl() || "");
+  } catch (_serviceErr) {}
+  if (isDomainScopedMacrosUrl_(serviceUrl)) {
+    var base = clean_(pickCanonicalExecBase_(e) || "");
+    var qsRaw = (e && typeof e.queryString === "string") ? e.queryString : "";
+    var target = base + (qsRaw ? ("?" + qsRaw) : "");
+    var redirectHtml = ''
+      + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
+      + '<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">'
+      + '<meta http-equiv="Pragma" content="no-cache">'
+      + '<meta http-equiv="Expires" content="0">'
+      + '<meta http-equiv="refresh" content="0; url=' + esc_(target) + '">'
+      + '</head><body>'
+      + '<script>location.replace(' + JSON.stringify(target) + ');</script>'
+      + '<p>Redirecting to canonical URL...</p>'
+      + '<p><a href="' + esc_(target) + '" target="_top">Continue</a></p>'
+      + '</body></html>';
+    return HtmlService.createHtmlOutput(redirectHtml)
+      .addMetaTag('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+      .addMetaTag('Pragma', 'no-cache')
+      .addMetaTag('Expires', '0')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
   var view = clean_(params.view || "").toLowerCase();
   var isAdminDeployment = isAdminDeploymentRequest_();
@@ -264,11 +290,6 @@ function doGet(e) {
   try {
     currentUrl = clean_(ScriptApp.getService().getUrl() || "");
   } catch (routeErr) {}
-  var queryString = (e && typeof e.queryString === "string" && e.queryString) ? ("?" + e.queryString) : "";
-  var requestUrl = currentUrl ? (currentUrl + queryString) : "";
-  if (isDomainScopedMacrosUrl_(requestUrl)) {
-    return renderDomainScopedUrlGuard_(requestUrl);
-  }
   Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
 
   if (view === "diag") return respondDiag_(e);

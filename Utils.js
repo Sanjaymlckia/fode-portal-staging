@@ -553,13 +553,41 @@ function buildExecUrlFromDeploymentId_(deploymentId) {
 }
 
 function isDomainScopedMacrosUrl_(url) {
-  return /https:\/\/script\.google\.com\/a\/macros\//i.test(clean_(url || ""));
+  return /https:\/\/script\.google\.com\/a\/(?:[^/]+\/)?macros\//i.test(clean_(url || ""));
 }
 
 function canonicalizeToMacros_(url) {
   var raw = clean_(url || "");
   if (!raw) return "";
-  return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\/macros\/s\//i, "https://script.google.com/macros/s/");
+  raw = raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\/macros\/s\//i, "https://script.google.com/macros/s/");
+  raw = raw.replace(/^https:\/\/script\.google\.com\/a\/macros\/s\//i, "https://script.google.com/macros/s/");
+  return raw;
+}
+
+function extractDeploymentIdFromExecUrl_(url) {
+  var raw = clean_(url || "");
+  if (!raw) return "";
+  var m1 = raw.match(/\/macros\/s\/([^/]+)\/exec/i);
+  if (m1 && m1[1]) return clean_(m1[1]);
+  var m2 = raw.match(/\/s\/([^/]+)\/exec/i);
+  if (m2 && m2[1]) return clean_(m2[1]);
+  return "";
+}
+
+function pickCanonicalExecBase_(e) {
+  var qsView = "";
+  try { qsView = clean_(e && e.parameter && e.parameter.view || ""); } catch (_e1) {}
+  if (qsView === "admin") return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
+  if (qsView === "portal" || qsView === "file") return clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+
+  var serviceUrl = "";
+  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_e2) {}
+  var dep = extractDeploymentIdFromExecUrl_(serviceUrl);
+  var adminDep = clean_(CONFIG.DEPLOYMENT_ID_ADMIN || "");
+  var studentDep = clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "");
+  if (dep && adminDep && dep === adminDep) return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
+  if (dep && studentDep && dep === studentDep) return clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
 }
 
 function toIsoDateInput_(value) {
