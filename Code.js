@@ -20,7 +20,7 @@ Sheet:
 
 var PORTAL_SECRETS_SPREADSHEET_ID = "1HEJPtSov-iE5YTpSWWZ89YLIQAw4Eju9DDMG46HkTRc";
 var PORTAL_SECRETS_TAB = "PortalSecrets";
-var STUDENT_EXEC_BASE = "https://script.google.com/a/macros/minervacenters.com/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g";
+var STUDENT_EXEC_BASE = "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g";
 
 /******************** ENTRYPOINT: POST ********************/
 function doPost(e) {
@@ -264,9 +264,15 @@ function doGet(e) {
   try {
     currentUrl = clean_(ScriptApp.getService().getUrl() || "");
   } catch (routeErr) {}
+  var queryString = (e && typeof e.queryString === "string" && e.queryString) ? ("?" + e.queryString) : "";
+  var requestUrl = currentUrl ? (currentUrl + queryString) : "";
+  if (isDomainScopedMacrosUrl_(requestUrl)) {
+    return renderDomainScopedUrlGuard_(requestUrl);
+  }
   Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
 
   if (view === "diag") return respondDiag_(e);
+  if (view === "whoami") return doGet_whoami_(e);
   if (view === "file") return doGet_file_(e);
   if (view === "driveapiprobe") return doGet_driveApiProbe_(e);
   if (view === "drivedeepprobe") return doGet_driveDeepProbe_(e);
@@ -3026,8 +3032,6 @@ function setPortalSecretForApplicant_(applicantId, newSecret) {
 function buildStudentPortalUrl_(applicantId, secret) {
   var base = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
   if (!base) throw new Error("Missing CONFIG.WEBAPP_URL_STUDENT");
-  // normalize to domain-style, in case someone pastes /macros/ accidentally
-  base = base.replace("https://script.google.com/macros/", "https://script.google.com/a/macros/minervacenters.com/");
   return base
     + "?view=portal&id="
     + encodeURIComponent(clean_(applicantId || ""))
@@ -3065,6 +3069,7 @@ function admin_getStudentPortalLink(applicantId) {
       url: url,
       link: url,
       portalUrl: url,
+      dbg: debugId,
       applicantId: idNorm,
       rowNumber: rowNumber,
       debugId: debugId

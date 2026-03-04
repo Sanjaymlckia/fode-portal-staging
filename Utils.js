@@ -546,6 +546,22 @@ function getStudentBaseUrl_() {
   return canonicalizeWebAppUrl_(getCurrentWebAppUrl_());
 }
 
+function buildExecUrlFromDeploymentId_(deploymentId) {
+  var id = clean_(deploymentId || "");
+  if (!id) return "";
+  return "https://script.google.com/macros/s/" + id + "/exec";
+}
+
+function isDomainScopedMacrosUrl_(url) {
+  return /https:\/\/script\.google\.com\/a\/macros\//i.test(clean_(url || ""));
+}
+
+function canonicalizeToMacros_(url) {
+  var raw = clean_(url || "");
+  if (!raw) return "";
+  return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\/macros\/s\//i, "https://script.google.com/macros/s/");
+}
+
 function toIsoDateInput_(value) {
   if (value instanceof Date) {
     if (isNaN(value.getTime())) return "";

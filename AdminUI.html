@@ -58,6 +58,8 @@
       background: rgba(239,68,68,.25);
       border-color: rgba(239,68,68,.55);
     }
+    .diagLinks a{ color:#93c5fd; text-decoration:none; }
+    .diagLinks a:hover{ text-decoration:underline; }
     .card{
       background: rgba(17,26,46,.85);
       border: 1px solid rgba(148,163,184,.18);
@@ -347,6 +349,10 @@
       <div class="sub" title="Script ID: <?= BUILD_SCRIPT_ID ?>">
         <div>WebApp: <?= WEBAPP_URL ?> <span id="versionBadge" class="verBadge"></span></div>
         <div>Build: <?= BUILD_VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
+        <div class="diagLinks">Diagnostics:
+          <a href="<?= WEBAPP_URL_ADMIN ?>?view=whoami" target="_blank" rel="noopener">Admin whoami</a> |
+          <a href="<?= WEBAPP_URL_STUDENT ?>?view=whoami" target="_blank" rel="noopener">Student whoami</a>
+        </div>
       </div>
     </div>
     <div id="studentUrlWarn" class="card" style="display:none;border-color: rgba(245,158,11,.45);">
@@ -667,7 +673,7 @@
     function normalizeStudentBaseUrl_(url){
       var raw = String(url || "").trim();
       if (!raw) return "";
-      return raw.replace("https://script.google.com/macros/", "https://script.google.com/a/macros/minervacenters.com/");
+      return raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\/macros\/s\//i, "https://script.google.com/macros/s/");
     }
     function parsePortalLinkInfo_(link){
       var raw = String(link || "").trim();
