@@ -277,9 +277,6 @@ function doGet(e) {
       + '<p><a href="' + esc_(target) + '" target="_top">Continue</a></p>'
       + '</body></html>';
     return HtmlService.createHtmlOutput(redirectHtml)
-      .addMetaTag('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-      .addMetaTag('Pragma', 'no-cache')
-      .addMetaTag('Expires', '0')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 

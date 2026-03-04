@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-04-PNG-STAGING-r172",
-  CHANGELOG_LAST: "r172: redirect /a/<domain>/macros to canonical /macros (no-cache) before routing",
-  DEPLOY_VERSION_NUMBER: 172,
+  VERSION: "2026-03-04-PNG-STAGING-r173",
+  CHANGELOG_LAST: "r173: remove invalid HtmlOutput meta tags from redirect",
+  DEPLOY_VERSION_NUMBER: 173,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
