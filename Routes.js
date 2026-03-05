@@ -23,9 +23,9 @@ function doGet_whoami_(e) {
   try { act = clean_(Session.getActiveUser().getEmail() || ""); } catch (_actErr) {}
   var effSafe = eff ? eff.replace(/@.*$/, "@...") : "unknown";
   var actSafe = act ? act.replace(/@.*$/, "@...") : "unknown";
-  var canonicalReq = canonicalizeToMacros_(reqUrl);
-  var adminCanonical = canonicalizeToMacros_(buildExecUrlFromDeploymentId_(CONFIG.DEPLOYMENT_ID_ADMIN || ""));
-  var studentCanonical = canonicalizeToMacros_(buildExecUrlFromDeploymentId_(CONFIG.DEPLOYMENT_ID_STUDENT || ""));
+  var canonicalReq = canonicalExecBase_(reqUrl);
+  var adminCanonical = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || "");
+  var studentCanonical = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || "");
   var html = ''
     + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
     + '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -35,6 +35,9 @@ function doGet_whoami_(e) {
     + '<div class="row"><span class="k">Canonical /macros URL:</span> <span class="v">' + esc_(canonicalReq || "-") + '</span></div>'
     + '<div class="row"><span class="k">Effective user:</span> <span class="v">' + esc_(effSafe) + '</span></div>'
     + '<div class="row"><span class="k">Active user:</span> <span class="v">' + esc_(actSafe) + '</span></div>'
+    + '<div class="row"><span class="k">CONFIG.VERSION:</span> <span class="v">' + esc_(clean_(CONFIG.VERSION || "")) + '</span></div>'
+    + '<div class="row"><span class="k">CONFIG.DEPLOY_VERSION_NUMBER:</span> <span class="v">' + esc_(String(Number(CONFIG.DEPLOY_VERSION_NUMBER || 0))) + '</span></div>'
+    + '<div class="row"><span class="k">CONFIG.SCRIPT_ID:</span> <span class="v">' + esc_(clean_(CONFIG.SCRIPT_ID || "")) + '</span></div>'
     + '<div class="row"><span class="k">CONFIG.WEBAPP_URL_ADMIN:</span> <span class="v">' + esc_(clean_(CONFIG.WEBAPP_URL_ADMIN || "")) + '</span></div>'
     + '<div class="row"><span class="k">CONFIG.WEBAPP_URL_STUDENT:</span> <span class="v">' + esc_(clean_(CONFIG.WEBAPP_URL_STUDENT || "")) + '</span></div>'
     + '<div class="row"><span class="k">DEPLOYMENT_ID_ADMIN:</span> <span class="v">' + esc_(clean_(CONFIG.DEPLOYMENT_ID_ADMIN || "")) + '</span></div>'

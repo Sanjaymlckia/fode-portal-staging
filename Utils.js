@@ -552,16 +552,25 @@ function buildExecUrlFromDeploymentId_(deploymentId) {
   return "https://script.google.com/macros/s/" + id + "/exec";
 }
 
+function canonicalExecBase_(urlOrId) {
+  var raw = clean_(urlOrId || "");
+  if (!raw) return "";
+  var deploymentId = "";
+  if (/^AKfy[a-zA-Z0-9_-]+$/.test(raw)) {
+    deploymentId = raw;
+  } else {
+    deploymentId = extractDeploymentIdFromExecUrl_(raw);
+  }
+  if (!deploymentId) return "";
+  return buildExecUrlFromDeploymentId_(deploymentId);
+}
+
 function isDomainScopedMacrosUrl_(url) {
   return /https:\/\/script\.google\.com\/a\/(?:[^/]+\/)?macros\//i.test(clean_(url || ""));
 }
 
 function canonicalizeToMacros_(url) {
-  var raw = clean_(url || "");
-  if (!raw) return "";
-  raw = raw.replace(/^https:\/\/script\.google\.com\/a\/[^/]+\/macros\/s\//i, "https://script.google.com/macros/s/");
-  raw = raw.replace(/^https:\/\/script\.google\.com\/a\/macros\/s\//i, "https://script.google.com/macros/s/");
-  return raw;
+  return canonicalExecBase_(url);
 }
 
 function extractDeploymentIdFromExecUrl_(url) {
@@ -577,17 +586,19 @@ function extractDeploymentIdFromExecUrl_(url) {
 function pickCanonicalExecBase_(e) {
   var qsView = "";
   try { qsView = clean_(e && e.parameter && e.parameter.view || ""); } catch (_e1) {}
-  if (qsView === "admin") return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
-  if (qsView === "portal" || qsView === "file") return clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  var adminBase = canonicalExecBase_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.DEPLOYMENT_ID_ADMIN || "");
+  var studentBase = canonicalExecBase_(CONFIG.WEBAPP_URL_STUDENT || CONFIG.DEPLOYMENT_ID_STUDENT || "");
+  if (qsView === "admin") return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "");
+  if (qsView === "portal" || qsView === "file") return studentBase || clean_(CONFIG.WEBAPP_URL_STUDENT || "");
 
   var serviceUrl = "";
   try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_e2) {}
   var dep = extractDeploymentIdFromExecUrl_(serviceUrl);
   var adminDep = clean_(CONFIG.DEPLOYMENT_ID_ADMIN || "");
   var studentDep = clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "");
-  if (dep && adminDep && dep === adminDep) return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
-  if (dep && studentDep && dep === studentDep) return clean_(CONFIG.WEBAPP_URL_STUDENT || "");
-  return clean_(CONFIG.WEBAPP_URL_ADMIN || "");
+  if (dep && adminDep && dep === adminDep) return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "");
+  if (dep && studentDep && dep === studentDep) return studentBase || clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "") || buildExecUrlFromDeploymentId_(adminDep);
 }
 
 function toIsoDateInput_(value) {

@@ -3048,13 +3048,28 @@ function setPortalSecretForApplicant_(applicantId, newSecret) {
 }
 
 function buildStudentPortalUrl_(applicantId, secret) {
-  var base = clean_(CONFIG.WEBAPP_URL_STUDENT || "");
-  if (!base) throw new Error("Missing CONFIG.WEBAPP_URL_STUDENT");
+  var base = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || "");
+  if (!base) throw new Error("Missing canonical student exec base");
   return base
     + "?view=portal&id="
     + encodeURIComponent(clean_(applicantId || ""))
     + "&s="
     + encodeURIComponent(clean_(secret || ""));
+}
+
+function admin_getRuntimeInfo() {
+  var serviceUrl = "";
+  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_e) {}
+  return {
+    ok: true,
+    version: clean_(CONFIG.VERSION || ""),
+    deployVersion: Number(CONFIG.DEPLOY_VERSION_NUMBER || 0),
+    scriptId: clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId() || ""),
+    serviceUrl: serviceUrl,
+    adminBase: canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || ""),
+    studentBase: canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || ""),
+    nowIso: new Date().toISOString()
+  };
 }
 
 function admin_getStudentPortalLink(applicantId) {

@@ -349,6 +349,7 @@
       <div class="sub" title="Script ID: <?= BUILD_SCRIPT_ID ?>">
         <div>WebApp: <?= WEBAPP_URL ?> <span id="versionBadge" class="verBadge"></span></div>
         <div>Build: <?= BUILD_VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
+        <div id="runtimeInfoLine">Runtime: loading...</div>
         <div class="diagLinks">Diagnostics:
           <a href="<?!= ((CONFIG && CONFIG.WEBAPP_URL_ADMIN) ? CONFIG.WEBAPP_URL_ADMIN : '') ?>?view=whoami" target="_blank" rel="noopener">Admin whoami</a> |
           <a href="<?!= ((CONFIG && CONFIG.WEBAPP_URL_STUDENT) ? CONFIG.WEBAPP_URL_STUDENT : '') ?>?view=whoami" target="_blank" rel="noopener">Student whoami</a>
@@ -616,6 +617,7 @@
     let lastDocsSendAttemptByApplicantId = {};
     let isDocsSendBusy = false;
     let currentPortalLinkInfo = null;
+    let runtimeInfoCache = null;
     // Session-only fallback for "Sent" state when no persistent sent field is present in payload.
     let docsFollowupSentRows = new Set();
     let lastBackfillMode = "dry";
@@ -2296,7 +2298,9 @@
         return;
       }
       run_("admin_getStudentPortalLink", { applicantId: applicantId }, function(res){
-          const link = (res && (res.url || res.portalUrl || res.link)) ? (res.url || res.portalUrl || res.link) : "";
+          const rawLink = (res && (res.url || res.portalUrl || res.link)) ? (res.url || res.portalUrl || res.link) : "";
+          const parsed = parsePortalLinkInfo_(rawLink);
+          const link = parsed ? (String(parsed.baseUrl || "") + "?view=portal&id=" + encodeURIComponent(parsed.applicantId) + "&s=" + encodeURIComponent(parsed.secret)) : rawLink;
           if (!res || res.ok !== true || !link) {
             setMsg("mMsg", "Portal link error. Debug: " + String((res && res.debugId) || ""));
             return;
@@ -2326,7 +2330,9 @@
         return;
       }
       run_("admin_resetPortalSecret", { rowNumber: currentRowNumber }, function(res){
-          const link = (res && (res.portalUrl || res.newPortalUrl || res.link)) ? (res.portalUrl || res.newPortalUrl || res.link) : "";
+          const rawLink = (res && (res.portalUrl || res.newPortalUrl || res.link)) ? (res.portalUrl || res.newPortalUrl || res.link) : "";
+          const parsed = parsePortalLinkInfo_(rawLink);
+          const link = parsed ? (String(parsed.baseUrl || "") + "?view=portal&id=" + encodeURIComponent(parsed.applicantId) + "&s=" + encodeURIComponent(parsed.secret)) : rawLink;
           if (!res || res.ok !== true || !link) {
             setMsg("mMsg", "Portal link error. Debug: " + String((res && res.debugId) || ""));
             return;
@@ -2505,31 +2511,68 @@
     }
 
     setRoleUi();
+    function renderRuntimeInfoLine_(runtime){
+      var line = document.getElementById("runtimeInfoLine");
+      if (!line) return;
+      var info = (runtime && typeof runtime === "object") ? runtime : null;
+      if (!info || info.ok !== true) {
+        line.textContent = "Runtime: unavailable";
+        return;
+      }
+      var serviceUrl = String(info.serviceUrl || "").trim();
+      var hostForm = serviceUrl.indexOf("/a/") >= 0 ? "domain-scoped" : "canonical";
+      line.textContent = "Runtime: " + String(info.version || "-")
+        + " | Deploy: v" + String(Number(info.deployVersion || 0))
+        + " | ServiceUrl host form: " + hostForm;
+      line.title = serviceUrl || "";
+    }
+    function fetchRuntimeInfo_(){
+      google.script.run
+        .withSuccessHandler(function(res){
+          runtimeInfoCache = res || null;
+          renderRuntimeInfoLine_(runtimeInfoCache);
+          initVersionBadge_();
+        })
+        .withFailureHandler(function(){
+          renderRuntimeInfoLine_(null);
+          initVersionBadge_();
+        })
+        .admin_getRuntimeInfo();
+    }
     function initVersionBadge_() {
       var badge = document.getElementById("versionBadge");
       if (badge) {
-        var deployNum = Number(DEPLOY_VERSION_NUMBER || 0);
+        var rt = (runtimeInfoCache && runtimeInfoCache.ok === true) ? runtimeInfoCache : null;
+        var runtimeVersion = String((rt && rt.version) || VERSION || "");
+        var deployNum = Number((rt && rt.deployVersion) || DEPLOY_VERSION_NUMBER || 0);
         var expectedToken = deployNum > 0 ? ("r" + String(deployNum)) : "";
-        var hasMatch = !!(expectedToken && String(VERSION || "").indexOf(expectedToken) >= 0);
+        var hasMatch = !!(expectedToken && runtimeVersion.indexOf(expectedToken) >= 0);
         if (!hasMatch) {
           badge.textContent = "VERSION MISMATCH";
           badge.classList.add("mismatch");
         } else {
-          badge.textContent = VERSION_SHORT + " | v" + String(deployNum);
+          var shortRuntime = (function(v){
+            v = String(v || "");
+            var tail = v.split("-").pop();
+            if (/^r\d+$/i.test(tail)) return tail;
+            var m = v.match(/-r(\d+)\b/i);
+            return m ? ("r" + m[1]) : VERSION_SHORT;
+          })(runtimeVersion);
+          badge.textContent = shortRuntime + " | v" + String(deployNum);
           badge.classList.remove("mismatch");
         }
-        badge.title = "Build: " + String(VERSION || "-") + " | Deploy v" + String(deployNum || 0);
+        badge.title = "Build: " + runtimeVersion + " | Deploy v" + String(deployNum || 0);
       }
     }
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", function(){
-        initVersionBadge_();
+        fetchRuntimeInfo_();
         initQueuePanelEvents_();
         bindDocsFollowupControls_();
         loadReviewQueues();
       });
     } else {
-      initVersionBadge_();
+      fetchRuntimeInfo_();
       initQueuePanelEvents_();
       bindDocsFollowupControls_();
       loadReviewQueues();
