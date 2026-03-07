@@ -256,58 +256,112 @@ function doPost(e) {
 }
 
 /******************** ENTRYPOINT: GET ********************/
-function doGet(e) {
-  var serviceUrl = "";
-  try {
-    serviceUrl = clean_(ScriptApp.getService().getUrl() || "");
-  } catch (_serviceErr) {}
-  if (isDomainScopedMacrosUrl_(serviceUrl)) {
-    var base = clean_(pickCanonicalExecBase_(e) || "");
-    var qsRaw = (e && typeof e.queryString === "string") ? e.queryString : "";
-    var target = base + (qsRaw ? ("?" + qsRaw) : "");
-    var redirectHtml = ''
-      + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
-      + '<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">'
-      + '<meta http-equiv="Pragma" content="no-cache">'
-      + '<meta http-equiv="Expires" content="0">'
-      + '<meta http-equiv="refresh" content="0; url=' + esc_(target) + '">'
-      + '</head><body>'
-      + '<script>location.replace(' + JSON.stringify(target) + ');</script>'
-      + '<p>Redirecting to canonical URL...</p>'
-      + '<p><a href="' + esc_(target) + '" target="_top">Continue</a></p>'
-      + '</body></html>';
-    return HtmlService.createHtmlOutput(redirectHtml)
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+function maybeRedirectToCanonical_(e) {
+  var currentUrl = ScriptApp.getService().getUrl();
+  var canonicalBase = pickCanonicalExecBase_(e);
+
+  if (!currentUrl || !canonicalBase) return null;
+
+  if (currentUrl.indexOf("/a/macros/") !== -1) {
+    var redirectHtml = HtmlService.createHtmlOutput(
+      '<script>location.replace("' + canonicalBase + '" + location.search);</script>'
+    );
+
+    redirectHtml
+      .addMetaTag("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+      .addMetaTag("Pragma", "no-cache")
+      .addMetaTag("Expires", "0");
+
+    return redirectHtml;
   }
 
+  return null;
+}
+
+function doGet(e) {
+  var dbg = (typeof newDebugId_ === "function") ? newDebugId_() : ("DBG-" + Utilities.getUuid().slice(0, 8));
   var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
   var view = clean_(params.view || "").toLowerCase();
-  var isAdminDeployment = isAdminDeploymentRequest_();
+  var serviceUrl = "";
   var currentUrl = "";
+  var isAdminDeployment = false;
+
   try {
-    currentUrl = clean_(ScriptApp.getService().getUrl() || "");
-  } catch (routeErr) {}
-  Logger.log("ROUTE doGet view=%s isAdmin=%s url=%s", view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl);
+    var redirect = maybeRedirectToCanonical_(e);
+    if (redirect) return redirect;
 
-  if (view === "diag") return respondDiag_(e);
-  if (view === "whoami") return doGet_whoami_(e);
-  if (view === "file") return doGet_file_(e);
-  if (view === "driveapiprobe") return doGet_driveApiProbe_(e);
-  if (view === "drivedeepprobe") return doGet_driveDeepProbe_(e);
-  if (view === "driveprobe") return doGet_driveProbe_(e);
-  if (view === "portalsmoke") return doGet_portalSmoke_(e);
-  if (view === "uploadsmoke") return doGet_uploadSmoke_(e);
-  if (!view) {
-    if (isAdminDeployment) return renderAdminApp_(e);
-    view = "portal";
-  }
-  if (view === "admin") return renderAdminApp_(e);
-  if (view !== "portal") {
-    if (isAdminDeployment) return renderAdminApp_(e);
-    view = "portal";
-  }
+    try {
+      serviceUrl = clean_(ScriptApp.getService().getUrl() || "");
+      currentUrl = serviceUrl;
+    } catch (_serviceErr) {}
 
+    if (view === "whoami") {
+      return HtmlService.createHtmlOutput(
+        JSON.stringify({
+          version: CONFIG.VERSION,
+          deployment: CONFIG.DEPLOY_VERSION_NUMBER,
+          user: Session.getActiveUser().getEmail(),
+          url: ScriptApp.getService().getUrl()
+        }, null, 2)
+      );
+    }
+
+    isAdminDeployment = isAdminDeploymentRequest_();
+    Logger.log("ROUTE doGet START dbg=%s view=%s isAdmin=%s url=%s", dbg, view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl || "");
+
+    var handler = resolveDoGetHandler_(view, isAdminDeployment);
+    var result = handler(e);
+    if (!result) {
+      throw new Error("Route handler returned empty response. view=" + (view || "(blank)"));
+    }
+
+    Logger.log("ROUTE doGet OK dbg=%s view=%s", dbg, view || "(blank)");
+    return result;
+  } catch (err) {
+    var errMsg = stringifyGsError_(err);
+    try {
+      Logger.log("ROUTE doGet FAIL dbg=%s view=%s url=%s err=%s", dbg, view || "(blank)", currentUrl || "", errMsg);
+    } catch (_logErr) {}
+    return renderDoGetFatalHtml_(dbg, view, currentUrl, errMsg);
+  }
+}
+
+function resolveDoGetHandler_(view, isAdminDeployment) {
+  var route = clean_(view || "").toLowerCase();
+  if (route === "diag") return respondDiag_;
+  if (route === "whoami") return doGet_whoami_;
+  if (route === "file") return doGet_file_;
+  if (route === "driveapiprobe") return doGet_driveApiProbe_;
+  if (route === "drivedeepprobe") return doGet_driveDeepProbe_;
+  if (route === "driveprobe") return doGet_driveProbe_;
+  if (route === "portalsmoke") return doGet_portalSmoke_;
+  if (route === "uploadsmoke") return doGet_uploadSmoke_;
+  if (route === "admin") return renderAdminApp_;
+  if (!route) return isAdminDeployment ? renderAdminApp_ : renderPortalAppFromDoGet_;
+  return isAdminDeployment ? renderAdminApp_ : renderPortalAppFromDoGet_;
+}
+
+function renderPortalAppFromDoGet_(e) {
   return renderPortalPageResponse_(e, { uploadResult: null, viewName: "portal" });
+}
+
+function renderDoGetFatalHtml_(dbg, view, url, errMsg) {
+  var html = ''
+    + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    + '<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">'
+    + '<meta http-equiv="Pragma" content="no-cache">'
+    + '<meta http-equiv="Expires" content="0">'
+    + '<style>body{font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px}.card{max-width:900px;margin:0 auto;background:#111827;border:1px solid #7f1d1d;border-radius:12px;padding:16px}.k{color:#93c5fd;font-weight:700}.v{word-break:break-word}.err{margin-top:12px;padding:10px;border:1px solid #7f1d1d;background:#3f1d1d;border-radius:8px;color:#fee2e2}</style>'
+    + '</head><body><div class="card">'
+    + '<h2 style="margin:0 0 12px 0;color:#fecaca">ROUTE FAILURE</h2>'
+    + '<div><span class="k">Debug ID:</span> <span class="v">' + esc_(clean_(dbg || "")) + '</span></div>'
+    + '<div style="margin-top:8px"><span class="k">View:</span> <span class="v">' + esc_(clean_(view || "(blank)")) + '</span></div>'
+    + '<div style="margin-top:8px"><span class="k">URL:</span> <span class="v">' + esc_(clean_(url || "")) + '</span></div>'
+    + '<div class="err"><span class="k">Error:</span> ' + esc_(clean_(errMsg || "Unknown error")) + '</div>'
+    + '</div></body></html>';
+  return HtmlService.createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function renderPortalPageResponse_(e, opts) {

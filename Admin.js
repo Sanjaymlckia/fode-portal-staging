@@ -327,7 +327,9 @@ function admin_getApplicantDetail(payload) {
 
     var map = CONFIG.DOC_FIELDS || [];
     detailObj._docs = map.map(function (m) {
-      var url = clean_(displayRow[idx[m.file] - 1]);
+      var rawValue = displayRow[idx[m.file] - 1];
+      var resolvedUrls = normalizeToUrlList_(rawValue, m.file);
+      var url = resolvedUrls.length ? clean_(resolvedUrls[0]) : clean_(rawValue);
       return {
         label: m.label,
         file: m.file,
@@ -335,7 +337,7 @@ function admin_getApplicantDetail(payload) {
         commentField: m.comment,
         required: m.required !== false,
         url: url,
-        hasFile: /^https?:\/\//i.test(url),
+        hasFile: resolvedUrls.length > 0 || /^https?:\/\//i.test(url),
         status: normalizeDocStatus_(clean_(row[idx[m.status] - 1]) || "Pending"),
         comment: clean_(row[idx[m.comment] - 1])
       };

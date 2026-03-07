@@ -348,7 +348,7 @@
       </div>
       <div class="sub" title="Script ID: <?= BUILD_SCRIPT_ID ?>">
         <div>WebApp: <?= WEBAPP_URL ?> <span id="versionBadge" class="verBadge"></span></div>
-        <div>Build: <?= BUILD_VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
+        <div>Build: <?= CONFIG.VERSION ?> | Rendered: <?= BUILD_RENDERED_AT ?></div>
         <div id="runtimeInfoLine">Runtime: loading...</div>
         <div class="diagLinks">Diagnostics:
           <a href="<?!= ((CONFIG && CONFIG.WEBAPP_URL_ADMIN) ? CONFIG.WEBAPP_URL_ADMIN : '') ?>?view=whoami" target="_blank" rel="noopener">Admin whoami</a> |

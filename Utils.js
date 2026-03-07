@@ -569,8 +569,13 @@ function isDomainScopedMacrosUrl_(url) {
   return /https:\/\/script\.google\.com\/a\/(?:[^/]+\/)?macros\//i.test(clean_(url || ""));
 }
 
-function canonicalizeToMacros_(url) {
-  return canonicalExecBase_(url);
+function canonicalizeToMacros_(deploymentId) {
+  var raw = clean_(deploymentId || "");
+  var id = raw;
+  var m = raw.match(/\/macros\/s\/([^/]+)\/exec/i);
+  if (m && m[1]) id = clean_(m[1]);
+  if (!id) return "";
+  return "https://script.google.com/macros/s/" + id + "/exec";
 }
 
 function extractDeploymentIdFromExecUrl_(url) {
@@ -584,21 +589,13 @@ function extractDeploymentIdFromExecUrl_(url) {
 }
 
 function pickCanonicalExecBase_(e) {
-  var qsView = "";
-  try { qsView = clean_(e && e.parameter && e.parameter.view || ""); } catch (_e1) {}
-  var adminBase = canonicalExecBase_(CONFIG.WEBAPP_URL_ADMIN || CONFIG.DEPLOYMENT_ID_ADMIN || "");
-  var studentBase = canonicalExecBase_(CONFIG.WEBAPP_URL_STUDENT || CONFIG.DEPLOYMENT_ID_STUDENT || "");
-  if (qsView === "admin") return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "");
-  if (qsView === "portal" || qsView === "file") return studentBase || clean_(CONFIG.WEBAPP_URL_STUDENT || "");
+  var qsView = (e && e.parameter && e.parameter.view) ? e.parameter.view : "";
 
-  var serviceUrl = "";
-  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_e2) {}
-  var dep = extractDeploymentIdFromExecUrl_(serviceUrl);
-  var adminDep = clean_(CONFIG.DEPLOYMENT_ID_ADMIN || "");
-  var studentDep = clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "");
-  if (dep && adminDep && dep === adminDep) return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "");
-  if (dep && studentDep && dep === studentDep) return studentBase || clean_(CONFIG.WEBAPP_URL_STUDENT || "");
-  return adminBase || clean_(CONFIG.WEBAPP_URL_ADMIN || "") || buildExecUrlFromDeploymentId_(adminDep);
+  if (qsView === "admin") return CONFIG.WEBAPP_URL_ADMIN;
+  if (qsView === "portal" || qsView === "student") return CONFIG.WEBAPP_URL_STUDENT;
+
+  // fallback to admin if unknown
+  return CONFIG.WEBAPP_URL_ADMIN;
 }
 
 function toIsoDateInput_(value) {
@@ -1557,23 +1554,158 @@ function test_PortalLogWrite() {
   Logger.log("Done");
 }
 
-function normalizeToUrlList_(cellValue) {
+function isStagingDriveUrlResolverEnabled_() {
+  var mode = clean_((CONFIG && CONFIG.DATA_MODE) || "STAGING").toUpperCase();
+  return mode !== "PROD";
+}
+
+function getDriveUploadFields_() {
+  if (CONFIG && Array.isArray(CONFIG.PORTAL_UPLOAD_KEYS) && CONFIG.PORTAL_UPLOAD_KEYS.length) {
+    return CONFIG.PORTAL_UPLOAD_KEYS.slice();
+  }
+  return [
+    "Birth_ID_Passport_File",
+    "Latest_School_Report_File",
+    "Transfer_Certificate_File",
+    "Passport_Photo_File",
+    "Fee_Receipt_File"
+  ];
+}
+
+function isDriveUploadField_(fieldName) {
+  var f = clean_(fieldName || "");
+  if (!f) return false;
+  var list = getDriveUploadFields_();
+  for (var i = 0; i < list.length; i++) {
+    if (clean_(list[i]) === f) return true;
+  }
+  return false;
+}
+
+function normalizeUrlToken_(value) {
+  var s = clean_(value || "");
+  if (!s) return "";
+  s = s.replace(/^['"]+|['"]+$/g, "");
+  s = s.replace(/[)\],.;]+$/g, "");
+  return clean_(s);
+}
+
+function canonicalDriveFileUrlFromId_(id) {
+  var fileId = clean_(id || "");
+  if (!fileId) return "";
+  return "https://drive.google.com/file/d/" + fileId + "/view";
+}
+
+function extractDriveFileIdFromUrlToken_(s) {
+  var raw = clean_(s || "");
+  if (!raw) return "";
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(raw)) return raw;
+  var m1 = raw.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
+  if (m1 && m1[1]) return m1[1];
+  var m2 = raw.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
+  if (m2 && m2[1]) return m2[1];
+  var m3 = raw.match(/\/uc\?(?:[^#]*&)?id=([a-zA-Z0-9_-]+)/i);
+  if (m3 && m3[1]) return m3[1];
+  var m4 = raw.match(/\/d\/([a-zA-Z0-9_-]{20,})/i);
+  if (m4 && m4[1]) return m4[1];
+  return "";
+}
+
+function addUrlCandidate_(out, seen, candidate) {
+  var c = normalizeUrlToken_(candidate);
+  if (!c) return;
+  if (/^https?:\/\//i.test(c)) {
+    if (seen[c]) return;
+    seen[c] = true;
+    out.push(c);
+    return;
+  }
+  var id = extractDriveFileIdFromUrlToken_(c);
+  if (!id) return;
+  var canonical = canonicalDriveFileUrlFromId_(id);
+  if (!canonical || seen[canonical]) return;
+  seen[canonical] = true;
+  out.push(canonical);
+}
+
+function collectDriveUrlCandidates_(value, out, seen) {
+  if (value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    for (var i = 0; i < value.length; i++) collectDriveUrlCandidates_(value[i], out, seen);
+    return;
+  }
+  if (typeof value === "object") {
+    var keys = Object.keys(value);
+    var preferred = ["url", "fileUrl", "webViewLink", "webContentLink", "link", "driveUrl"];
+    for (var p = 0; p < preferred.length; p++) {
+      var k0 = preferred[p];
+      if (Object.prototype.hasOwnProperty.call(value, k0)) addUrlCandidate_(out, seen, value[k0]);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "id")) addUrlCandidate_(out, seen, canonicalDriveFileUrlFromId_(value.id));
+    if (Object.prototype.hasOwnProperty.call(value, "fileId")) addUrlCandidate_(out, seen, canonicalDriveFileUrlFromId_(value.fileId));
+    for (var j = 0; j < keys.length; j++) {
+      var k = keys[j];
+      collectDriveUrlCandidates_(value[k], out, seen);
+    }
+    return;
+  }
+
+  var s = clean_(value || "");
+  if (!s) return;
+
+  if (/^\s*=HYPERLINK\(/i.test(s)) {
+    var hm = s.match(/=HYPERLINK\(\s*"([^"]+)"/i);
+    if (hm && hm[1]) addUrlCandidate_(out, seen, hm[1]);
+  }
+
+  if ((s.charAt(0) === "{" && s.charAt(s.length - 1) === "}") || (s.charAt(0) === "[" && s.charAt(s.length - 1) === "]")) {
+    try {
+      var parsed = JSON.parse(s);
+      collectDriveUrlCandidates_(parsed, out, seen);
+    } catch (_jsonErr) {}
+  }
+
+  var parts = s.split(/\r?\n|,/);
+  for (var n = 0; n < parts.length; n++) addUrlCandidate_(out, seen, parts[n]);
+
+  var regex = /https?:\/\/[^\s"'<>]+/ig;
+  var m;
+  while ((m = regex.exec(s)) !== null) {
+    addUrlCandidate_(out, seen, m[0]);
+  }
+
+  addUrlCandidate_(out, seen, s);
+}
+
+function normalizeToUrlList_(cellValue, fieldName) {
   var raw = clean_(cellValue);
   if (!raw) return [];
-  var parts = raw.split(/\r?\n|,/).map(function (s) {
-    return clean_(s);
-  }).filter(function (s) {
-    return !!s;
-  });
+
+  if (!isStagingDriveUrlResolverEnabled_()) {
+    var legacyParts = raw.split(/\r?\n|,/).map(function (s) {
+      return clean_(s);
+    }).filter(function (s) {
+      return !!s;
+    });
+    var legacyOut = [];
+    var legacySeen = {};
+    for (var i = 0; i < legacyParts.length; i++) {
+      var p = legacyParts[i];
+      if (!/^https?:\/\//i.test(p)) continue;
+      if (legacySeen[p]) continue;
+      legacySeen[p] = true;
+      legacyOut.push(p);
+    }
+    return legacyOut;
+  }
+
+  if (fieldName && !isDriveUploadField_(fieldName)) {
+    return [];
+  }
+
   var out = [];
   var seen = {};
-  for (var i = 0; i < parts.length; i++) {
-    var p = parts[i];
-    if (!/^https?:\/\//i.test(p)) continue;
-    if (seen[p]) continue;
-    seen[p] = true;
-    out.push(p);
-  }
+  collectDriveUrlCandidates_(cellValue, out, seen);
   return out;
 }
 
@@ -1597,13 +1729,15 @@ function removeUrlFromCell_(existingValue, urlToRemove) {
 function extractDriveFileId_(urlOrId) {
   var s = clean_(urlOrId);
   if (!s) return "";
-  if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) return s;
-  var m1 = s.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i);
-  if (m1 && m1[1]) return m1[1];
-  var m2 = s.match(/[?&]id=([a-zA-Z0-9_-]+)/i);
-  if (m2 && m2[1]) return m2[1];
-  var m3 = s.match(/\/uc\?(?:[^#]*&)?id=([a-zA-Z0-9_-]+)/i);
-  if (m3 && m3[1]) return m3[1];
+  var direct = extractDriveFileIdFromUrlToken_(s);
+  if (direct) return direct;
+  if (isStagingDriveUrlResolverEnabled_()) {
+    var urls = normalizeToUrlList_(s);
+    for (var i = 0; i < urls.length; i++) {
+      var id = extractDriveFileIdFromUrlToken_(urls[i]);
+      if (id) return id;
+    }
+  }
   return "";
 }
 
