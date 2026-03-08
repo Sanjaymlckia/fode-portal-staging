@@ -4419,7 +4419,13 @@ function admin_listQueueRowObjects_(sheet) {
 }
 
 function classifyAdminQueue_(row) {
-  var birthStatus = String(firstNonEmpty_(row.Birth_Status, row["Birth Status"]) || "").trim();
+  var birthStatus = String(firstNonEmpty_(
+    row.Birth_ID_Status,
+    row.Birth_Status,
+    row["Birth_ID_Status"],
+    row["Birth Status"],
+    row["Birth ID Status"]
+  ) || "").trim();
   var reportStatus = String(firstNonEmpty_(row.Report_Status, row["Report Status"]) || "").trim();
   var photoStatus = String(firstNonEmpty_(row.Photo_Status, row["Photo Status"]) || "").trim();
   var transferStatus = String(firstNonEmpty_(row.Transfer_Status, row["Transfer Status"]) || "").trim();
