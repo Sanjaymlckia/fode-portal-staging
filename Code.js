@@ -4408,35 +4408,40 @@ function admin_listQueueRowObjects_(sheet) {
 }
 
 function classifyAdminQueue_(row) {
-  var docStatus = String(firstNonEmpty_(
-    row.Doc_Status,
-    row.DocStatus,
-    row.Documents_Status,
-    row.DocumentsStatus,
-    row.Document_Status,
-    row["Doc Status"],
-    row["Documents Status"]
-  ) || "").trim();
+  var birthStatus = String(firstNonEmpty_(row.Birth_Status, row["Birth Status"]) || "").trim();
+  var reportStatus = String(firstNonEmpty_(row.Report_Status, row["Report Status"]) || "").trim();
+  var photoStatus = String(firstNonEmpty_(row.Photo_Status, row["Photo Status"]) || "").trim();
+  var transferStatus = String(firstNonEmpty_(row.Transfer_Status, row["Transfer Status"]) || "").trim();
+  var receiptStatus = String(firstNonEmpty_(row.Receipt_Status, row["Receipt Status"]) || "").trim();
 
-  var paymentStatus = String(firstNonEmpty_(
-    row.Payment_Status,
-    row.PaymentStatus,
-    row.Payment,
-    row["Payment Status"],
-    row["Payment"]
+  var docVerificationStatus = String(firstNonEmpty_(
+    row.Doc_Verification_Status,
+    row["Doc Verification Status"],
+    row.Overall_Document_Status
   ) || "").trim();
 
   var overallStatus = String(firstNonEmpty_(
     row.Overall_Status,
-    row.OverallStatus,
     row["Overall Status"],
     row.Status,
     row["Application Status"]
   ) || "").trim();
 
-  var docsVerified = /verified/i.test(docStatus);
-  var paymentVerified = /verified/i.test(paymentStatus);
-  var hasAnyPayment = /paid|verified|received/i.test(paymentStatus);
+  var paymentVerifiedRaw = String(firstNonEmpty_(
+    row.Payment_Verified,
+    row["Payment Verified"],
+    row.PaymentStatus,
+    row.Payment_Status,
+    row.Payment
+  ) || "").trim();
+
+  var docsComplete = [birthStatus, reportStatus, photoStatus, transferStatus, receiptStatus]
+    .filter(function(v) { return v !== ""; })
+    .every(function(v) { return /verified/i.test(v); });
+
+  var docsVerified = /verified/i.test(docVerificationStatus) || docsComplete;
+  var paymentVerified = /yes|true|verified|paid/i.test(paymentVerifiedRaw);
+  var hasAnyPayment = paymentVerified || /yes|true|received|paid/i.test(paymentVerifiedRaw);
 
   if (!docsVerified && hasAnyPayment) return "payment_first_anomalies";
   if (docsVerified && paymentVerified) return "enrolled_ready";
@@ -4457,18 +4462,25 @@ function mapAdminQueueRow_(row) {
   var lastName = String(firstNonEmpty_(row.Last_Name, row.LastName, row["Last Name"]) || "").trim();
   var fullName = String((firstName + " " + lastName).trim() || firstNonEmpty_(row.Student_Name, row.Name, row["Student Name"]) || "").trim();
 
-  var docStatus = String(firstNonEmpty_(
-    row.Doc_Status,
-    row.DocStatus,
-    row.Documents_Status,
-    row["Doc Status"]
+  var docVerificationStatus = String(firstNonEmpty_(
+    row.Doc_Verification_Status,
+    row["Doc Verification Status"],
+    row.Overall_Document_Status
   ) || "").trim();
 
-  var paymentStatus = String(firstNonEmpty_(
-    row.Payment_Status,
+  var paymentVerifiedRaw = String(firstNonEmpty_(
+    row.Payment_Verified,
+    row["Payment Verified"],
     row.PaymentStatus,
-    row.Payment,
-    row["Payment Status"]
+    row.Payment_Status,
+    row.Payment
+  ) || "").trim();
+
+  var overallStatus = String(firstNonEmpty_(
+    row.Overall_Status,
+    row["Overall Status"],
+    row.Status,
+    row["Application Status"]
   ) || "").trim();
 
   var portalStatus = String(firstNonEmpty_(
@@ -4488,11 +4500,11 @@ function mapAdminQueueRow_(row) {
   return {
     applicantId: applicantId,
     name: fullName,
-    docStatus: docStatus,
-    paymentStatus: paymentStatus,
+    docStatus: docVerificationStatus || overallStatus,
+    paymentStatus: /yes|true|verified|paid/i.test(paymentVerifiedRaw) ? "Payment Verified" : "Pending",
     portalStatus: portalStatus,
     docsFollowUp: docsFollowUp,
-    eligibleDocsFollowUp: /verified/i.test(docStatus) && !/verified/i.test(paymentStatus)
+    eligibleDocsFollowUp: /verified/i.test(docVerificationStatus || overallStatus) && !/yes|true|verified|paid/i.test(paymentVerifiedRaw)
   };
 }
 
