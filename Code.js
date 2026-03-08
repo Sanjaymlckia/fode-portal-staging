@@ -3126,47 +3126,45 @@ function admin_getRuntimeInfo() {
   };
 }
 
+// SV GROK Mar 7 function overwrite
 function admin_getStudentPortalLink(applicantId) {
-  var debugId = newDebugId_();
+  Logger.log("admin_getStudentPortalLink CALLED - id=" + applicantId + " caller=" + Session.getEffectiveUser().getEmail());
+
   try {
-    var rawApplicant = applicantId;
-    if (applicantId && typeof applicantId === "object") {
-      rawApplicant = applicantId.applicantId || applicantId.id || "";
-    }
-    var adminEmail = getActiveUserEmail_();
-    if (!isAdmin_(adminEmail)) {
-      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
-    }
-    var idNorm = clean_(rawApplicant || "");
-    if (!idNorm) {
-      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
-    }
-    var sh = mustGetDataSheet_(getWorkingSpreadsheet_());
-    var rowNumber = findRowByApplicantId_(sh, idNorm);
-    if (!rowNumber) {
-      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
-    }
-    var secretRes = getPortalSecretForApplicant_(idNorm);
-    if (!secretRes || secretRes.ok !== true || !clean_(secretRes.secret || "")) {
-      return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
-    }
-    var url = buildStudentPortalUrl_(idNorm, secretRes.secret);
+    var ss = getWorkingSpreadsheet_();
+    var sheet = mustGetDataSheet_(ss);
+    var row = findApplicantRowById_(sheet, applicantId);
+    if (!row) throw new Error("Applicant not found");
+
+    var secret = row.PortalSecret || "";
+    if (!secret) throw new Error("No portal token");
+
+    var base = CONFIG.WEBAPP_URL_STUDENT || "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec";
+
+    var url =
+      base +
+      "?view=portal&id=" +
+      encodeURIComponent(applicantId) +
+      "&s=" +
+      encodeURIComponent(secret);
+
+    Logger.log("LINK GENERATED: " + url);
+
     return {
       ok: true,
       url: url,
-      link: url,
-      portalUrl: url,
-      dbg: debugId,
-      applicantId: idNorm,
-      rowNumber: rowNumber,
-      debugId: debugId
+      secret: secret
     };
+
   } catch (e) {
-    Logger.log("ADMIN_GET_STUDENT_PORTAL_LINK_FAIL " + debugId + " err=" + (e && e.message ? e.message : e));
-    return { ok: false, code: "PORTAL_LINK_ERROR", debugId: debugId, message: "Link generation failed" };
+    Logger.log("LINK FAIL: " + e.message);
+
+    return {
+      ok: false,
+      error: e.message
+    };
   }
 }
-
 function findPortalRowByIdSecret_(sheet, applicantId, secret) {
   var rowNum = findRowByApplicantId_(sheet, applicantId);
   if (!rowNum) return null;
@@ -4289,3 +4287,54 @@ function test_LogSheetWrite() {
 }
 
 function _claspPing() { return "pong"; }
+/************************************************************
+ADMIN QUEUE RPC (temporary recovery shim)
+************************************************************/
+
+function admin_getReviewQueues() {
+  try {
+    var queues = [
+      {
+        id: "docs_pending",
+        title: "Documents Pending",
+        description: "Applicants waiting for document verification",
+        count: 0
+      },
+      {
+        id: "payment_pending",
+        title: "Payments Pending",
+        description: "Applicants waiting for payment verification",
+        count: 0
+      }
+    ];
+
+    return {
+      ok: true,
+      queues: queues,
+      recoveryShim: true
+    };
+
+  } catch (e) {
+    return {
+      ok: false,
+      error: e.message
+    };
+  }
+}
+
+function admin_getQueueItems(queueId) {
+  try {
+    return {
+      ok: true,
+      items: [],
+      queueId: queueId,
+      recoveryShim: true
+    };
+
+  } catch (e) {
+    return {
+      ok: false,
+      error: e.message
+    };
+  }
+}
