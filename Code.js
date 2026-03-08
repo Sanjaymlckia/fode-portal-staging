@@ -4288,53 +4288,218 @@ function test_LogSheetWrite() {
 
 function _claspPing() { return "pong"; }
 /************************************************************
-ADMIN QUEUE RPC (temporary recovery shim)
+ADMIN QUEUE RPC (restored using existing row helpers)
 ************************************************************/
 
 function admin_getReviewQueues() {
   try {
-    var queues = [
-      {
-        id: "docs_pending",
-        title: "Documents Pending",
-        description: "Applicants waiting for document verification",
-        count: 0
-      },
-      {
-        id: "payment_pending",
-        title: "Payments Pending",
-        description: "Applicants waiting for payment verification",
-        count: 0
-      }
-    ];
+    var ss = getWorkingSpreadsheet_();
+    var sheet = mustGetDataSheet_(ss);
+    var rows = admin_listQueueRowObjects_(sheet);
+
+    var counts = {
+      docs_pending: 0,
+      payment_pending: 0,
+      payment_first_anomalies: 0,
+      enrolled_ready: 0
+    };
+
+    rows.forEach(function(row) {
+      var q = classifyAdminQueue_(row);
+      if (q && Object.prototype.hasOwnProperty.call(counts, q)) counts[q]++;
+    });
 
     return {
       ok: true,
-      queues: queues,
-      recoveryShim: true
+      queues: [
+        {
+          id: "docs_pending",
+          title: "Documents to Review",
+          description: "Applicants waiting for document verification",
+          count: counts.docs_pending
+        },
+        {
+          id: "payment_pending",
+          title: "Payments to Verify",
+          description: "Applicants with documents cleared and payment pending",
+          count: counts.payment_pending
+        },
+        {
+          id: "payment_first_anomalies",
+          title: "Payment-First Anomalies",
+          description: "Payment marked before document completion",
+          count: counts.payment_first_anomalies
+        },
+        {
+          id: "enrolled_ready",
+          title: "Paid & Approved for Enrollment",
+          description: "Applicants ready for next downstream action",
+          count: counts.enrolled_ready
+        }
+      ]
     };
 
   } catch (e) {
     return {
       ok: false,
-      error: e.message
+      error: e && e.message ? e.message : String(e)
     };
   }
 }
 
-function admin_getQueueItems(queueId) {
+function admin_getQueueItems(queueId, limit, offset) {
   try {
+    var ss = getWorkingSpreadsheet_();
+    var sheet = mustGetDataSheet_(ss);
+    var rows = admin_listQueueRowObjects_(sheet);
+
+    var safeLimit = Math.max(1, Math.min(Number(limit || 50), 200));
+    var safeOffset = Math.max(0, Number(offset || 0));
+
+    var filtered = rows.filter(function(row) {
+      return classifyAdminQueue_(row) === queueId;
+    });
+
+    var page = filtered.slice(safeOffset, safeOffset + safeLimit).map(function(row) {
+      return mapAdminQueueRow_(row);
+    });
+
     return {
       ok: true,
-      items: [],
       queueId: queueId,
-      recoveryShim: true
+      items: page,
+      total: filtered.length,
+      offset: safeOffset,
+      limit: safeLimit,
+      hasMore: (safeOffset + safeLimit) < filtered.length
     };
 
   } catch (e) {
     return {
       ok: false,
-      error: e.message
+      error: e && e.message ? e.message : String(e),
+      queueId: queueId
     };
   }
+}
+
+function admin_listQueueRowObjects_(sheet) {
+  var headerMap = getHeaderIndexMap_(sheet);
+  if (!headerMap) return [];
+
+  var lastRow = sheet.getLastRow();
+  if (!lastRow || lastRow < 2) return [];
+
+  var out = [];
+  for (var rowNum = 2; rowNum <= lastRow; rowNum++) {
+    var row = getRowObject_(sheet, rowNum) || {};
+    var applicantId = String(firstNonEmpty_(
+      row.ApplicantID,
+      row.Applicant_Id,
+      row["Applicant ID"],
+      row.ID
+    ) || "").trim();
+
+    if (!applicantId) continue;
+    row.__rowNum = rowNum;
+    out.push(row);
+  }
+  return out;
+}
+
+function classifyAdminQueue_(row) {
+  var docStatus = String(firstNonEmpty_(
+    row.Doc_Status,
+    row.DocStatus,
+    row.Documents_Status,
+    row.DocumentsStatus,
+    row.Document_Status,
+    row["Doc Status"],
+    row["Documents Status"]
+  ) || "").trim();
+
+  var paymentStatus = String(firstNonEmpty_(
+    row.Payment_Status,
+    row.PaymentStatus,
+    row.Payment,
+    row["Payment Status"],
+    row["Payment"]
+  ) || "").trim();
+
+  var overallStatus = String(firstNonEmpty_(
+    row.Overall_Status,
+    row.OverallStatus,
+    row["Overall Status"],
+    row.Status,
+    row["Application Status"]
+  ) || "").trim();
+
+  var docsVerified = /verified/i.test(docStatus);
+  var paymentVerified = /verified/i.test(paymentStatus);
+  var hasAnyPayment = /paid|verified|received/i.test(paymentStatus);
+
+  if (!docsVerified && hasAnyPayment) return "payment_first_anomalies";
+  if (docsVerified && paymentVerified) return "enrolled_ready";
+  if (docsVerified && !paymentVerified) return "payment_pending";
+  if (/approved|verified/i.test(overallStatus) && paymentVerified) return "enrolled_ready";
+  return "docs_pending";
+}
+
+function mapAdminQueueRow_(row) {
+  var applicantId = String(firstNonEmpty_(
+    row.ApplicantID,
+    row.Applicant_Id,
+    row["Applicant ID"],
+    row.ID
+  ) || "").trim();
+
+  var firstName = String(firstNonEmpty_(row.First_Name, row.FirstName, row["First Name"]) || "").trim();
+  var lastName = String(firstNonEmpty_(row.Last_Name, row.LastName, row["Last Name"]) || "").trim();
+  var fullName = String((firstName + " " + lastName).trim() || firstNonEmpty_(row.Student_Name, row.Name, row["Student Name"]) || "").trim();
+
+  var docStatus = String(firstNonEmpty_(
+    row.Doc_Status,
+    row.DocStatus,
+    row.Documents_Status,
+    row["Doc Status"]
+  ) || "").trim();
+
+  var paymentStatus = String(firstNonEmpty_(
+    row.Payment_Status,
+    row.PaymentStatus,
+    row.Payment,
+    row["Payment Status"]
+  ) || "").trim();
+
+  var portalStatus = String(firstNonEmpty_(
+    row.Portal_Status,
+    row.PortalStatus,
+    row.Portal,
+    row["Portal Status"]
+  ) || "").trim();
+
+  var docsFollowUp = String(firstNonEmpty_(
+    row.Docs_Follow_Up,
+    row.DocsFollowUp,
+    row["Docs Follow-Up"],
+    row["Docs Follow Up"]
+  ) || "").trim();
+
+  return {
+    applicantId: applicantId,
+    name: fullName,
+    docStatus: docStatus,
+    paymentStatus: paymentStatus,
+    portalStatus: portalStatus,
+    docsFollowUp: docsFollowUp,
+    eligibleDocsFollowUp: /verified/i.test(docStatus) && !/verified/i.test(paymentStatus)
+  };
+}
+
+function firstNonEmpty_() {
+  for (var i = 0; i < arguments.length; i++) {
+    var v = arguments[i];
+    if (v !== null && v !== undefined && String(v).trim() !== "") return v;
+  }
+  return "";
 }
