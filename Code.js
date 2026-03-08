@@ -3136,7 +3136,35 @@ function admin_getStudentPortalLink(applicantId) {
     var row = findApplicantRowById_(sheet, applicantId);
     if (!row) throw new Error("Applicant not found");
 
-    var secret = row.PortalSecret || "";
+    var tokenHash = firstNonEmpty_(
+      row.PORTAL_TOKEN_HASH,
+      row.Portal_Token_Hash
+    );
+
+    var issuedAt = firstNonEmpty_(
+      row.PORTAL_TOKEN_ISSUED_AT,
+      row.Portal_Token_Issued_At
+    );
+
+    // access status is optional
+    var access = firstNonEmpty_(
+      row.PORTAL_ACCESS_STATUS,
+      row.Portal_Access_Status
+    );
+    if (access === "Locked") throw new Error("Portal access locked");
+
+    if (!tokenHash || !issuedAt) {
+      throw new Error("Portal link error. Debug: token missing");
+    }
+
+    var secret = firstNonEmpty_(
+      row.PortalSecret,
+      row.Portal_Secret
+    );
+    if (!secret) {
+      var secretRes = getPortalSecretForApplicant_(applicantId);
+      secret = secretRes && secretRes.ok === true ? clean_(secretRes.secret || "") : "";
+    }
     if (!secret) throw new Error("No portal token");
 
     var base = CONFIG.WEBAPP_URL_STUDENT || "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec";
