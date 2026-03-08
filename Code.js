@@ -4384,15 +4384,25 @@ function admin_getQueueItems(queueId, limit, offset) {
 }
 
 function admin_listQueueRowObjects_(sheet) {
-  var headerMap = getHeaderIndexMap_(sheet);
-  if (!headerMap) return [];
-
   var lastRow = sheet.getLastRow();
-  if (!lastRow || lastRow < 2) return [];
+  var lastCol = sheet.getLastColumn();
+  if (!lastRow || lastRow < 2 || !lastCol) return [];
+
+  var data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  if (!data || data.length < 2) return [];
+
+  var headers = data[0].map(function(h) {
+    return String(h == null ? "" : h).trim();
+  });
 
   var out = [];
-  for (var rowNum = 2; rowNum <= lastRow; rowNum++) {
-    var row = getRowObject_(sheet, rowNum) || {};
+  for (var r = 1; r < data.length; r++) {
+    var raw = data[r];
+    var row = {};
+    for (var c = 0; c < headers.length; c++) {
+      row[headers[c]] = raw[c];
+    }
+
     var applicantId = String(firstNonEmpty_(
       row.ApplicantID,
       row.Applicant_Id,
@@ -4401,9 +4411,10 @@ function admin_listQueueRowObjects_(sheet) {
     ) || "").trim();
 
     if (!applicantId) continue;
-    row.__rowNum = rowNum;
+    row.__rowNum = r + 1;
     out.push(row);
   }
+
   return out;
 }
 
