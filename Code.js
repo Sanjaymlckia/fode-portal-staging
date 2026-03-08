@@ -3136,6 +3136,10 @@ function admin_getStudentPortalLink(applicantId) {
     var row = findApplicantRowById_(sheet, applicantId);
     if (!row) throw new Error("Applicant not found");
 
+    var studentBase = CONFIG.WEBAPP_URL_STUDENT;
+
+    var applicantId = String(row.ApplicantID || "").trim();
+
     var tokenHash = firstNonEmpty_(
       row.PORTAL_TOKEN_HASH,
       row.Portal_Token_Hash
@@ -3146,42 +3150,21 @@ function admin_getStudentPortalLink(applicantId) {
       row.Portal_Token_Issued_At
     );
 
-    // access status is optional
-    var access = firstNonEmpty_(
-      row.PORTAL_ACCESS_STATUS,
-      row.Portal_Access_Status
-    );
-    if (access === "Locked") throw new Error("Portal access locked");
-
     if (!tokenHash || !issuedAt) {
       throw new Error("Portal link error. Debug: token missing");
     }
 
-    var secret = firstNonEmpty_(
-      row.PortalSecret,
-      row.Portal_Secret
-    );
-    if (!secret) {
-      var secretRes = getPortalSecretForApplicant_(applicantId);
-      secret = secretRes && secretRes.ok === true ? clean_(secretRes.secret || "") : "";
-    }
-    if (!secret) throw new Error("No portal token");
+    var portalUrl =
+      studentBase +
+      "?view=portal" +
+      "&id=" + encodeURIComponent(applicantId) +
+      "&s=" + encodeURIComponent(tokenHash);
 
-    var base = CONFIG.WEBAPP_URL_STUDENT || "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec";
-
-    var url =
-      base +
-      "?view=portal&id=" +
-      encodeURIComponent(applicantId) +
-      "&s=" +
-      encodeURIComponent(secret);
-
-    Logger.log("LINK GENERATED: " + url);
+    Logger.log("LINK GENERATED: " + portalUrl);
 
     return {
       ok: true,
-      url: url,
-      secret: secret
+      url: portalUrl
     };
 
   } catch (e) {
@@ -4472,12 +4455,10 @@ function classifyAdminQueue_(row) {
     row["Application Status"]
   ) || "").trim();
 
-  var paymentVerifiedRaw = String(firstNonEmpty_(
+  var paymentRaw = String(firstNonEmpty_(
     row.Payment_Verified,
-    row["Payment Verified"],
-    row.PaymentStatus,
     row.Payment_Status,
-    row.Payment
+    row["Payment Verified"]
   ) || "").trim();
 
   var docsComplete = [birthStatus, reportStatus, photoStatus, transferStatus, receiptStatus]
@@ -4485,11 +4466,14 @@ function classifyAdminQueue_(row) {
     .every(function(v) { return /verified/i.test(v); });
 
   var docsVerified = /verified/i.test(docVerificationStatus) || docsComplete;
-  var paymentVerified = /yes|true|verified|paid/i.test(paymentVerifiedRaw);
-  var hasAnyPayment = paymentVerified || /yes|true|received|paid/i.test(paymentVerifiedRaw);
+  var paymentVerified =
+    /yes|true|verified|paid/i.test(paymentRaw);
+  var hasAnyPayment = paymentVerified || /yes|true|received|paid/i.test(paymentRaw);
 
   if (!docsVerified && hasAnyPayment) return "payment_first_anomalies";
-  if (docsVerified && paymentVerified) return "enrolled_ready";
+  if (docsVerified && paymentVerified) {
+    return "enrolled_ready";
+  }
   if (docsVerified && !paymentVerified) return "payment_pending";
   if (/approved|verified/i.test(overallStatus) && paymentVerified) return "enrolled_ready";
   return "docs_pending";
