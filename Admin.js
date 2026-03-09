@@ -1876,7 +1876,7 @@ function admin_getReviewQueues(payload) {
   payload = payload || {};
   var offset = Math.max(0, Number(payload.offset || 0));
   var limit = Math.max(1, Number(payload.limit || 20));
-  var force = Number(payload.force || 0) === 1;
+  var force = payload && (payload.force === 1 || payload.force === true);
   var cache = CacheService.getUserCache();
   var cacheKey = getDashboardCacheKey_(adminEmail);
   var fullData = null;
@@ -1912,6 +1912,11 @@ function admin_getReviewQueues(payload) {
         if (!Number.isFinite(rowNum) || rowNum < 2) return;
         target.push(item);
       }
+
+      Logger.log("QUEUE_SCAN_START " + JSON.stringify({
+        user: Session.getEffectiveUser().getEmail(),
+        force: force
+      }));
 
       for (var r = 1; r < data.length; r++) {
         var row = data[r] || [];
@@ -1958,6 +1963,11 @@ function admin_getReviewQueues(payload) {
         };
 
         var hasActivity = hasStudentActivity_(rowObj);
+        Logger.log("QUEUE_CLASSIFY " + JSON.stringify({
+          applicantId: rowObj.ApplicantID,
+          docsVerified: rowObj.Docs_Verified,
+          paymentVerified: rowObj.Payment_Verified
+        }));
         if (
           docsVerifiedRaw !== "Yes" &&
           hasActivity &&
@@ -2018,9 +2028,15 @@ function admin_getReviewQueues(payload) {
           postPaymentIssues: postPaymentIssues.length
         }
       };
+      Logger.log("QUEUE_SUMMARY " + JSON.stringify({
+        docs: docs.length,
+        payments: payments.length,
+        anomalies: anomalies.length,
+        paidApproved: paidApproved.length
+      }));
     }
     try {
-      cache.put(cacheKey, JSON.stringify(fullData), 300);
+      cache.put(cacheKey, JSON.stringify(fullData), 60);
     } catch (_cacheWriteErr) {}
   }
 
