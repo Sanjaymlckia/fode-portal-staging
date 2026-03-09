@@ -3199,16 +3199,27 @@ function admin_getStudentPortalLink(payload) {
     };
 
   } catch (e) {
+    var rawMsg = String(e && e.message ? e.message : e);
+    var lowerMsg = String(rawMsg || "").toLowerCase();
+    var isPermissionDoc = lowerMsg.indexOf("permission to access the requested document") >= 0;
+    var isPortalSecretsHint = lowerMsg.indexOf("portalsecrets") >= 0 || lowerMsg.indexOf(String(CONFIG.PORTAL_SECRETS_SHEET_ID || "").toLowerCase()) >= 0;
+    var isSecretsPermission = isPermissionDoc || isPortalSecretsHint;
+    var userMsg = isSecretsPermission
+      ? "Portal link cannot be generated because this admin account does not have access to the PortalSecrets store. Share the PortalSecrets spreadsheet with this user and retry."
+      : rawMsg;
+
     Logger.log("admin_getStudentPortalLink FAIL " + JSON.stringify({
       debugId: debugId,
-      message: String(e && e.message ? e.message : e),
+      message: rawMsg,
+      classifiedCode: isSecretsPermission ? "PORTAL_SECRETS_ACCESS_DENIED" : "PORTAL_LINK_ERROR",
       stack: String((e && e.stack) || "")
     }));
+
     return {
       ok: false,
-      code: "PORTAL_LINK_ERROR",
+      code: isSecretsPermission ? "PORTAL_SECRETS_ACCESS_DENIED" : "PORTAL_LINK_ERROR",
       debugId: debugId,
-      error: String(e && e.message ? e.message : e)
+      error: userMsg
     };
   }
 }

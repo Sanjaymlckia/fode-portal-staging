@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-08-PNG-STAGING-r201",
-  CHANGELOG_LAST: "r169: runtime self-identification + canonical /macros/s redirect guard",
-  DEPLOY_VERSION_NUMBER: 201,
+  VERSION: "2026-03-09-PNG-STAGING-r203",
+  CHANGELOG_LAST: "r203: classify PortalSecrets permission failure and align runtime version metadata",
+  DEPLOY_VERSION_NUMBER: 203,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
