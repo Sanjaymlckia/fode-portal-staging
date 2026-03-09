@@ -1963,28 +1963,32 @@ function admin_getReviewQueues(payload) {
         };
 
         var hasActivity = hasStudentActivity_(rowObj);
+        var docsVerifiedDerived = docsVerifiedRaw === "Yes" || computeDocVerificationStatus_(rowObj) === "Verified";
         Logger.log("QUEUE_CLASSIFY " + JSON.stringify({
           applicantId: rowObj.ApplicantID,
-          docsVerified: rowObj.Docs_Verified,
-          paymentVerified: rowObj.Payment_Verified
+          docsVerifiedRaw: rowObj.Docs_Verified,
+          docsVerifiedDerived: docsVerifiedDerived,
+          paymentVerifiedRaw: rowObj.Payment_Verified,
+          paymentVerifiedDerived: paymentVerifiedDerived,
+          hasActivity: hasActivity,
+          receiptPresent: nonEmpty_(receiptUrl)
         }));
         if (
-          docsVerifiedRaw !== "Yes" &&
-          hasActivity &&
-          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes")
+          !docsVerifiedDerived &&
+          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes" || nonEmpty_(receiptUrl))
         ) {
           pushQueueItem_(docs, qItem);
         }
-        if (clean_(rowObj.Payment_Verified || "") !== "Yes" && hasActivity && nonEmpty_(receiptUrl)) {
+        if (!paymentVerifiedDerived && docsVerifiedDerived && nonEmpty_(receiptUrl)) {
           pushQueueItem_(payments, qItem);
         }
-        if (paymentVerifiedRaw && docsVerifiedRaw !== "Yes") {
+        if (paymentVerifiedDerived && !docsVerifiedDerived) {
           pushQueueItem_(anomalies, qItem);
         }
         if (
-          paymentVerifiedRaw &&
+          paymentVerifiedDerived &&
           (
-            clean_(rowObj.Docs_Verified || "") === "Yes" ||
+            docsVerifiedDerived ||
             clean_(rowObj.Registration_Complete || "") === "Yes" ||
             clean_(rowObj.Invoice_Approved || "") === "Yes"
           )
