@@ -3127,52 +3127,88 @@ function admin_getRuntimeInfo() {
 }
 
 // SV GROK Mar 7 function overwrite
-function admin_getStudentPortalLink(applicantId) {
-  Logger.log("admin_getStudentPortalLink CALLED - id=" + applicantId + " caller=" + Session.getEffectiveUser().getEmail());
-
+function admin_getStudentPortalLink(payload) {
+  var debugId = newDebugId_();
   try {
+    var caller = "";
+    try { caller = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_callerErr) {}
+
+    if (!isAdminCaller_()) {
+      return {
+        ok: false,
+        code: "ACCESS_DENIED",
+        debugId: debugId,
+        error: "Access denied"
+      };
+    }
+
+    var p = (payload && typeof payload === "object")
+      ? payload
+      : { applicantId: payload };
+
+    var applicantId = clean_(p.applicantId || p.id || "");
+    var rowNumber = Number(p.rowNumber || 0);
+
+    Logger.log("admin_getStudentPortalLink START " + JSON.stringify({
+      debugId: debugId,
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      caller: caller
+    }));
+
     var ss = getWorkingSpreadsheet_();
     var sheet = mustGetDataSheet_(ss);
-    var row = findApplicantRowById_(sheet, applicantId);
-    if (!row) throw new Error("Applicant not found");
 
-    var studentBase = CONFIG.WEBAPP_URL_STUDENT;
+    if (!rowNumber || rowNumber < 2) {
+      if (!applicantId) {
+        throw new Error("Portal link error. Debug: missing applicant id");
+      }
+      rowNumber = findRowByApplicantId_(sheet, applicantId);
+    }
 
-    var applicantId = String(row.ApplicantID || "").trim();
+    if (!rowNumber || rowNumber < 2) {
+      throw new Error("Portal link error. Debug: applicant not found");
+    }
 
-    var tokenHash = firstNonEmpty_(
-      row.PORTAL_TOKEN_HASH,
-      row.Portal_Token_Hash
-    );
+    var rowObj = getRowObject_(sheet, rowNumber);
+    applicantId = clean_(rowObj.ApplicantID || applicantId || "");
+    if (!applicantId) {
+      throw new Error("Portal link error. Debug: missing applicant id");
+    }
 
-    var issuedAt = firstNonEmpty_(
-      row.PORTAL_TOKEN_ISSUED_AT,
-      row.Portal_Token_Issued_At
-    );
-
-    if (!tokenHash || !issuedAt) {
+    var secretRes = getPortalSecretForApplicant_(applicantId);
+    if (!secretRes || secretRes.ok !== true || !clean_(secretRes.secret || "")) {
       throw new Error("Portal link error. Debug: token missing");
     }
 
-    var portalUrl =
-      studentBase +
-      "?view=portal" +
-      "&id=" + encodeURIComponent(applicantId) +
-      "&s=" + encodeURIComponent(tokenHash);
+    var portalUrl = buildStudentPortalUrl_(applicantId, clean_(secretRes.secret || ""));
 
-    Logger.log("LINK GENERATED: " + portalUrl);
+    Logger.log("admin_getStudentPortalLink OK " + JSON.stringify({
+      debugId: debugId,
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      url: portalUrl
+    }));
 
     return {
       ok: true,
-      url: portalUrl
+      url: portalUrl,
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      debugId: debugId
     };
 
   } catch (e) {
-    Logger.log("LINK FAIL: " + e.message);
-
+    Logger.log("admin_getStudentPortalLink FAIL " + JSON.stringify({
+      debugId: debugId,
+      message: String(e && e.message ? e.message : e),
+      stack: String((e && e.stack) || "")
+    }));
     return {
       ok: false,
-      error: e.message
+      code: "PORTAL_LINK_ERROR",
+      debugId: debugId,
+      error: String(e && e.message ? e.message : e)
     };
   }
 }
