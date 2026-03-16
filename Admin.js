@@ -1947,7 +1947,6 @@ function admin_getReviewQueues(payload) {
         var correctedEmail = clean_(rowObj.Parent_Email_Corrected || "");
         var effectiveEmail = correctedEmail || parentEmail;
 
-        var paymentVerifiedDerived = isPaymentVerifiedDerived_(rowObj) === true;
         var paymentVerifiedRaw = clean_(rowObj.Payment_Verified || "") === "Yes";
         var receiptUrl = clean_(rowObj.Fee_Receipt_File || "");
         var docsVerifiedRaw = clean_(rowObj.Docs_Verified || "");
@@ -1974,17 +1973,18 @@ function admin_getReviewQueues(payload) {
         };
 
         var hasActivity = hasStudentActivity_(rowObj);
-        var portalSubmitted = clean_(rowObj.Portal_Submitted || "") === "Yes";
-        var docsVerified = docsVerifiedRaw === "Yes" || computeDocVerificationStatus_(rowObj) === "Verified";
-        var receiptPresent = nonEmpty_(receiptUrl) || nonEmpty_(clean_(rowObj.Receipt_Status || ""));
-        var paymentReceived = receiptPresent;
-        var paymentVerified = paymentVerifiedRaw || paymentVerifiedDerived;
+        var portalSubmittedRaw = clean_(rowObj.Portal_Submitted || "");
+        var portalSubmitted = nonEmpty_(portalSubmittedRaw) && portalSubmittedRaw !== "No";
+        var docsVerified = docsVerifiedRaw === "Yes";
+        var paymentEvidencePresent = nonEmpty_(receiptUrl) || nonEmpty_(clean_(rowObj.Receipt_Status || ""));
+        var paymentReceived = paymentEvidencePresent;
+        var paymentVerified = paymentVerifiedRaw;
         var enrolledConfirmed = paymentVerified;
         var docsQueueMatch = portalSubmitted && !docsVerified;
-        var awaitingPaymentQueueMatch = docsVerified && !paymentReceived && !paymentVerified;
-        var paymentsQueueMatch = docsVerified && paymentReceived && !paymentVerified;
+        var awaitingPaymentQueueMatch = docsVerified && !paymentVerified && !paymentEvidencePresent;
+        var paymentsQueueMatch = docsVerified && !paymentVerified && paymentEvidencePresent;
         var anomaliesQueueMatch = paymentVerified && !docsVerified;
-        var paidApprovedQueueMatch = enrolledConfirmed;
+        var paidApprovedQueueMatch = paymentVerified;
 
         qItem.Portal_Submitted = portalSubmitted ? "Yes" : "No";
         qItem.Docs_Verified = docsVerified ? "Yes" : "No";
@@ -1999,9 +1999,9 @@ function admin_getReviewQueues(payload) {
           activity: hasActivity,
           portalSubmitted: portalSubmitted,
           docsVerified: docsVerified,
-          payDerived: paymentVerifiedDerived,
           paymentVerified: paymentVerified,
-          receipt: receiptPresent,
+          paymentEvidencePresent: paymentEvidencePresent,
+          receipt: paymentEvidencePresent,
           portalTs: clean_(rowObj.PortalLastUpdateAt || ""),
           docsQueue: docsQueueMatch,
           awaitingPaymentQueue: awaitingPaymentQueueMatch,
@@ -2013,11 +2013,10 @@ function admin_getReviewQueues(payload) {
           applicantId: rowObj.ApplicantID,
           portalSubmitted: portalSubmitted,
           docsVerifiedRaw: rowObj.Docs_Verified,
-          docsVerifiedDerived: docsVerified,
+          docsVerified: docsVerified,
           paymentVerifiedRaw: rowObj.Payment_Verified,
-          paymentVerifiedDerived: paymentVerifiedDerived,
           paymentVerified: paymentVerified,
-          receiptPresent: receiptPresent,
+          paymentEvidencePresent: paymentEvidencePresent,
           awaitingPaymentQueue: awaitingPaymentQueueMatch,
           hasActivity: hasActivity
         }));
