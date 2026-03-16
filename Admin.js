@@ -1907,6 +1907,7 @@ function admin_getReviewQueues(payload) {
       var anomalies = [];
       var paidApproved = [];
       var postPaymentIssues = [];
+      var debugRows = [];
       function pushQueueItem_(target, item) {
         var rowNum = Number(item && item.rowNumber || 0);
         if (!Number.isFinite(rowNum) || rowNum < 2) return;
@@ -1964,6 +1965,32 @@ function admin_getReviewQueues(payload) {
 
         var hasActivity = hasStudentActivity_(rowObj);
         var docsVerifiedDerived = docsVerifiedRaw === "Yes" || computeDocVerificationStatus_(rowObj) === "Verified";
+        var receiptPresent = nonEmpty_(receiptUrl);
+        var docsQueueMatch =
+          !docsVerifiedDerived &&
+          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes" || receiptPresent);
+        var paymentsQueueMatch = !paymentVerifiedDerived && docsVerifiedDerived && receiptPresent;
+        var anomaliesQueueMatch = paymentVerifiedDerived && !docsVerifiedDerived;
+        var paidApprovedQueueMatch =
+          paymentVerifiedDerived &&
+          (
+            docsVerifiedDerived ||
+            clean_(rowObj.Registration_Complete || "") === "Yes" ||
+            clean_(rowObj.Invoice_Approved || "") === "Yes"
+          );
+        debugRows.push({
+          id: clean_(rowObj.ApplicantID || rowObj.ID || rowObj["Applicant ID"] || "unknown"),
+          activity: hasActivity,
+          docsDerived: docsVerifiedDerived,
+          payDerived: paymentVerifiedDerived,
+          receipt: receiptPresent,
+          portalTs: clean_(rowObj.PortalLastUpdateAt || ""),
+          portalSubmitted: clean_(rowObj.Portal_Submitted || ""),
+          docsQueue: docsQueueMatch,
+          paymentsQueue: paymentsQueueMatch,
+          anomaliesQueue: anomaliesQueueMatch,
+          paidApprovedQueue: paidApprovedQueueMatch
+        });
         Logger.log("QUEUE_CLASSIFY " + JSON.stringify({
           applicantId: rowObj.ApplicantID,
           docsVerifiedRaw: rowObj.Docs_Verified,
@@ -1971,28 +1998,18 @@ function admin_getReviewQueues(payload) {
           paymentVerifiedRaw: rowObj.Payment_Verified,
           paymentVerifiedDerived: paymentVerifiedDerived,
           hasActivity: hasActivity,
-          receiptPresent: nonEmpty_(receiptUrl)
+          receiptPresent: receiptPresent
         }));
-        if (
-          !docsVerifiedDerived &&
-          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes" || nonEmpty_(receiptUrl))
-        ) {
+        if (docsQueueMatch) {
           pushQueueItem_(docs, qItem);
         }
-        if (!paymentVerifiedDerived && docsVerifiedDerived && nonEmpty_(receiptUrl)) {
+        if (paymentsQueueMatch) {
           pushQueueItem_(payments, qItem);
         }
-        if (paymentVerifiedDerived && !docsVerifiedDerived) {
+        if (anomaliesQueueMatch) {
           pushQueueItem_(anomalies, qItem);
         }
-        if (
-          paymentVerifiedDerived &&
-          (
-            docsVerifiedDerived ||
-            clean_(rowObj.Registration_Complete || "") === "Yes" ||
-            clean_(rowObj.Invoice_Approved || "") === "Yes"
-          )
-        ) {
+        if (paidApprovedQueueMatch) {
           pushQueueItem_(paidApproved, qItem);
         }
         if (paymentVerifiedDerived && mandatoryDocIssue) {
@@ -2032,6 +2049,11 @@ function admin_getReviewQueues(payload) {
           postPaymentIssues: postPaymentIssues.length
         }
       };
+      debugRows.forEach(function (d) {
+        if (d.id === "FODE-26-000084" || d.id === "FODE-26-000007") {
+          Logger.log("CIS-r227 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
+        }
+      });
       Logger.log("QUEUE_SUMMARY " + JSON.stringify({
         docs: docs.length,
         payments: payments.length,
