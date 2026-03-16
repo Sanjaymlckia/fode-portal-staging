@@ -314,7 +314,11 @@ function admin_getApplicantDetail(payload) {
       Photo_Status: clean_(row[idx.Photo_Status - 1]),
       Transfer_Status: clean_(row[idx.Transfer_Status - 1]),
       Receipt_Status: clean_(row[idx.Receipt_Status - 1]),
+      Portal_Submitted: idx.Portal_Submitted ? clean_(row[idx.Portal_Submitted - 1]) : "",
+      Docs_Verified: idx.Docs_Verified ? clean_(row[idx.Docs_Verified - 1]) : "",
       Payment_Verified: idx.Payment_Verified ? clean_(row[idx.Payment_Verified - 1]) : "",
+      Registration_Complete: idx.Registration_Complete ? clean_(row[idx.Registration_Complete - 1]) : "",
+      Fee_Receipt_File: idx.Fee_Receipt_File ? clean_(row[idx.Fee_Receipt_File - 1]) : "",
       Portal_Access_Status: clean_(row[idx.Portal_Access_Status - 1]) || "Open",
       Doc_Verification_Status: clean_(row[idx.Doc_Verification_Status - 1]) || "Pending",
       Doc_Last_Verified_At: row[idx.Doc_Last_Verified_At - 1],
@@ -353,7 +357,11 @@ function admin_getApplicantDetail(payload) {
     var canOverride = canOverrideOverall_(adminEmail);
     var isSuperAdminCaller = canBypassPaymentFreeze_(adminEmail);
     var isOverridden = !!(canOverride && overallStored && overallStored !== overallComputed);
-    detailObj.Payment_Verified = paymentVerifiedBool ? "Yes" : "";
+    detailObj.Payment_Received = (nonEmpty_(clean_(detailObj.Fee_Receipt_File || "")) || nonEmpty_(clean_(detailObj.Receipt_Status || ""))) ? "Yes" : "No";
+    detailObj.Docs_Verified = clean_(detailObj.Docs_Verified || "") === "Yes" || docStageComputed === "Verified" ? "Yes" : "No";
+    detailObj.Portal_Submitted = clean_(detailObj.Portal_Submitted || "") === "Yes" ? "Yes" : "No";
+    detailObj.Payment_Verified = paymentVerifiedBool ? "Yes" : "No";
+    detailObj.Enrolled_Confirmed = paymentVerifiedBool ? "Yes" : "No";
     detailObj.Payment_Verified_Bool = paymentVerifiedBool;
     detailObj.paymentVerified = paymentVerifiedBool;
     detailObj.isPaymentVerified = paymentVerifiedBool;
@@ -1852,7 +1860,7 @@ function sliceQueueByOffset_(rows, offset, limit) {
 }
 
 function mergeQueuePageMeta_(queues, offset, limit) {
-  var names = ["docs", "payments", "anomalies", "paidApproved", "postPaymentIssues"];
+  var names = ["docs", "awaitingPayment", "payments", "anomalies", "paidApproved", "postPaymentIssues"];
   var hasMore = false;
   var nextOffset = "";
   for (var i = 0; i < names.length; i++) {
@@ -1893,17 +1901,19 @@ function admin_getReviewQueues(payload) {
     if (!data || data.length < 2) {
       fullData = {
         docs: [],
+        awaitingPayment: [],
         payments: [],
         anomalies: [],
         paidApproved: [],
         postPaymentIssues: [],
-        counts: { payments: 0, docs: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 }
+        counts: { payments: 0, docs: 0, awaitingPayment: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 }
       };
     } else {
       var headers = data[0];
       var idx = headerIndex_(headers);
       var payments = [];
       var docs = [];
+      var awaitingPayment = [];
       var anomalies = [];
       var paidApproved = [];
       var postPaymentIssues = [];
@@ -1964,59 +1974,73 @@ function admin_getReviewQueues(payload) {
         };
 
         var hasActivity = hasStudentActivity_(rowObj);
-        var docsVerifiedDerived = docsVerifiedRaw === "Yes" || computeDocVerificationStatus_(rowObj) === "Verified";
-        var receiptPresent = nonEmpty_(receiptUrl);
-        var docsQueueMatch =
-          !docsVerifiedDerived &&
-          (hasAnyRequiredDoc_(rowObj) || clean_(rowObj.Portal_Submitted || "") === "Yes" || receiptPresent);
-        var paymentsQueueMatch = !paymentVerifiedDerived && docsVerifiedDerived && receiptPresent;
-        var anomaliesQueueMatch = paymentVerifiedDerived && !docsVerifiedDerived;
-        var paidApprovedQueueMatch =
-          paymentVerifiedDerived &&
-          (
-            docsVerifiedDerived ||
-            clean_(rowObj.Registration_Complete || "") === "Yes" ||
-            clean_(rowObj.Invoice_Approved || "") === "Yes"
-          );
+        var portalSubmitted = clean_(rowObj.Portal_Submitted || "") === "Yes";
+        var docsVerified = docsVerifiedRaw === "Yes" || computeDocVerificationStatus_(rowObj) === "Verified";
+        var receiptPresent = nonEmpty_(receiptUrl) || nonEmpty_(clean_(rowObj.Receipt_Status || ""));
+        var paymentReceived = receiptPresent;
+        var paymentVerified = paymentVerifiedRaw || paymentVerifiedDerived;
+        var enrolledConfirmed = paymentVerified;
+        var docsQueueMatch = portalSubmitted && !docsVerified;
+        var awaitingPaymentQueueMatch = docsVerified && !paymentReceived && !paymentVerified;
+        var paymentsQueueMatch = docsVerified && paymentReceived && !paymentVerified;
+        var anomaliesQueueMatch = paymentVerified && !docsVerified;
+        var paidApprovedQueueMatch = enrolledConfirmed;
+
+        qItem.Portal_Submitted = portalSubmitted ? "Yes" : "No";
+        qItem.Docs_Verified = docsVerified ? "Yes" : "No";
+        qItem.Payment_Received = paymentReceived ? "Yes" : "No";
+        qItem.Payment_Verified = paymentVerified ? "Yes" : "No";
+        qItem.Enrolled_Confirmed = enrolledConfirmed ? "Yes" : "No";
+        qItem.Fee_Receipt_File = receiptUrl;
+        qItem.Registration_Complete = clean_(rowObj.Registration_Complete || "") === "Yes" ? "Yes" : "No";
+
         debugRows.push({
           id: clean_(rowObj.ApplicantID || rowObj.ID || rowObj["Applicant ID"] || "unknown"),
           activity: hasActivity,
-          docsDerived: docsVerifiedDerived,
+          portalSubmitted: portalSubmitted,
+          docsVerified: docsVerified,
           payDerived: paymentVerifiedDerived,
+          paymentVerified: paymentVerified,
           receipt: receiptPresent,
           portalTs: clean_(rowObj.PortalLastUpdateAt || ""),
-          portalSubmitted: clean_(rowObj.Portal_Submitted || ""),
           docsQueue: docsQueueMatch,
+          awaitingPaymentQueue: awaitingPaymentQueueMatch,
           paymentsQueue: paymentsQueueMatch,
           anomaliesQueue: anomaliesQueueMatch,
           paidApprovedQueue: paidApprovedQueueMatch
         });
         Logger.log("QUEUE_CLASSIFY " + JSON.stringify({
           applicantId: rowObj.ApplicantID,
+          portalSubmitted: portalSubmitted,
           docsVerifiedRaw: rowObj.Docs_Verified,
-          docsVerifiedDerived: docsVerifiedDerived,
+          docsVerifiedDerived: docsVerified,
           paymentVerifiedRaw: rowObj.Payment_Verified,
           paymentVerifiedDerived: paymentVerifiedDerived,
-          hasActivity: hasActivity,
-          receiptPresent: receiptPresent
+          paymentVerified: paymentVerified,
+          receiptPresent: receiptPresent,
+          awaitingPaymentQueue: awaitingPaymentQueueMatch,
+          hasActivity: hasActivity
         }));
-        if (docsQueueMatch) {
+
+        if (paidApprovedQueueMatch) {
+          pushQueueItem_(paidApproved, qItem);
+        } else if (paymentsQueueMatch) {
+          pushQueueItem_(payments, qItem);
+        } else if (awaitingPaymentQueueMatch) {
+          pushQueueItem_(awaitingPayment, qItem);
+        } else if (docsQueueMatch) {
           pushQueueItem_(docs, qItem);
         }
-        if (paymentsQueueMatch) {
-          pushQueueItem_(payments, qItem);
-        }
+
         if (anomaliesQueueMatch) {
           pushQueueItem_(anomalies, qItem);
         }
-        if (paidApprovedQueueMatch) {
-          pushQueueItem_(paidApproved, qItem);
-        }
-        if (paymentVerifiedDerived && mandatoryDocIssue) {
+        if (paymentVerified && mandatoryDocIssue) {
           pushQueueItem_(postPaymentIssues, qItem);
         }
       }
       docs.sort(compareQueueItems_);
+      awaitingPayment.sort(compareQueueItems_);
       payments.sort(compareQueueItems_);
       anomalies.sort(compareQueueItems_);
       paidApproved.sort(compareQueueItems_);
@@ -2031,12 +2055,20 @@ function admin_getReviewQueues(payload) {
             effectiveEmail: clean_(it.effectiveEmail || ""),
             docsFollowupEligibleBase: !!it.docsFollowupEligibleBase,
             eligibleDocsFollowUp: !!it.eligibleDocsFollowUp,
-            docsFollowupSentAt: safeStr_(it.docsFollowupSentAt || "")
+            docsFollowupSentAt: safeStr_(it.docsFollowupSentAt || ""),
+            Portal_Submitted: clean_(it.Portal_Submitted || ""),
+            Docs_Verified: clean_(it.Docs_Verified || ""),
+            Payment_Received: clean_(it.Payment_Received || ""),
+            Payment_Verified: clean_(it.Payment_Verified || ""),
+            Enrolled_Confirmed: clean_(it.Enrolled_Confirmed || ""),
+            Fee_Receipt_File: clean_(it.Fee_Receipt_File || ""),
+            Registration_Complete: clean_(it.Registration_Complete || "")
           });
         });
       }
       fullData = {
         docs: stripQueue_(docs),
+        awaitingPayment: stripQueue_(awaitingPayment),
         payments: stripQueue_(payments),
         anomalies: stripQueue_(anomalies),
         paidApproved: stripQueue_(paidApproved),
@@ -2044,6 +2076,7 @@ function admin_getReviewQueues(payload) {
         counts: {
           payments: payments.length,
           docs: docs.length,
+          awaitingPayment: awaitingPayment.length,
           anomalies: anomalies.length,
           paidApproved: paidApproved.length,
           postPaymentIssues: postPaymentIssues.length
@@ -2051,11 +2084,12 @@ function admin_getReviewQueues(payload) {
       };
       debugRows.forEach(function (d) {
         if (d.id === "FODE-26-000084" || d.id === "FODE-26-000007") {
-          Logger.log("CIS-r227 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
+          Logger.log("CIS-r228 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
         }
       });
       Logger.log("QUEUE_SUMMARY " + JSON.stringify({
         docs: docs.length,
+        awaitingPayment: awaitingPayment.length,
         payments: payments.length,
         anomalies: anomalies.length,
         paidApproved: paidApproved.length
@@ -2088,11 +2122,12 @@ function admin_getReviewQueues(payload) {
   return {
     ok: true,
     docs: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.docs, offset, limit)),
+    awaitingPayment: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.awaitingPayment, offset, limit)),
     payments: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.payments, offset, limit)),
     anomalies: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.anomalies, offset, limit)),
     paidApproved: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.paidApproved, offset, limit)),
     postPaymentIssues: refreshDocsFollowupRuntime_(sliceQueueByOffset_(fullData.postPaymentIssues, offset, limit)),
-    counts: fullData.counts || { payments: 0, docs: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 },
+    counts: fullData.counts || { payments: 0, docs: 0, awaitingPayment: 0, anomalies: 0, paidApproved: 0, postPaymentIssues: 0 },
     offset: offset,
     limit: limit,
     hasMore: pageMeta.hasMore,

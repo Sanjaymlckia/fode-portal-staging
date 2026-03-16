@@ -364,6 +364,7 @@
     <div id="reviewQueuesPanel" class="card queue-panel">
       <h3>Review Queues</h3>
       <div id="queueDocs" class="queue-section"></div>
+      <div id="queueAwaitingPayment" class="queue-section"></div>
       <div id="queuePayments" class="queue-section"></div>
       <div id="queueAnomalies" class="queue-section"></div>
       <div id="queuePaidApproved" class="queue-section"></div>
@@ -442,7 +443,7 @@
       <div class="kv">
         <div class="box">
           <div class="k">Doc Verification (Computed)</div>
-          <div class="v" id="mOverall">—</div>
+          <div class="v" id="mOverall">-</div>
           <div id="mOverallOverride" class="overrideTag hidden" title="Stored overall differs from computed; super admin override in effect.">Overridden</div>
         </div>
         <div class="box">
@@ -451,15 +452,25 @@
         </div>
         <div class="box">
           <div class="k">Payment Status</div>
-          <div class="v" id="mPayment">—</div>
+          <div class="v" id="mPayment">-</div>
+        </div>
+        <div class="box">
+          <div class="k">Workflow Fields</div>
+          <div class="v" style="font-size:13px;font-weight:600;line-height:1.6;">
+            <div id="mWorkflowPortalSubmitted">Portal Submitted: No</div>
+            <div id="mWorkflowDocsVerified">Docs Verified: No</div>
+            <div id="mWorkflowPaymentReceived">Payment Received: No</div>
+            <div id="mWorkflowPaymentVerified">Payment Verified: No</div>
+            <div id="mWorkflowEnrolledConfirmed">Enrolled Confirmed: No</div>
+          </div>
         </div>
         <div class="box">
           <div class="k">Portal Access</div>
-          <div class="v" id="mPortal">—</div>
+          <div class="v" id="mPortal">-</div>
         </div>
         <div class="box">
           <div class="k">Token Age</div>
-          <div class="v" id="mTokenAge">—</div>
+          <div class="v" id="mTokenAge">-</div>
         </div>
       </div>
 
@@ -592,10 +603,11 @@
     let queueExpandState = {};
     let queueDataState = {
       docs: [],
+      awaitingPayment: [],
       payments: [],
       anomalies: [],
       paidApproved: [],
-      counts: { docs: 0, payments: 0, anomalies: 0, paidApproved: 0 },
+      counts: { docs: 0, awaitingPayment: 0, payments: 0, anomalies: 0, paidApproved: 0 },
       hasMore: false,
       nextOffset: 0
     };
@@ -976,10 +988,11 @@
     function resetQueueDataState_(){
       queueDataState = {
         docs: [],
+        awaitingPayment: [],
         payments: [],
         anomalies: [],
         paidApproved: [],
-        counts: { docs: 0, payments: 0, anomalies: 0, paidApproved: 0 },
+        counts: { docs: 0, awaitingPayment: 0, payments: 0, anomalies: 0, paidApproved: 0 },
         hasMore: false,
         nextOffset: 0
       };
@@ -1008,6 +1021,7 @@
       var hasMore = !!(queueDataState && queueDataState.hasMore);
       var loadedMax = Math.max(
         Number((queueDataState.docs || []).length || 0),
+        Number((queueDataState.awaitingPayment || []).length || 0),
         Number((queueDataState.payments || []).length || 0),
         Number((queueDataState.anomalies || []).length || 0),
         Number((queueDataState.paidApproved || []).length || 0)
@@ -1036,11 +1050,13 @@
             var data = (res && typeof res === "object") ? res : {};
             if (append) {
               queueDataState.docs = mergeQueueRows_(queueDataState.docs, data.docs);
+              queueDataState.awaitingPayment = mergeQueueRows_(queueDataState.awaitingPayment, data.awaitingPayment);
               queueDataState.payments = mergeQueueRows_(queueDataState.payments, data.payments);
               queueDataState.anomalies = mergeQueueRows_(queueDataState.anomalies, data.anomalies);
               queueDataState.paidApproved = mergeQueueRows_(queueDataState.paidApproved, data.paidApproved);
             } else {
               queueDataState.docs = Array.isArray(data.docs) ? data.docs.slice() : [];
+              queueDataState.awaitingPayment = Array.isArray(data.awaitingPayment) ? data.awaitingPayment.slice() : [];
               queueDataState.payments = Array.isArray(data.payments) ? data.payments.slice() : [];
               queueDataState.anomalies = Array.isArray(data.anomalies) ? data.anomalies.slice() : [];
               queueDataState.paidApproved = Array.isArray(data.paidApproved) ? data.paidApproved.slice() : [];
@@ -1058,7 +1074,7 @@
         .withFailureHandler(function(err){
           console.error("[AdminUI] admin_getReviewQueues failure:", err);
           var el = document.getElementById("queueDocs");
-          if (el) el.innerHTML = "<div class='queue-header'>Documents to Review</div><div class='queue-empty'>Could not load queues.</div>";
+          if (el) el.innerHTML = "<div class='queue-header'>Documents to Verify</div><div class='queue-empty'>Could not load queues.</div>";
           updateQueueLoadMoreUi_(false);
         })
         .admin_getReviewQueues({ offset: requestOffset, limit: QUEUE_FETCH_SIZE, force: force ? 1 : 0 });
@@ -1073,11 +1089,15 @@
       const c = counts || {};
       queueExpandState = {
         queueDocs: Number(c.docs || 0) > 0,
+        queueAwaitingPayment: false,
         queuePayments: false,
         queueAnomalies: false,
         queuePaidApproved: false
       };
-      if (!queueExpandState.queueDocs && Number(c.payments || 0) > 0) {
+      if (!queueExpandState.queueDocs && Number(c.awaitingPayment || 0) > 0) {
+        queueExpandState.queueAwaitingPayment = true;
+      }
+      if (!queueExpandState.queueDocs && !queueExpandState.queueAwaitingPayment && Number(c.payments || 0) > 0) {
         queueExpandState.queuePayments = true;
       }
     }
@@ -1108,6 +1128,28 @@
       }
       return effective;
     }
+    function workflowYesNo_(value){
+      return String(value || "").trim().toLowerCase() === "yes" ? "Yes" : "No";
+    }
+
+    function workflowEnrolledLabel_(row){
+      var enrolled = workflowYesNo_(row && row.Enrolled_Confirmed);
+      if (enrolled === "Yes") return "Yes";
+      if (workflowYesNo_(row && row.Payment_Verified) === "Yes") return "Yes (derived)";
+      return "No";
+    }
+
+    function workflowSummaryText_(row){
+      var r = row || {};
+      return [
+        "Portal Submitted: " + workflowYesNo_(r.Portal_Submitted),
+        "Docs Verified: " + workflowYesNo_(r.Docs_Verified),
+        "Payment Received: " + workflowYesNo_(r.Payment_Received),
+        "Payment Verified: " + workflowYesNo_(r.Payment_Verified),
+        "Enrolled Confirmed: " + workflowEnrolledLabel_(r)
+      ].join(" | ");
+    }
+
     function paymentBadgeFromRow_(row){
       var r = row || {};
       var computed = String(r.Payment_Status_Computed || "").trim();
@@ -1149,7 +1191,7 @@
       var html = "";
       html += "<button type='button' class='queue-section-header' data-action='queue-toggle' data-queue-key='" + esc(queueKey) + "' title='Toggle section'>";
       html += "<div class='queue-header'>" + esc(title) + " (" + total + ")</div>";
-      html += "<div class='caret'>" + (expanded ? "▾" : "▸") + "</div>";
+      html += "<div class='caret'>" + (expanded ? "v" : ">") + "</div>";
       html += "</button>";
       html += "<div class='queue-section-body " + (expanded ? "" : "hidden") + "'>";
       if (!list.length) {
@@ -1164,7 +1206,7 @@
           html += "<button class='btn small accent' type='button' data-action='queue-docs-send-selected' " + ((isDocsSendBusy || selectedCount === 0) ? "disabled" : "") + ">" + (isDocsSendBusy ? "Sending..." : "Send Quote to Selected") + "</button>";
           html += "<span class='muted' style='font-size:12px;'>" + String(selectedCount) + " selected</span>";
           html += "</div>";
-          html += "<table class='queue-table'><tr><th style='width:30px;'></th><th>Applicant</th><th>Name</th><th>Docs Follow-Up</th><th>Action</th></tr>";
+          html += "<table class='queue-table'><tr><th style='width:30px;'></th><th>Applicant</th><th>Name</th><th>Workflow</th><th>Docs Follow-Up</th><th>Action</th></tr>";
           pageRows.forEach(function(row){
             var rowNumber = Number(row && row.rowNumber || 0);
             var applicantId = String((row && (row.ApplicantID || row.applicantId)) || "");
@@ -1190,15 +1232,13 @@
             html += "<td><input type='checkbox' data-action='docs-select-row' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' data-applicant-id='" + esc(applicantId) + "' data-eligible='" + (canSendQuote ? "1" : "0") + "' " + checkChecked + " " + checkDisabled + "></td>";
             html += "<td>" + esc(applicantId) + "</td>";
             html += "<td>" + esc(nameDisplay) + "</td>";
+            html += "<td class='muted' style='font-size:12px;'>" + esc(workflowSummaryText_(row)) + "</td>";
             html += "<td><span class='" + statusClass + "'>" + esc(statusText) + "</span></td>";
-            html += "<td>"
-              + "<button class='btn small' data-action='send-docs-single' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(sendTitle) + "' " + (canSendQuote && !isDocsSendBusy ? "" : "disabled ") + ">Send Quote</button> "
-              + "<button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button>"
-              + "</td>";
+            html += "<td><button class='btn small' data-action='send-docs-single' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(sendTitle) + "' " + (canSendQuote && !isDocsSendBusy ? "" : "disabled ") + ">Send Quote</button> <button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(reviewTitle) + "' " + (canReview ? "" : "disabled ") + ">Review</button></td>";
             html += "</tr>";
           });
         } else if (queueKey === "queuePayments") {
-          html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Payment</th><th>Action</th></tr>";
+          html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Workflow</th><th>Payment</th><th>Action</th></tr>";
           pageRows.forEach(function(row){
             var rowNumber = Number(row && row.rowNumber || 0);
             var applicantId = String(row && row.applicantId || "");
@@ -1212,12 +1252,13 @@
             html += "<tr>";
             html += "<td>" + esc(applicantId) + "</td>";
             html += "<td>" + esc(nameDisplay) + "</td>";
+            html += "<td class='muted' style='font-size:12px;'>" + esc(workflowSummaryText_(row)) + "</td>";
             html += "<td><span class='" + esc(paymentBadge.cls) + "'>" + esc(paymentBadge.label) + "</span></td>";
-            html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button></td>";
+            html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(reviewTitle) + "' " + (canReview ? "" : "disabled ") + ">Review</button></td>";
             html += "</tr>";
           });
         } else {
-          html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Action</th></tr>";
+          html += "<table class='queue-table'><tr><th>Applicant</th><th>Name</th><th>Workflow</th><th>Action</th></tr>";
           pageRows.forEach(function(row){
             var rowNumber = Number(row && row.rowNumber || 0);
             var applicantId = String(row && row.applicantId || "");
@@ -1230,14 +1271,15 @@
             html += "<tr>";
             html += "<td>" + esc(applicantId) + "</td>";
             html += "<td>" + esc(nameDisplay) + "</td>";
-            html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title=\"" + esc(reviewTitle) + "\" " + (canReview ? "" : "disabled ") + ">Review</button></td>";
+            html += "<td class='muted' style='font-size:12px;'>" + esc(workflowSummaryText_(row)) + "</td>";
+            html += "<td><button class='btn small' data-action='queue-review' data-applicant-id='" + esc(applicantId) + "' data-row-number='" + esc(String(Number.isFinite(rowNumber) ? rowNumber : "")) + "' title='" + esc(reviewTitle) + "' " + (canReview ? "" : "disabled ") + ">Review</button></td>";
             html += "</tr>";
           });
         }
         html += "</table>";
         html += "<div class='row' style='margin-top:8px;align-items:center;gap:8px;'>";
-        html += "<button class='btn small' " + (pager.page <= 0 ? "disabled" : "") + " onclick=\"queuePrevPage(" + JSON.stringify(queueKey) + ")\">Prev</button>";
-        html += "<button class='btn small' " + (end >= list.length ? "disabled" : "") + " onclick=\"queueNextPage(" + JSON.stringify(queueKey) + ")\">Next</button>";
+        html += "<button class='btn small' " + (pager.page <= 0 ? "disabled" : "") + " onclick='queuePrevPage(" + JSON.stringify(queueKey) + ")'>Prev</button>";
+        html += "<button class='btn small' " + (end >= list.length ? "disabled" : "") + " onclick='queueNextPage(" + JSON.stringify(queueKey) + ")'>Next</button>";
         html += "<div class='muted' style='font-size:12px;'>Page " + (pager.page + 1) + " of " + totalPages + "</div>";
         html += "</div>";
       }
@@ -1269,7 +1311,7 @@
     function applySmartExpansion(counts){
       var c = counts || {};
       setDefaultQueueExpandState_(c);
-      ["queuePayments","queueDocs","queueAnomalies","queuePaidApproved"].forEach(function(id){
+      ["queueDocs","queueAwaitingPayment","queuePayments","queueAnomalies","queuePaidApproved"].forEach(function(id){
         var el = document.getElementById(id);
         if (!el) return;
         el.classList.toggle("expanded", isQueueExpanded_(id));
@@ -1282,10 +1324,11 @@
       var counts = d.counts || {};
       if (!o.keepPager) resetQueuePagerState_();
       applySmartExpansion(counts);
-      renderQueueSection("queueDocs", "Documents to Review", d.docs, counts.docs);
+      renderQueueSection("queueDocs", "Documents to Verify", d.docs, counts.docs);
+      renderQueueSection("queueAwaitingPayment", "Awaiting Payment", d.awaitingPayment, counts.awaitingPayment);
       renderQueueSection("queuePayments", "Payments to Verify", d.payments, counts.payments);
       renderQueueSection("queueAnomalies", "Payment-First Anomalies", d.anomalies, counts.anomalies);
-      renderQueueSection("queuePaidApproved", "Paid & Approved for Enrollment", d.paidApproved, counts.paidApproved);
+      renderQueueSection("queuePaidApproved", "Enrolled / Confirmed", d.paidApproved, counts.paidApproved);
     }
 
     function initQueuePanelEvents_(){
@@ -1964,6 +2007,11 @@
       document.getElementById("mPayment").textContent = paymentBadge === "Verified"
         ? "Payment Verified"
         : (paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending");
+      document.getElementById("mWorkflowPortalSubmitted").textContent = "Portal Submitted: " + workflowYesNo_(d.Portal_Submitted);
+      document.getElementById("mWorkflowDocsVerified").textContent = "Docs Verified: " + workflowYesNo_(d.Docs_Verified);
+      document.getElementById("mWorkflowPaymentReceived").textContent = "Payment Received: " + workflowYesNo_(d.Payment_Received);
+      document.getElementById("mWorkflowPaymentVerified").textContent = "Payment Verified: " + workflowYesNo_(d.Payment_Verified);
+      document.getElementById("mWorkflowEnrolledConfirmed").textContent = "Enrolled Confirmed: " + workflowEnrolledLabel_(d);
       var overrideTag = document.getElementById("mOverallOverride");
       if (overrideTag) {
         var overridden = d.Overall_IsOverridden === true;
