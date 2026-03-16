@@ -14,14 +14,14 @@ var CONFIG = {
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "STAGING", // "STAGING" | "PROD"
-  SPREADSHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
+  SPREADSHEET_ID_STAGING: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
   SPREADSHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
-  SHEET_ID_STAGING: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
+  SHEET_ID_STAGING: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
   SHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
   SHEET_NAME_WORKING: "FODE_Data",
   SHEET_TAB_WORKING: "FODE_Data",
   // Backward-compatible aliases (legacy callers)
-  SHEET_ID: "1F_aNZGmZwI9isQ1Qj1wjxY971XFkLmLJcz_bsugcCoY",
+  SHEET_ID: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
   DATA_SHEET: "FODE_Data",
   LOG_SHEET: "Webhook_Log",
 
