@@ -358,13 +358,13 @@ function admin_getApplicantDetail(payload) {
     var isSuperAdminCaller = canBypassPaymentFreeze_(adminEmail);
     var isOverridden = !!(canOverride && overallStored && overallStored !== overallComputed);
     detailObj.Payment_Received = (nonEmpty_(clean_(detailObj.Fee_Receipt_File || "")) || nonEmpty_(clean_(detailObj.Receipt_Status || ""))) ? "Yes" : "No";
-    detailObj.Docs_Verified = clean_(detailObj.Docs_Verified || "") === "Yes" || docStageComputed === "Verified" ? "Yes" : "No";
-    detailObj.Portal_Submitted = clean_(detailObj.Portal_Submitted || "") === "Yes" ? "Yes" : "No";
-    detailObj.Payment_Verified = paymentVerifiedBool ? "Yes" : "No";
-    detailObj.Enrolled_Confirmed = paymentVerifiedBool ? "Yes" : "No";
-    detailObj.Payment_Verified_Bool = paymentVerifiedBool;
-    detailObj.paymentVerified = paymentVerifiedBool;
-    detailObj.isPaymentVerified = paymentVerifiedBool;
+    detailObj.Docs_Verified = clean_(detailObj.Docs_Verified || "") === "Yes" ? "Yes" : "No";
+    detailObj.Portal_Submitted = (nonEmpty_(clean_(detailObj.Portal_Submitted || "")) && clean_(detailObj.Portal_Submitted || "") !== "No") ? "Yes" : "No";
+    detailObj.Payment_Verified = clean_(detailObj.Payment_Verified || "") === "Yes" ? "Yes" : "No";
+    detailObj.Enrolled_Confirmed = detailObj.Payment_Verified === "Yes" ? "Yes" : "No";
+    detailObj.Payment_Verified_Bool = detailObj.Payment_Verified === "Yes";
+    detailObj.paymentVerified = detailObj.Payment_Verified === "Yes";
+    detailObj.isPaymentVerified = detailObj.Payment_Verified === "Yes";
     detailObj.isSuperAdmin = !!isSuperAdminCaller;
     detailObj.Payment_Badge = paymentBadge;
     detailObj.Doc_Verification_Status_Computed = docStageComputed;
@@ -2083,7 +2083,7 @@ function admin_getReviewQueues(payload) {
       };
       debugRows.forEach(function (d) {
         if (d.id === "FODE-26-000084" || d.id === "FODE-26-000007") {
-          Logger.log("CIS-r228 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
+          Logger.log("CIS-r231 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
         }
       });
       Logger.log("QUEUE_SUMMARY " + JSON.stringify({
