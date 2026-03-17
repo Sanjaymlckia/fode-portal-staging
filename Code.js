@@ -4349,7 +4349,7 @@ function _claspPing() { return "pong"; }
 ADMIN QUEUE RPC (restored using existing row helpers)
 ************************************************************/
 
-function admin_getReviewQueues() {
+function legacy_admin_getReviewQueues() {
   try {
     var ss = getWorkingSpreadsheet_();
     var sheet = mustGetDataSheet_(ss);
@@ -4405,7 +4405,7 @@ function admin_getReviewQueues() {
   }
 }
 
-function admin_getQueueItems(queueId, limit, offset) {
+function legacy_admin_getQueueItems(queueId, limit, offset) {
   try {
     var ss = getWorkingSpreadsheet_();
     var sheet = mustGetDataSheet_(ss);
