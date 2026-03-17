@@ -1888,6 +1888,11 @@ function admin_getReviewQueues(payload) {
   var cache = CacheService.getUserCache();
   var cacheKey = getDashboardCacheKey_(adminEmail);
   var fullData = null;
+  Logger.log("R232_QUEUE_CANARY ENTRY " + JSON.stringify({
+    force: force,
+    offset: offset,
+    limit: limit
+  }));
   if (!force) {
     try {
       var cached = cache.get(cacheKey);
@@ -2020,6 +2025,20 @@ function admin_getReviewQueues(payload) {
           awaitingPaymentQueue: awaitingPaymentQueueMatch,
           hasActivity: hasActivity
         }));
+        if (applicantId.indexOf("FODE-26-TEST-") === 0 || applicantId === "FODE-26-000084" || applicantId === "FODE-26-000007") {
+          Logger.log("R232_QUEUE_CANARY ROW " + JSON.stringify({
+            applicantId: applicantId,
+            portalSubmitted: portalSubmitted,
+            docsVerified: docsVerified,
+            paymentEvidencePresent: paymentEvidencePresent,
+            paymentVerified: paymentVerified,
+            docsQueue: docsQueueMatch,
+            awaitingPaymentQueue: awaitingPaymentQueueMatch,
+            paymentsQueue: paymentsQueueMatch,
+            anomaliesQueue: anomaliesQueueMatch,
+            paidApprovedQueue: paidApprovedQueueMatch
+          }));
+        }
 
         if (paidApprovedQueueMatch) {
           pushQueueItem_(paidApproved, qItem);
@@ -2087,6 +2106,13 @@ function admin_getReviewQueues(payload) {
         }
       });
       Logger.log("QUEUE_SUMMARY " + JSON.stringify({
+        docs: docs.length,
+        awaitingPayment: awaitingPayment.length,
+        payments: payments.length,
+        anomalies: anomalies.length,
+        paidApproved: paidApproved.length
+      }));
+      Logger.log("R232_QUEUE_CANARY SUMMARY " + JSON.stringify({
         docs: docs.length,
         awaitingPayment: awaitingPayment.length,
         payments: payments.length,
