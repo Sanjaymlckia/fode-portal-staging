@@ -269,8 +269,26 @@ function admin_getApplicantDetail(payload) {
     var lastCol = sheet.getLastColumn();
     var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     var idx = headerIndex_(headers);
+    var resolveLocalHeaderAlias_ = function(canonicalKey, aliases) {
+      if (idx[canonicalKey]) return;
+      for (var i = 0; i < aliases.length; i++) {
+        var aliasKey = aliases[i];
+        if (idx[aliasKey]) {
+          idx[canonicalKey] = idx[aliasKey];
+          return;
+        }
+      }
+    };
+    resolveLocalHeaderAlias_("First_Name", ["FirstName", "First Name"]);
+    resolveLocalHeaderAlias_("Last_Name", ["LastName", "Last Name"]);
+    if (!idx.First_Name) {
+      throw new Error("Missing required identity header: First_Name (aliases checked: FirstName, First Name)");
+    }
+    if (!idx.Last_Name) {
+      throw new Error("Missing required identity header: Last_Name (aliases checked: LastName, Last Name)");
+    }
     requireHeaders_(idx, [
-      "ApplicantID", "First_Name", "Last_Name", "Parent_Email", "Parent_Email_Corrected",
+      "ApplicantID", "Parent_Email", "Parent_Email_Corrected",
       "Portal_Access_Status", "Doc_Verification_Status", "Doc_Last_Verified_At", "Doc_Last_Verified_By",
       "PortalTokenIssuedAt",
       "Birth_ID_Passport_File", "Latest_School_Report_File", "Transfer_Certificate_File", "Passport_Photo_File", "Fee_Receipt_File",

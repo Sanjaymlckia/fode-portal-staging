@@ -257,10 +257,29 @@ function doPost(e) {
 
 /******************** ENTRYPOINT: GET ********************/
 function maybeRedirectToCanonical_(e) {
-  var currentUrl = ScriptApp.getService().getUrl();
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var view = clean_(params.view || "").toLowerCase();
+  var currentUrl = clean_(ScriptApp.getService().getUrl() || "");
   var canonicalBase = pickCanonicalExecBase_(e);
 
   if (!currentUrl || !canonicalBase) return null;
+
+  var force = String(params.force || "") !== "";
+
+  if (view === "admin" && !force) {
+    var canonical = "https://script.google.com/macros/s/AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp/exec";
+    var target = canonical + "?view=admin&force=1";
+    Object.keys(params).forEach(function(key) {
+      if (key && key !== "view" && key !== "force") {
+        target += "&" + encodeURIComponent(key) + "=" + encodeURIComponent(String(params[key] || ""));
+      }
+    });
+    return HtmlService.createHtmlOutput(
+  '<!DOCTYPE html><html><body>' +
+  '<script>try{top.location.replace(' + JSON.stringify(target) + ');}catch(e){location.replace(' + JSON.stringify(target) + ');}</script>' +
+  '</body></html>'
+);
+  }
 
   if (currentUrl.indexOf("/a/macros/") !== -1) {
     var redirectHtml = HtmlService.createHtmlOutput(
