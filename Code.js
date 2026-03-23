@@ -3130,21 +3130,14 @@ function buildRuntimeTruth_(e, surfaceHint) {
   try { effectiveUser = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_effectiveErr) {}
 
   var deployVersion = Number(CONFIG.DEPLOY_VERSION_NUMBER || 0);
-  var deployToken = deployVersion > 0 ? ("r" + String(deployVersion)) : "";
   var adminBase = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || "");
   var studentBase = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || "");
   var serviceUrl = canonicalExecBase_(rawServiceUrl || adminBase || studentBase || "");
   var configAdminUrl = canonicalExecBase_(CONFIG.WEBAPP_URL_ADMIN || "");
   var configStudentUrl = canonicalExecBase_(CONFIG.WEBAPP_URL_STUDENT || CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
   var warnings = [];
-  var mismatches = [];
 
-  if (!adminBase) mismatches.push('Missing canonical admin exec URL.');
-  if (!studentBase) mismatches.push('Missing canonical student exec URL.');
-  if (configAdminUrl && adminBase && configAdminUrl !== adminBase) mismatches.push('CONFIG.WEBAPP_URL_ADMIN does not match DEPLOYMENT_ID_ADMIN.');
-  if (configStudentUrl && studentBase && configStudentUrl !== studentBase) mismatches.push('CONFIG.WEBAPP_URL_STUDENT does not match DEPLOYMENT_ID_STUDENT.');
   if (rawServiceUrl && rawServiceUrl.indexOf('/a/') >= 0) warnings.push('ScriptApp service URL resolved as domain-scoped and was canonicalized for reporting.');
-  if (deployToken && clean_(CONFIG.VERSION || '').indexOf(deployToken) < 0) mismatches.push('CONFIG.VERSION does not contain DEPLOY_VERSION_NUMBER token.');
 
   var requestedSurface = clean_(surfaceHint || '');
   if (!requestedSurface) {
@@ -3155,7 +3148,7 @@ function buildRuntimeTruth_(e, surfaceHint) {
     else requestedSurface = requestedView || 'unknown';
   }
 
-  return {
+  var runtime = {
     ok: true,
     endpoint: 'whoami',
     version: clean_(CONFIG.VERSION || ''),
@@ -3171,11 +3164,39 @@ function buildRuntimeTruth_(e, surfaceHint) {
     requestedSurface: requestedSurface,
     scriptId: clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId() || ''),
     timestamp: new Date().toISOString(),
-    mismatch: mismatches.length > 0,
-    warning: mismatches.concat(warnings).join(' | '),
+    mismatch: false,
+    warning: '',
     warnings: warnings,
-    mismatches: mismatches
+    mismatches: []
   };
+
+  if (runtime.deployVersion !== Number(CONFIG.DEPLOY_VERSION_NUMBER || 0)) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('deployVersion mismatch');
+  }
+  if (runtime.deploymentIdAdmin !== clean_(CONFIG.DEPLOYMENT_ID_ADMIN || '')) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('Admin deployment mismatch');
+  }
+  if (runtime.deploymentIdStudent !== clean_(CONFIG.DEPLOYMENT_ID_STUDENT || '')) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('Student deployment mismatch');
+  }
+  if (runtime.canonicalAdminUrl !== configAdminUrl) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('Admin URL mismatch');
+  }
+  if (runtime.canonicalStudentUrl !== configStudentUrl) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('Student URL mismatch');
+  }
+  if (!runtime.deployVersion || !runtime.deploymentIdAdmin || !runtime.deploymentIdStudent) {
+    runtime.mismatch = true;
+    runtime.mismatches.push('Missing runtime fields');
+  }
+
+  runtime.warning = runtime.mismatches.concat(runtime.warnings).join(' | ');
+  return runtime;
 }
 
 function admin_getRuntimeInfo() {

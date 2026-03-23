@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-23-PNG-STAGING-r237",
+  VERSION: "2026-03-23-PNG-STAGING-r239",
   CHANGELOG_LAST: "r229: point staging runtime to clean staging sheet and current admin deployment",
-  DEPLOY_VERSION_NUMBER: 29,
+  DEPLOY_VERSION_NUMBER: 31,
   BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
 
   // STAGING/PROD data mode routing (working sheet)
