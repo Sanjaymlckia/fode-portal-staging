@@ -314,17 +314,6 @@ function doGet(e) {
       currentUrl = serviceUrl;
     } catch (_serviceErr) {}
 
-    if (view === "whoami") {
-      return HtmlService.createHtmlOutput(
-        JSON.stringify({
-          version: CONFIG.VERSION,
-          deployment: CONFIG.DEPLOY_VERSION_NUMBER,
-          user: Session.getActiveUser().getEmail(),
-          url: ScriptApp.getService().getUrl()
-        }, null, 2)
-      );
-    }
-
     isAdminDeployment = isAdminDeploymentRequest_();
     Logger.log("ROUTE doGet START dbg=%s view=%s isAdmin=%s url=%s", dbg, view || "(blank)", isAdminDeployment ? "true" : "false", currentUrl || "");
 
@@ -3130,19 +3119,67 @@ function buildStudentPortalUrl_(applicantId, secret) {
     + encodeURIComponent(clean_(secret || ""));
 }
 
-function admin_getRuntimeInfo() {
-  var serviceUrl = "";
-  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_e) {}
+function buildRuntimeTruth_(e, surfaceHint) {
+  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
+  var requestedView = clean_(params.view || "").toLowerCase();
+  var rawServiceUrl = "";
+  var activeUser = "";
+  var effectiveUser = "";
+  try { rawServiceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_rawErr) {}
+  try { activeUser = clean_(Session.getActiveUser().getEmail() || ""); } catch (_activeErr) {}
+  try { effectiveUser = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_effectiveErr) {}
+
+  var deployVersion = Number(CONFIG.DEPLOY_VERSION_NUMBER || 0);
+  var deployToken = deployVersion > 0 ? ("r" + String(deployVersion)) : "";
+  var adminBase = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || "");
+  var studentBase = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || "");
+  var serviceUrl = canonicalExecBase_(rawServiceUrl || adminBase || studentBase || "");
+  var configAdminUrl = canonicalExecBase_(CONFIG.WEBAPP_URL_ADMIN || "");
+  var configStudentUrl = canonicalExecBase_(CONFIG.WEBAPP_URL_STUDENT || CONFIG.WEBAPP_URL_STUDENT_EXEC || "");
+  var warnings = [];
+  var mismatches = [];
+
+  if (!adminBase) mismatches.push('Missing canonical admin exec URL.');
+  if (!studentBase) mismatches.push('Missing canonical student exec URL.');
+  if (configAdminUrl && adminBase && configAdminUrl !== adminBase) mismatches.push('CONFIG.WEBAPP_URL_ADMIN does not match DEPLOYMENT_ID_ADMIN.');
+  if (configStudentUrl && studentBase && configStudentUrl !== studentBase) mismatches.push('CONFIG.WEBAPP_URL_STUDENT does not match DEPLOYMENT_ID_STUDENT.');
+  if (rawServiceUrl && rawServiceUrl.indexOf('/a/') >= 0) warnings.push('ScriptApp service URL resolved as domain-scoped and was canonicalized for reporting.');
+  if (deployToken && clean_(CONFIG.VERSION || '').indexOf(deployToken) < 0) mismatches.push('CONFIG.VERSION does not contain DEPLOY_VERSION_NUMBER token.');
+
+  var requestedSurface = clean_(surfaceHint || '');
+  if (!requestedSurface) {
+    if (requestedView === 'admin') requestedSurface = 'admin';
+    else if (requestedView === 'portal') requestedSurface = 'student';
+    else if (serviceUrl && adminBase && serviceUrl === adminBase) requestedSurface = 'admin';
+    else if (serviceUrl && studentBase && serviceUrl === studentBase) requestedSurface = 'student';
+    else requestedSurface = requestedView || 'unknown';
+  }
+
   return {
     ok: true,
-    version: clean_(CONFIG.VERSION || ""),
-    deployVersion: Number(CONFIG.DEPLOY_VERSION_NUMBER || 0),
-    scriptId: clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId() || ""),
+    endpoint: 'whoami',
+    version: clean_(CONFIG.VERSION || ''),
+    deployVersion: deployVersion,
+    deploymentIdAdmin: clean_(CONFIG.DEPLOYMENT_ID_ADMIN || ''),
+    deploymentIdStudent: clean_(CONFIG.DEPLOYMENT_ID_STUDENT || ''),
     serviceUrl: serviceUrl,
-    adminBase: canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || ""),
-    studentBase: canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || ""),
-    nowIso: new Date().toISOString()
+    canonicalAdminUrl: adminBase,
+    canonicalStudentUrl: studentBase,
+    activeUser: activeUser,
+    effectiveUser: effectiveUser,
+    requestedView: requestedView,
+    requestedSurface: requestedSurface,
+    scriptId: clean_(CONFIG.SCRIPT_ID || ScriptApp.getScriptId() || ''),
+    timestamp: new Date().toISOString(),
+    mismatch: mismatches.length > 0,
+    warning: mismatches.concat(warnings).join(' | '),
+    warnings: warnings,
+    mismatches: mismatches
   };
+}
+
+function admin_getRuntimeInfo() {
+  return buildRuntimeTruth_({ parameter: { view: 'admin' } }, 'admin');
 }
 
 // SV GROK Mar 7 function overwrite

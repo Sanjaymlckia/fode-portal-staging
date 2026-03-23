@@ -11,39 +11,20 @@ function respondDiag_(e) {
 }
 
 function doGet_whoami_(e) {
-  var params = (e && e.parameter && typeof e.parameter === "object") ? e.parameter : {};
-  var query = (e && typeof e.queryString === "string" && e.queryString) ? ("?" + e.queryString) : "";
-  var serviceUrl = "";
-  var reqUrl = "";
-  var eff = "";
-  var act = "";
-  try { serviceUrl = clean_(ScriptApp.getService().getUrl() || ""); } catch (_suErr) {}
-  reqUrl = serviceUrl + query;
-  try { eff = clean_(Session.getEffectiveUser().getEmail() || ""); } catch (_effErr) {}
-  try { act = clean_(Session.getActiveUser().getEmail() || ""); } catch (_actErr) {}
-  var effSafe = eff ? eff.replace(/@.*$/, "@...") : "unknown";
-  var actSafe = act ? act.replace(/@.*$/, "@...") : "unknown";
-  var canonicalReq = canonicalExecBase_(reqUrl);
-  var adminCanonical = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_ADMIN || CONFIG.WEBAPP_URL_ADMIN || "");
-  var studentCanonical = canonicalExecBase_(CONFIG.DEPLOYMENT_ID_STUDENT || CONFIG.WEBAPP_URL_STUDENT || "");
+  var runtime = buildRuntimeTruth_(e, 'whoami');
+  var pretty = JSON.stringify(runtime, null, 2);
+  var status = runtime.mismatch ? 'VERSION MISMATCH - STOP DEPLOY' : 'AUTHORITATIVE RUNTIME TRUTH';
+  var statusColor = runtime.mismatch ? '#fecaca' : '#86efac';
   var html = ''
     + '<!doctype html><html><head><meta charset="utf-8"><base target="_top">'
     + '<meta name="viewport" content="width=device-width, initial-scale=1">'
-    + '<style>body{font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px}.card{max-width:980px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:16px}.ok{color:#86efac;font-weight:800}.k{color:#93c5fd;font-weight:700}.v{word-break:break-all}.row{margin:8px 0}</style>'
-    + '</head><body><div class="card"><div class="ok">REQUEST REACHED CODE: YES</div>'
-    + '<div class="row"><span class="k">Request URL (received):</span> <span class="v">' + esc_(reqUrl || "-") + '</span></div>'
-    + '<div class="row"><span class="k">Canonical /macros URL:</span> <span class="v">' + esc_(canonicalReq || "-") + '</span></div>'
-    + '<div class="row"><span class="k">Effective user:</span> <span class="v">' + esc_(effSafe) + '</span></div>'
-    + '<div class="row"><span class="k">Active user:</span> <span class="v">' + esc_(actSafe) + '</span></div>'
-    + '<div class="row"><span class="k">CONFIG.VERSION:</span> <span class="v">' + esc_(clean_(CONFIG.VERSION || "")) + '</span></div>'
-    + '<div class="row"><span class="k">CONFIG.DEPLOY_VERSION_NUMBER:</span> <span class="v">' + esc_(String(Number(CONFIG.DEPLOY_VERSION_NUMBER || 0))) + '</span></div>'
-    + '<div class="row"><span class="k">CONFIG.SCRIPT_ID:</span> <span class="v">' + esc_(clean_(CONFIG.SCRIPT_ID || "")) + '</span></div>'
-    + '<div class="row"><span class="k">CONFIG.WEBAPP_URL_ADMIN:</span> <span class="v">' + esc_(clean_(CONFIG.WEBAPP_URL_ADMIN || "")) + '</span></div>'
-    + '<div class="row"><span class="k">CONFIG.WEBAPP_URL_STUDENT:</span> <span class="v">' + esc_(clean_(CONFIG.WEBAPP_URL_STUDENT || "")) + '</span></div>'
-    + '<div class="row"><span class="k">DEPLOYMENT_ID_ADMIN:</span> <span class="v">' + esc_(clean_(CONFIG.DEPLOYMENT_ID_ADMIN || "")) + '</span></div>'
-    + '<div class="row"><span class="k">DEPLOYMENT_ID_STUDENT:</span> <span class="v">' + esc_(clean_(CONFIG.DEPLOYMENT_ID_STUDENT || "")) + '</span></div>'
-    + '<div class="row"><span class="k">Derived Admin Canonical:</span> <span class="v">' + esc_(adminCanonical || "-") + '</span></div>'
-    + '<div class="row"><span class="k">Derived Student Canonical:</span> <span class="v">' + esc_(studentCanonical || "-") + '</span></div>'
+    + '<style>body{font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:24px}.card{max-width:1080px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:16px}.status{font-weight:800;color:' + statusColor + '}pre{margin:16px 0 0;background:#020617;border:1px solid #334155;border-radius:8px;padding:16px;white-space:pre-wrap;word-break:break-word}.links{margin-top:12px}.links a{color:#93c5fd}</style>'
+    + '</head><body><div class="card">'
+    + '<div class="status">' + esc_(status) + '</div>'
+    + '<div style="margin-top:8px">Existing <code>?view=whoami</code> is the authoritative runtime endpoint for this deployment.</div>'
+    + '<pre>' + esc_(pretty) + '</pre>'
+    + '<div class="links"><a href="' + esc_(runtime.canonicalAdminUrl + '?view=whoami') + '">Admin whoami</a> | '
+    + '<a href="' + esc_(runtime.canonicalStudentUrl + '?view=whoami') + '">Student whoami</a></div>'
     + '</div></body></html>';
   return HtmlService.createHtmlOutput(html).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }

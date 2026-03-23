@@ -2559,20 +2559,35 @@
     }
 
     setRoleUi();
+    function renderRuntimeStopState_(reason){
+      var line = document.getElementById("runtimeInfoLine");
+      var badge = document.getElementById("versionBadge");
+      var detail = String(reason || "Runtime info unavailable");
+      if (line) {
+        line.textContent = "VERSION MISMATCH - STOP DEPLOY";
+        line.title = detail;
+      }
+      if (badge) {
+        badge.textContent = "VERSION MISMATCH - STOP DEPLOY";
+        badge.classList.add("mismatch");
+        badge.title = detail;
+      }
+    }
     function renderRuntimeInfoLine_(runtime){
       var line = document.getElementById("runtimeInfoLine");
       if (!line) return;
       var info = (runtime && typeof runtime === "object") ? runtime : null;
       if (!info || info.ok !== true) {
-        line.textContent = "Runtime: unavailable";
+        renderRuntimeStopState_("Runtime fetch failed");
         return;
       }
-      var serviceUrl = String(info.serviceUrl || "").trim();
-      var hostForm = serviceUrl.indexOf("/a/") >= 0 ? "domain-scoped" : "canonical";
+      if (info.mismatch) {
+        renderRuntimeStopState_(info.warning || "Runtime mismatch detected");
+        return;
+      }
       line.textContent = "Runtime: " + String(info.version || "-")
-        + " | Deploy: v" + String(Number(info.deployVersion || 0))
-        + " | ServiceUrl host form: " + hostForm;
-      line.title = serviceUrl || "";
+        + " | Deploy: " + String(Number(info.deployVersion || 0));
+      line.title = String(info.timestamp || "");
     }
     function fetchRuntimeInfo_(){
       google.script.run
@@ -2581,36 +2596,25 @@
           renderRuntimeInfoLine_(runtimeInfoCache);
           initVersionBadge_();
         })
-        .withFailureHandler(function(){
-          renderRuntimeInfoLine_(null);
-          initVersionBadge_();
+        .withFailureHandler(function(err){
+          runtimeInfoCache = null;
+          renderRuntimeStopState_(err && err.message ? err.message : "Runtime fetch failed");
         })
         .admin_getRuntimeInfo();
     }
     function initVersionBadge_() {
       var badge = document.getElementById("versionBadge");
-      if (badge) {
-        var rt = (runtimeInfoCache && runtimeInfoCache.ok === true) ? runtimeInfoCache : null;
-        var runtimeVersion = String((rt && rt.version) || VERSION || "");
-        var deployNum = Number((rt && rt.deployVersion) || DEPLOY_VERSION_NUMBER || 0);
-        var expectedToken = deployNum > 0 ? ("r" + String(deployNum)) : "";
-        var hasMatch = !!(expectedToken && runtimeVersion.indexOf(expectedToken) >= 0);
-        if (!hasMatch) {
-          badge.textContent = "VERSION MISMATCH";
-          badge.classList.add("mismatch");
-        } else {
-          var shortRuntime = (function(v){
-            v = String(v || "");
-            var tail = v.split("-").pop();
-            if (/^r\d+$/i.test(tail)) return tail;
-            var m = v.match(/-r(\d+)\b/i);
-            return m ? ("r" + m[1]) : VERSION_SHORT;
-          })(runtimeVersion);
-          badge.textContent = shortRuntime + " | v" + String(deployNum);
-          badge.classList.remove("mismatch");
-        }
-        badge.title = "Build: " + runtimeVersion + " | Deploy v" + String(deployNum || 0);
+      if (!badge) return;
+      var rt = (runtimeInfoCache && runtimeInfoCache.ok === true) ? runtimeInfoCache : null;
+      if (!rt || rt.mismatch) {
+        renderRuntimeStopState_(rt && rt.warning ? rt.warning : "Runtime mismatch detected");
+        return;
       }
+      var runtimeVersion = String(rt.version || "");
+      var deployNum = Number(rt.deployVersion || 0);
+      badge.textContent = "Runtime: " + runtimeVersion + " | Deploy: " + String(deployNum);
+      badge.classList.remove("mismatch");
+      badge.title = "Admin=" + String(rt.canonicalAdminUrl || "") + " | Student=" + String(rt.canonicalStudentUrl || "");
     }
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", function(){
