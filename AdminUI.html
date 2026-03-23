@@ -1044,40 +1044,44 @@
       var requestOffset = append ? Number(queueDataState.nextOffset || 0) : 0;
       if (!Number.isFinite(requestOffset) || requestOffset < 0) requestOffset = 0;
       updateQueueLoadMoreUi_(true);
-      google.script.run
-        .withSuccessHandler(function(res){
-          try {
-            var data = (res && typeof res === "object") ? res : {};
-            if (append) {
-              queueDataState.docs = mergeQueueRows_(queueDataState.docs, data.docs);
-              queueDataState.awaitingPayment = mergeQueueRows_(queueDataState.awaitingPayment, data.awaitingPayment);
-              queueDataState.payments = mergeQueueRows_(queueDataState.payments, data.payments);
-              queueDataState.anomalies = mergeQueueRows_(queueDataState.anomalies, data.anomalies);
-              queueDataState.paidApproved = mergeQueueRows_(queueDataState.paidApproved, data.paidApproved);
-            } else {
-              queueDataState.docs = Array.isArray(data.docs) ? data.docs.slice() : [];
-              queueDataState.awaitingPayment = Array.isArray(data.awaitingPayment) ? data.awaitingPayment.slice() : [];
-              queueDataState.payments = Array.isArray(data.payments) ? data.payments.slice() : [];
-              queueDataState.anomalies = Array.isArray(data.anomalies) ? data.anomalies.slice() : [];
-              queueDataState.paidApproved = Array.isArray(data.paidApproved) ? data.paidApproved.slice() : [];
+      requestAnimationFrame(function(){
+        google.script.run
+          .withSuccessHandler(function(res){
+            try {
+              var data = (res && typeof res === "object") ? res : {};
+              if (append) {
+                queueDataState.docs = mergeQueueRows_(queueDataState.docs, data.docs);
+                queueDataState.awaitingPayment = mergeQueueRows_(queueDataState.awaitingPayment, data.awaitingPayment);
+                queueDataState.payments = mergeQueueRows_(queueDataState.payments, data.payments);
+                queueDataState.anomalies = mergeQueueRows_(queueDataState.anomalies, data.anomalies);
+                queueDataState.paidApproved = mergeQueueRows_(queueDataState.paidApproved, data.paidApproved);
+              } else {
+                queueDataState.docs = Array.isArray(data.docs) ? data.docs.slice() : [];
+                queueDataState.awaitingPayment = Array.isArray(data.awaitingPayment) ? data.awaitingPayment.slice() : [];
+                queueDataState.payments = Array.isArray(data.payments) ? data.payments.slice() : [];
+                queueDataState.anomalies = Array.isArray(data.anomalies) ? data.anomalies.slice() : [];
+                queueDataState.paidApproved = Array.isArray(data.paidApproved) ? data.paidApproved.slice() : [];
+              }
+              queueDataState.counts = (data && data.counts) ? data.counts : (queueDataState.counts || {});
+              queueDataState.hasMore = !!(data && data.hasMore);
+              queueDataState.nextOffset = Number(data && data.nextOffset || 0) || 0;
+              requestAnimationFrame(function(){
+                renderReviewQueues(queueDataState, { keepPager: append });
+                updateQueueLoadMoreUi_(false);
+              });
+            } catch (e) {
+              console.error("[AdminUI] renderReviewQueues error:", e);
+              updateQueueLoadMoreUi_(false);
             }
-            queueDataState.counts = (data && data.counts) ? data.counts : (queueDataState.counts || {});
-            queueDataState.hasMore = !!(data && data.hasMore);
-            queueDataState.nextOffset = Number(data && data.nextOffset || 0) || 0;
-            renderReviewQueues(queueDataState, { keepPager: append });
-          } catch (e) {
-            console.error("[AdminUI] renderReviewQueues error:", e);
-          } finally {
+          })
+          .withFailureHandler(function(err){
+            console.error("[AdminUI] admin_getReviewQueues failure:", err);
+            var el = document.getElementById("queueDocs");
+            if (el) el.innerHTML = "<div class='queue-header'>Documents to Verify</div><div class='queue-empty'>Could not load queues.</div>";
             updateQueueLoadMoreUi_(false);
-          }
-        })
-        .withFailureHandler(function(err){
-          console.error("[AdminUI] admin_getReviewQueues failure:", err);
-          var el = document.getElementById("queueDocs");
-          if (el) el.innerHTML = "<div class='queue-header'>Documents to Verify</div><div class='queue-empty'>Could not load queues.</div>";
-          updateQueueLoadMoreUi_(false);
-        })
-        .admin_getReviewQueues({ offset: requestOffset, limit: QUEUE_FETCH_SIZE, force: force ? 1 : 0 });
+          })
+          .admin_getReviewQueues({ offset: requestOffset, limit: QUEUE_FETCH_SIZE, force: force ? 1 : 0 });
+      });
     }
 
     function resetQueuePagerState_(){

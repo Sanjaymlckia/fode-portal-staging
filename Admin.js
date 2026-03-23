@@ -1906,11 +1906,6 @@ function admin_getReviewQueues(payload) {
   var cache = CacheService.getUserCache();
   var cacheKey = getDashboardCacheKey_(adminEmail);
   var fullData = null;
-  Logger.log("R232_QUEUE_CANARY ENTRY " + JSON.stringify({
-    force: force,
-    offset: offset,
-    limit: limit
-  }));
   if (!force) {
     try {
       var cached = cache.get(cacheKey);
@@ -1940,123 +1935,104 @@ function admin_getReviewQueues(payload) {
       var anomalies = [];
       var paidApproved = [];
       var postPaymentIssues = [];
-      var debugRows = [];
+      var props = {};
+      try {
+        props = PropertiesService.getScriptProperties().getProperties() || {};
+      } catch (_propsErr) {}
+      var colApplicantId = idx.ApplicantID || 0;
+      var colFirstName = idx.First_Name || 0;
+      var colLastName = idx.Last_Name || 0;
+      var colParentEmail = idx.Parent_Email || 0;
+      var colParentEmailCorrected = idx.Parent_Email_Corrected || 0;
+      var colPortalLastUpdateAt = idx.PortalLastUpdateAt || 0;
+      var colPortalTokenIssuedAt = idx.PortalTokenIssuedAt || 0;
+      var colPortalSubmitted = idx.Portal_Submitted || 0;
+      var colDocsVerified = idx.Docs_Verified || 0;
+      var colPaymentVerified = idx.Payment_Verified || 0;
+      var colFeeReceiptFile = idx.Fee_Receipt_File || 0;
+      var colReceiptStatus = idx.Receipt_Status || 0;
+      var colRegistrationComplete = idx.Registration_Complete || 0;
+      var colBirthIdPassportFile = idx.Birth_ID_Passport_File || 0;
+      var colLatestSchoolReportFile = idx.Latest_School_Report_File || 0;
+      var colBirthIdStatus = idx.Birth_ID_Status || 0;
+      var colReportStatus = idx.Report_Status || 0;
+      var colPhotoStatus = idx.Photo_Status || 0;
+
       function pushQueueItem_(target, item) {
         var rowNum = Number(item && item.rowNumber || 0);
         if (!Number.isFinite(rowNum) || rowNum < 2) return;
         target.push(item);
       }
 
-      Logger.log("QUEUE_SCAN_START " + JSON.stringify({
-        user: Session.getEffectiveUser().getEmail(),
-        force: force
-      }));
-
       for (var r = 1; r < data.length; r++) {
         var row = data[r] || [];
-        var rowObj = {};
-        for (var c = 0; c < headers.length; c++) {
-          var h = clean_(headers[c]);
-          if (!h) continue;
-          rowObj[h] = row[c];
-        }
-
-        var applicantId = clean_(rowObj.ApplicantID || "");
+        var applicantId = clean_(colApplicantId ? row[colApplicantId - 1] : "");
         if (!applicantId) continue;
-        var firstName = clean_(rowObj.First_Name || "");
-        var lastName = clean_(rowObj.Last_Name || "");
+        var firstName = clean_(colFirstName ? row[colFirstName - 1] : "");
+        var lastName = clean_(colLastName ? row[colLastName - 1] : "");
         var name = (firstName + " " + lastName).trim();
-        var parentEmail = clean_(rowObj.Parent_Email || "");
-        var correctedEmail = clean_(rowObj.Parent_Email_Corrected || "");
+        var parentEmail = clean_(colParentEmail ? row[colParentEmail - 1] : "");
+        var correctedEmail = clean_(colParentEmailCorrected ? row[colParentEmailCorrected - 1] : "");
         var effectiveEmail = correctedEmail || parentEmail;
-
-        var paymentVerifiedRaw = clean_(rowObj.Payment_Verified || "") === "Yes";
-        var receiptUrl = clean_(rowObj.Fee_Receipt_File || "");
-        var docsVerifiedRaw = clean_(rowObj.Docs_Verified || "");
-        var mandatoryDocIssue = hasMandatoryDocIssue_(rowObj, idx);
-
-        var docsVerifiedForFollowup = isYes_(rowObj.Docs_Verified) || computeDocVerificationStatus_(rowObj) === "Verified";
-        var hasValidEmailForFollowup = !!getRowEmailForStudent_(rowObj);
-        var docsFollowupEligibleBase = CONFIG.DOCS_FOLLOWUP_ENABLE === true && docsVerifiedForFollowup && hasValidEmailForFollowup;
-        var docsFollowupSentAt = getDocsFollowupSentAt_(rowObj);
-        var eligibleDocsFollowUp = docsFollowupEligibleBase && !safeStr_(docsFollowupSentAt || "");
-        var qItem = {
-          rowNumber: r + 1,
-          applicantId: applicantId,
-          name: name,
+        var portalLastUpdateAt = colPortalLastUpdateAt ? row[colPortalLastUpdateAt - 1] : "";
+        var portalTokenIssuedAt = colPortalTokenIssuedAt ? row[colPortalTokenIssuedAt - 1] : "";
+        var portalSubmittedRaw = clean_(colPortalSubmitted ? row[colPortalSubmitted - 1] : "");
+        var docsVerifiedRaw = clean_(colDocsVerified ? row[colDocsVerified - 1] : "");
+        var paymentVerified = clean_(colPaymentVerified ? row[colPaymentVerified - 1] : "") === "Yes";
+        var receiptUrl = clean_(colFeeReceiptFile ? row[colFeeReceiptFile - 1] : "");
+        var receiptStatus = clean_(colReceiptStatus ? row[colReceiptStatus - 1] : "");
+        var registrationComplete = clean_(colRegistrationComplete ? row[colRegistrationComplete - 1] : "");
+        var rowSlim = {
           ApplicantID: applicantId,
-          parentEmail: parentEmail,
-          correctedEmail: correctedEmail,
-          effectiveEmail: effectiveEmail,
-          portalLastUpdateAt: rowObj.PortalLastUpdateAt || "",
-          portalTokenIssuedAt: rowObj.PortalTokenIssuedAt || "",
-          docsFollowupEligibleBase: !!docsFollowupEligibleBase,
-          eligibleDocsFollowUp: !!eligibleDocsFollowUp,
-          docsFollowupSentAt: safeStr_(docsFollowupSentAt || "")
+          Parent_Email: parentEmail,
+          Parent_Email_Corrected: correctedEmail,
+          PortalLastUpdateAt: portalLastUpdateAt,
+          Portal_Submitted: portalSubmittedRaw,
+          Docs_Verified: docsVerifiedRaw,
+          Payment_Verified: paymentVerified ? "Yes" : "",
+          Fee_Receipt_File: receiptUrl,
+          Receipt_Status: receiptStatus,
+          Birth_ID_Passport_File: clean_(colBirthIdPassportFile ? row[colBirthIdPassportFile - 1] : ""),
+          Latest_School_Report_File: clean_(colLatestSchoolReportFile ? row[colLatestSchoolReportFile - 1] : ""),
+          Birth_ID_Status: clean_(colBirthIdStatus ? row[colBirthIdStatus - 1] : ""),
+          Report_Status: clean_(colReportStatus ? row[colReportStatus - 1] : ""),
+          Photo_Status: clean_(colPhotoStatus ? row[colPhotoStatus - 1] : "")
         };
-
-        var hasActivity = hasStudentActivity_(rowObj);
-        var portalSubmittedRaw = clean_(rowObj.Portal_Submitted || "");
+        var mandatoryDocIssue = hasMandatoryDocIssue_(rowSlim, idx);
+        var docsVerifiedForFollowup = isYes_(rowSlim.Docs_Verified) || computeDocVerificationStatus_(rowSlim) === "Verified";
+        var hasValidEmailForFollowup = !!getRowEmailForStudent_(rowSlim);
+        var docsFollowupEligibleBase = CONFIG.DOCS_FOLLOWUP_ENABLE === true && docsVerifiedForFollowup && hasValidEmailForFollowup;
+        var docsFollowupKey = buildDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
+        var docsFollowupSentAt = safeStr_(props[docsFollowupKey] || "");
+        var eligibleDocsFollowUp = docsFollowupEligibleBase && !docsFollowupSentAt;
         var portalSubmitted = nonEmpty_(portalSubmittedRaw) && portalSubmittedRaw !== "No";
         var docsVerified = docsVerifiedRaw === "Yes";
-        var paymentEvidencePresent = nonEmpty_(receiptUrl) || nonEmpty_(clean_(rowObj.Receipt_Status || ""));
+        var paymentEvidencePresent = nonEmpty_(receiptUrl) || nonEmpty_(receiptStatus);
         var paymentReceived = paymentEvidencePresent;
-        var paymentVerified = paymentVerifiedRaw;
         var enrolledConfirmed = paymentVerified;
         var docsQueueMatch = portalSubmitted && !docsVerified;
         var awaitingPaymentQueueMatch = docsVerified && !paymentVerified && !paymentEvidencePresent;
         var paymentsQueueMatch = docsVerified && !paymentVerified && paymentEvidencePresent;
         var anomaliesQueueMatch = paymentVerified && !docsVerified;
         var paidApprovedQueueMatch = paymentVerified;
-
-        qItem.Portal_Submitted = portalSubmitted ? "Yes" : "No";
-        qItem.Docs_Verified = docsVerified ? "Yes" : "No";
-        qItem.Payment_Received = paymentReceived ? "Yes" : "No";
-        qItem.Payment_Verified = paymentVerified ? "Yes" : "No";
-        qItem.Enrolled_Confirmed = enrolledConfirmed ? "Yes" : "No";
-        qItem.Fee_Receipt_File = receiptUrl;
-        qItem.Registration_Complete = clean_(rowObj.Registration_Complete || "") === "Yes" ? "Yes" : "No";
-
-        debugRows.push({
-          id: clean_(rowObj.ApplicantID || rowObj.ID || rowObj["Applicant ID"] || "unknown"),
-          activity: hasActivity,
-          portalSubmitted: portalSubmitted,
-          docsVerified: docsVerified,
-          paymentVerified: paymentVerified,
-          paymentEvidencePresent: paymentEvidencePresent,
-          receipt: paymentEvidencePresent,
-          portalTs: clean_(rowObj.PortalLastUpdateAt || ""),
-          docsQueue: docsQueueMatch,
-          awaitingPaymentQueue: awaitingPaymentQueueMatch,
-          paymentsQueue: paymentsQueueMatch,
-          anomaliesQueue: anomaliesQueueMatch,
-          paidApprovedQueue: paidApprovedQueueMatch
+        var qItem = buildQueueRow_(r + 1, applicantId, name, {
+          ApplicantID: applicantId,
+          parentEmail: parentEmail,
+          correctedEmail: correctedEmail,
+          effectiveEmail: effectiveEmail,
+          portalLastUpdateAt: portalLastUpdateAt || "",
+          portalTokenIssuedAt: portalTokenIssuedAt || "",
+          docsFollowupEligibleBase: !!docsFollowupEligibleBase,
+          eligibleDocsFollowUp: !!eligibleDocsFollowUp,
+          docsFollowupSentAt: safeStr_(docsFollowupSentAt || ""),
+          Portal_Submitted: portalSubmitted ? "Yes" : "No",
+          Docs_Verified: docsVerified ? "Yes" : "No",
+          Payment_Received: paymentReceived ? "Yes" : "No",
+          Payment_Verified: paymentVerified ? "Yes" : "No",
+          Enrolled_Confirmed: enrolledConfirmed ? "Yes" : "No",
+          Fee_Receipt_File: receiptUrl,
+          Registration_Complete: registrationComplete === "Yes" ? "Yes" : "No"
         });
-        Logger.log("QUEUE_CLASSIFY " + JSON.stringify({
-          applicantId: rowObj.ApplicantID,
-          portalSubmitted: portalSubmitted,
-          docsVerifiedRaw: rowObj.Docs_Verified,
-          docsVerified: docsVerified,
-          paymentVerifiedRaw: rowObj.Payment_Verified,
-          paymentVerified: paymentVerified,
-          paymentEvidencePresent: paymentEvidencePresent,
-          awaitingPaymentQueue: awaitingPaymentQueueMatch,
-          hasActivity: hasActivity
-        }));
-        if (applicantId.indexOf("FODE-26-TEST-") === 0 || applicantId === "FODE-26-000084" || applicantId === "FODE-26-000007") {
-          Logger.log("R232_QUEUE_CANARY ROW " + JSON.stringify({
-            applicantId: applicantId,
-            portalSubmitted: portalSubmitted,
-            docsVerified: docsVerified,
-            paymentEvidencePresent: paymentEvidencePresent,
-            paymentVerified: paymentVerified,
-            docsQueue: docsQueueMatch,
-            awaitingPaymentQueue: awaitingPaymentQueueMatch,
-            paymentsQueue: paymentsQueueMatch,
-            anomaliesQueue: anomaliesQueueMatch,
-            paidApprovedQueue: paidApprovedQueueMatch
-          }));
-        }
 
         if (paidApprovedQueueMatch) {
           pushQueueItem_(paidApproved, qItem);
@@ -2082,33 +2058,13 @@ function admin_getReviewQueues(payload) {
       paidApproved.sort(compareQueueItems_);
       postPaymentIssues.sort(compareQueueItems_);
 
-      function stripQueue_(items) {
-        return (items || []).map(function (it) {
-          return buildQueueRow_(it.rowNumber, it.applicantId, it.name, {
-            ApplicantID: clean_(it.ApplicantID || it.applicantId || ""),
-            parentEmail: clean_(it.parentEmail || ""),
-            correctedEmail: clean_(it.correctedEmail || ""),
-            effectiveEmail: clean_(it.effectiveEmail || ""),
-            docsFollowupEligibleBase: !!it.docsFollowupEligibleBase,
-            eligibleDocsFollowUp: !!it.eligibleDocsFollowUp,
-            docsFollowupSentAt: safeStr_(it.docsFollowupSentAt || ""),
-            Portal_Submitted: clean_(it.Portal_Submitted || ""),
-            Docs_Verified: clean_(it.Docs_Verified || ""),
-            Payment_Received: clean_(it.Payment_Received || ""),
-            Payment_Verified: clean_(it.Payment_Verified || ""),
-            Enrolled_Confirmed: clean_(it.Enrolled_Confirmed || ""),
-            Fee_Receipt_File: clean_(it.Fee_Receipt_File || ""),
-            Registration_Complete: clean_(it.Registration_Complete || "")
-          });
-        });
-      }
       fullData = {
-        docs: stripQueue_(docs),
-        awaitingPayment: stripQueue_(awaitingPayment),
-        payments: stripQueue_(payments),
-        anomalies: stripQueue_(anomalies),
-        paidApproved: stripQueue_(paidApproved),
-        postPaymentIssues: stripQueue_(postPaymentIssues),
+        docs: docs,
+        awaitingPayment: awaitingPayment,
+        payments: payments,
+        anomalies: anomalies,
+        paidApproved: paidApproved,
+        postPaymentIssues: postPaymentIssues,
         counts: {
           payments: payments.length,
           docs: docs.length,
@@ -2118,24 +2074,13 @@ function admin_getReviewQueues(payload) {
           postPaymentIssues: postPaymentIssues.length
         }
       };
-      debugRows.forEach(function (d) {
-        if (d.id === "FODE-26-000084" || d.id === "FODE-26-000007") {
-          Logger.log("CIS-r231 QUEUE DEBUG for %s: %s", d.id, JSON.stringify(d));
-        }
-      });
       Logger.log("QUEUE_SUMMARY " + JSON.stringify({
         docs: docs.length,
         awaitingPayment: awaitingPayment.length,
         payments: payments.length,
         anomalies: anomalies.length,
-        paidApproved: paidApproved.length
-      }));
-      Logger.log("R232_QUEUE_CANARY SUMMARY " + JSON.stringify({
-        docs: docs.length,
-        awaitingPayment: awaitingPayment.length,
-        payments: payments.length,
-        anomalies: anomalies.length,
-        paidApproved: paidApproved.length
+        paidApproved: paidApproved.length,
+        postPaymentIssues: postPaymentIssues.length
       }));
     }
     try {
@@ -2145,6 +2090,10 @@ function admin_getReviewQueues(payload) {
 
   var pageMeta = mergeQueuePageMeta_(fullData, offset, limit);
   function refreshDocsFollowupRuntime_(rows) {
+    var props = {};
+    try {
+      props = PropertiesService.getScriptProperties().getProperties() || {};
+    } catch (_propsErr) {}
     return (rows || []).map(function (row) {
       var out = {};
       var src = row && typeof row === "object" ? row : {};
@@ -2152,9 +2101,8 @@ function admin_getReviewQueues(payload) {
         if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
       }
       var applicantId = clean_(out.ApplicantID || out.applicantId || "");
-      var key = buildDocsFollowupKey_(applicantId);
-      var sentAt = "";
-      try { sentAt = safeStr_(PropertiesService.getScriptProperties().getProperty(key) || ""); } catch (_propErr) {}
+      var key = buildDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
+      var sentAt = safeStr_(props[key] || "");
       out.docsFollowupSentAt = sentAt;
       var eligibleBase = !!out.docsFollowupEligibleBase;
       out.eligibleDocsFollowUp = eligibleBase && !sentAt;
