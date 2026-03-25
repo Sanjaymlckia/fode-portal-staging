@@ -235,25 +235,124 @@ function doPost(e) {
 
   ensureHeaders_(dataSheet, payload);
 
-  var folder = createApplicantFolder_(payload);
-  var rowNum = appendRow_(dataSheet, payload, folder);
-
-  // Assign ApplicantID for this new row if blank
+  var correlationId = clean_(payload.correlation_id || "");
+  var activationStage = "START";
+  var activationCode = "ACTIVATION_FAILED";
+  var targetRow = 0;
   var applicantId = "";
+  var folder = null;
+  var folderUrl = "";
+  var tokenState = null;
+  var rowCommitted = false;
+  var verification = null;
+  var intakeLock = LockService.getScriptLock();
+
   try {
-    applicantId = assignApplicantIdIfBlank_(dataSheet, rowNum);
-  } catch (err) {
-    log_(logSheet, "APPLICANTID ERROR", "ERROR: " + err.message);
-  }
+    intakeLock.waitLock(30000);
+    logActivation_(logSheet, "ACTIVATION_START", {
+      correlation_id: correlationId,
+      payloadKeyCount: Object.keys(payload || {}).length,
+      spreadsheetId: clean_(getWorkingSpreadsheetId_() || ""),
+      dataSheet: clean_(dataSheet.getName() || "")
+    });
 
-  writeBack_(dataSheet, rowNum, {
-    Folder_Url: folder.getUrl(),
-    ApplicantID: applicantId || ""
-  });
-  ensurePortalTokenAtRow_(dataSheet, rowNum);
+    activationStage = "APPLICANTID_PREPARE";
+    var applicantIdState = scanApplicantIdState_(dataSheet);
+    applicantId = clean_(applicantIdState.applicantId || "");
+    if (!applicantId) {
+      activationCode = "APPLICANTID_PREPARE_FAILED";
+      throw new Error("APPLICANTID_PREPARE_FAILED");
+    }
+    logActivation_(logSheet, "ACTIVATION_ID_PREPARED", {
+      correlation_id: correlationId,
+      applicantId: applicantId,
+      validCount: applicantIdState.validCount,
+      maxSuffix: applicantIdState.maxSuffix,
+      skippedBlankCount: applicantIdState.skippedBlankCount,
+      skippedMalformedCount: applicantIdState.skippedMalformedCount
+    });
 
-  return jsonOut_({ status: "ok", ApplicantID: applicantId || "" });
-}
+    activationStage = "FOLDER_PREPARE";
+    folder = createApplicantFolder_(payload);
+    folderUrl = clean_(folder && folder.getUrl ? folder.getUrl() : "");
+    if (!folderUrl) {
+      activationCode = "FOLDER_PREPARE_FAILED";
+      throw new Error("FOLDER_PREPARE_FAILED");
+    }
+    logActivation_(logSheet, "ACTIVATION_FOLDER_PREPARED", {
+      correlation_id: correlationId,
+      folderUrl: folderUrl,
+      folderId: clean_(folder && folder.getId ? folder.getId() : "")
+    });
+
+    activationStage = "TOKEN_PREPARE";
+    tokenState = preparePortalActivationState_(dataSheet, applicantId);
+    logActivation_(logSheet, "ACTIVATION_TOKEN_PREPARED", {
+      correlation_id: correlationId,
+      hasPortalTokenHashHeader: tokenState.hasTokenHashHeader === true,
+      hasPortalTokenIssuedAtHeader: tokenState.hasTokenIssuedAtHeader === true,
+      portalSecretsPrepared: tokenState.portalSecretsRequired === true
+    });
+
+    activationStage = "ROW_COMMIT";
+    targetRow = dataSheet.getLastRow() + 1;
+    var activatedRow = buildActivatedIntakeRow_(dataSheet, payload, folderUrl, applicantId, tokenState);
+    insertActivatedRowAt_(dataSheet, targetRow, activatedRow);
+    rowCommitted = true;
+    logActivation_(logSheet, "ACTIVATION_ROW_COMMIT", {
+      correlation_id: correlationId,
+      targetRow: targetRow,
+      applicantId: applicantId
+    });
+
+    activationStage = "PORTALSECRETS_COMMIT";
+    if (tokenState.portalSecretsRequired === true) {
+      commitPortalActivationState_(payload, applicantId, tokenState);
+    }
+
+    activationStage = "VERIFY";
+    verification = verifyActivatedState_(dataSheet, targetRow, applicantId, folderUrl, tokenState);
+    logActivation_(logSheet, "ACTIVATION_VERIFY", {
+      correlation_id: correlationId,
+      targetRow: targetRow,
+      applicantIdActual: clean_(verification.applicantIdActual || ""),
+      folderUrlPresent: verification.folderUrlPresent === true,
+      portalTokenHashPresent: verification.portalTokenHashPresent === true,
+      portalTokenIssuedAtPresent: verification.portalTokenIssuedAtPresent === true,
+      portalSecretsResolvable: verification.portalSecretsResolvable === true
+    });
+    if (verification.ok !== true) {
+      activationCode = clean_(verification.code || "ACTIVATION_VERIFY_FAILED") || "ACTIVATION_VERIFY_FAILED";
+      throw new Error(clean_(verification.message || activationCode) || activationCode);
+    }
+
+    activationStage = "OK";
+    logActivation_(logSheet, "ACTIVATION_OK", {
+      correlation_id: correlationId,
+      targetRow: targetRow,
+      applicantId: applicantId
+    });
+    return jsonOut_({ status: "ok", ApplicantID: applicantId });
+  } catch (errActivation) {
+    if (rowCommitted && targetRow >= 2) {
+      try { dataSheet.deleteRow(targetRow); } catch (_deleteErr) {}
+    }
+    logActivation_(logSheet, "ACTIVATION_FAIL", {
+      correlation_id: correlationId,
+      stage: activationStage,
+      targetRow: targetRow || 0,
+      applicantId: applicantId,
+      error: String(errActivation && errActivation.message ? errActivation.message : errActivation)
+    });
+    return jsonOut_({
+      status: "error",
+      code: clean_(activationCode || "ACTIVATION_FAILED") || "ACTIVATION_FAILED",
+      message: String(errActivation && errActivation.message ? errActivation.message : errActivation),
+      correlation_id: correlationId
+    });
+  } finally {
+    try { intakeLock.releaseLock(); } catch (_lockErr) {}
+  }}
 
 /******************** ENTRYPOINT: GET ********************/
 function maybeRedirectToCanonical_(e) {
@@ -3033,6 +3132,7 @@ function htmlOutput_(html) {
 function resolvePortalSecretColumnIndex_(idx) {
   var map = idx || {};
   if (map.Secret) return map.Secret;
+  if (map.Secret_Plain) return map.Secret_Plain;
   if (map.Secret_Hash) return map.Secret_Hash;
   return 0;
 }
@@ -3849,6 +3949,272 @@ function ensureHeaders_(sheet, payload) {
   }
 
   if (changed) sheet.getRange(1, 1, 1, existing.length).setValues([existing]);
+}
+
+function logActivation_(logSheet, label, payload) {
+  try {
+    log_(logSheet, label, JSON.stringify(payload || {}));
+  } catch (logErr) {
+    try {
+      Logger.log(label + " " + JSON.stringify(payload || {}));
+    } catch (_loggerErr) {}
+  }
+}
+
+function scanApplicantIdState_(sheet) {
+  var idCol = findCol_(sheet, CONFIG.APPLICANT_ID_HEADER);
+  if (!idCol) throw new Error(CONFIG.APPLICANT_ID_HEADER + " column not found.");
+  var lastRow = sheet.getLastRow();
+  var rowCount = Math.max(lastRow - 1, 0);
+  var values = rowCount > 0 ? sheet.getRange(2, idCol, rowCount, 1).getValues() : [];
+  var prefix = CONFIG.APPLICANT_PREFIX;
+  var digits = CONFIG.APPLICANT_DIGITS;
+  var re = new RegExp("^" + escapeRegExp_(prefix) + "(\\d{" + digits + "})$");
+  var maxSuffix = 0;
+  var validCount = 0;
+  var skippedBlankCount = 0;
+  var skippedMalformedCount = 0;
+  for (var i = 0; i < values.length; i++) {
+    var s = String(values[i][0] || "").trim();
+    if (!s) {
+      skippedBlankCount++;
+      continue;
+    }
+    var m = s.match(re);
+    if (!m) {
+      skippedMalformedCount++;
+      continue;
+    }
+    var n = parseInt(m[1], 10);
+    if (isNaN(n)) {
+      skippedMalformedCount++;
+      continue;
+    }
+    validCount++;
+    if (n > maxSuffix) maxSuffix = n;
+  }
+  return {
+    applicantId: prefix + String(maxSuffix + 1).padStart(digits, "0"),
+    validCount: validCount,
+    maxSuffix: maxSuffix,
+    skippedBlankCount: skippedBlankCount,
+    skippedMalformedCount: skippedMalformedCount
+  };
+}
+
+function nextApplicantId_(sheet) {
+  return scanApplicantIdState_(sheet).applicantId;
+}
+
+function preparePortalActivationState_(sheet, applicantId) {
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var hasTokenHashHeader = headers.indexOf("PortalTokenHash") >= 0;
+  var hasTokenIssuedAtHeader = headers.indexOf("PortalTokenIssuedAt") >= 0;
+  var plainSecret = newPortalSecret_();
+  var tokenHash = hashPortalSecret_(plainSecret);
+  var tokenIssuedAt = new Date();
+  return {
+    hasTokenHashHeader: hasTokenHashHeader,
+    hasTokenIssuedAtHeader: hasTokenIssuedAtHeader,
+    tokenHash: hasTokenHashHeader ? tokenHash : "",
+    tokenIssuedAt: hasTokenIssuedAtHeader ? tokenIssuedAt : "",
+    plainSecret: plainSecret,
+    secretHash: tokenHash,
+    applicantId: clean_(applicantId || ""),
+    portalSecretsRequired: true
+  };
+}
+
+function ensurePortalActivationStoreHeaders_(sheet) {
+  var expected = [
+    "ApplicantID",
+    "Email",
+    "Full_Name",
+    "Secret_Plain",
+    "Secret_Hash",
+    "Created_At",
+    "Last_Rotated_At",
+    "Status"
+  ];
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+    return;
+  }
+  var current = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), expected.length)).getValues()[0].map(function(v) {
+    return clean_(v);
+  });
+  var changed = false;
+  for (var i = 0; i < expected.length; i++) {
+    if (current.indexOf(expected[i]) === -1) {
+      current.push(expected[i]);
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(1, 1, 1, current.length).setValues([current]);
+}
+
+function commitPortalActivationState_(payload, applicantId, tokenState) {
+  if (!tokenState || tokenState.portalSecretsRequired !== true) return { ok: true, skipped: true };
+  var ss = SpreadsheetApp.openById(PORTAL_SECRETS_SPREADSHEET_ID);
+  var sh = ss.getSheetByName(PORTAL_SECRETS_TAB);
+  if (!sh) sh = ss.insertSheet(PORTAL_SECRETS_TAB);
+  ensurePortalActivationStoreHeaders_(sh);
+  var idx = {};
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    var h = clean_(headers[i]);
+    if (h) idx[h] = i + 1;
+  }
+  var lastRow = sh.getLastRow();
+  var rowIndex = 0;
+  if (idx.ApplicantID && lastRow >= 2) {
+    var ids = sh.getRange(2, idx.ApplicantID, lastRow - 1, 1).getValues();
+    for (var r = 0; r < ids.length; r++) {
+      if (clean_(ids[r][0]) === clean_(applicantId || "")) {
+        rowIndex = r + 2;
+        break;
+      }
+    }
+  }
+  var nowIso = new Date().toISOString();
+  var email = clean_(payload.Parent_Email_Corrected || payload.Parent_Email || payload.email || "");
+  var fullName = (clean_(payload.First_Name || "") + " " + clean_(payload.Last_Name || "")).trim();
+  var patch = {
+    ApplicantID: clean_(applicantId || ""),
+    Email: email,
+    Full_Name: fullName,
+    Secret_Plain: clean_(tokenState.plainSecret || ""),
+    Secret_Hash: clean_(tokenState.secretHash || ""),
+    Last_Rotated_At: nowIso,
+    Status: "Active"
+  };
+  if (rowIndex) {
+    var createdAt = idx.Created_At ? sh.getRange(rowIndex, idx.Created_At).getValue() : "";
+    if (!clean_(createdAt)) patch.Created_At = nowIso;
+    for (var key in patch) {
+      if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+      if (!idx[key]) continue;
+      sh.getRange(rowIndex, idx[key]).setValue(patch[key]);
+    }
+    return { ok: true, rowIndex: rowIndex, created: false };
+  }
+  sh.appendRow([
+    clean_(applicantId || ""),
+    email,
+    fullName,
+    clean_(tokenState.plainSecret || ""),
+    clean_(tokenState.secretHash || ""),
+    nowIso,
+    nowIso,
+    "Active"
+  ]);
+  return { ok: true, rowIndex: sh.getLastRow(), created: true };
+}
+
+function buildActivatedIntakeRow_(sheet, payload, folderUrl, applicantId, tokenState) {
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var row = [];
+  for (var i = 0; i < headers.length; i++) {
+    var h = headers[i];
+    if (h === CONFIG.APPLICANT_ID_HEADER) row.push(clean_(applicantId || ""));
+    else if (h === "Folder_Url") row.push(clean_(folderUrl || ""));
+    else if (h === "PortalTokenHash" && tokenState && tokenState.hasTokenHashHeader) row.push(clean_(tokenState.tokenHash || ""));
+    else if (h === "PortalTokenIssuedAt" && tokenState && tokenState.hasTokenIssuedAtHeader) row.push(tokenState.tokenIssuedAt || "");
+    else row.push(normalize_(payload[h]));
+  }
+  return row;
+}
+
+function insertActivatedRowAt_(sheet, targetRow, rowArray) {
+  var rowNum = Number(targetRow || 0);
+  if (!rowNum || rowNum < 2) throw new Error("Invalid targetRow for activation commit");
+  sheet.getRange(rowNum, 1, 1, rowArray.length).setValues([rowArray]);
+  return rowNum;
+}
+
+function verifyActivatedState_(sheet, rowNum, applicantId, folderUrl, tokenState) {
+  SpreadsheetApp.flush();
+  var rowObj = getRowObject_(sheet, rowNum) || {};
+  var applicantIdActual = clean_(rowObj.ApplicantID || "");
+  var folderUrlActual = clean_(rowObj.Folder_Url || "");
+  var portalTokenHashPresent = !!clean_(rowObj.PortalTokenHash || "");
+  var portalTokenIssuedAtRaw = rowObj.PortalTokenIssuedAt;
+  var portalTokenIssuedAtPresent = false;
+  if (portalTokenIssuedAtRaw instanceof Date) {
+    portalTokenIssuedAtPresent = !isNaN(portalTokenIssuedAtRaw.getTime());
+  } else {
+    portalTokenIssuedAtPresent = !!clean_(portalTokenIssuedAtRaw || "");
+  }
+  var secretRes = getPortalSecretForApplicant_(applicantId);
+  var portalSecretsResolvable = !!(secretRes && secretRes.ok === true && clean_(secretRes.secret || ""));
+  if (!applicantIdActual || applicantIdActual !== clean_(applicantId || "")) {
+    return {
+      ok: false,
+      code: "FINALIZE_MISSING_APPLICANTID",
+      message: "ApplicantID verification failed.",
+      applicantIdActual: applicantIdActual,
+      folderUrlPresent: !!folderUrlActual,
+      portalTokenHashPresent: portalTokenHashPresent,
+      portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+      portalSecretsResolvable: portalSecretsResolvable
+    };
+  }
+  if (!folderUrlActual || folderUrlActual !== clean_(folderUrl || "")) {
+    return {
+      ok: false,
+      code: "FINALIZE_MISSING_FOLDER_URL",
+      message: "Folder_Url verification failed.",
+      applicantIdActual: applicantIdActual,
+      folderUrlPresent: !!folderUrlActual,
+      portalTokenHashPresent: portalTokenHashPresent,
+      portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+      portalSecretsResolvable: portalSecretsResolvable
+    };
+  }
+  if (tokenState && tokenState.hasTokenHashHeader && !portalTokenHashPresent) {
+    return {
+      ok: false,
+      code: "FINALIZE_MISSING_PORTAL_TOKEN",
+      message: "PortalTokenHash verification failed.",
+      applicantIdActual: applicantIdActual,
+      folderUrlPresent: !!folderUrlActual,
+      portalTokenHashPresent: portalTokenHashPresent,
+      portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+      portalSecretsResolvable: portalSecretsResolvable
+    };
+  }
+  if (tokenState && tokenState.hasTokenIssuedAtHeader && !portalTokenIssuedAtPresent) {
+    return {
+      ok: false,
+      code: "FINALIZE_MISSING_PORTAL_TOKEN",
+      message: "PortalTokenIssuedAt verification failed.",
+      applicantIdActual: applicantIdActual,
+      folderUrlPresent: !!folderUrlActual,
+      portalTokenHashPresent: portalTokenHashPresent,
+      portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+      portalSecretsResolvable: portalSecretsResolvable
+    };
+  }
+  if (!portalSecretsResolvable) {
+    return {
+      ok: false,
+      code: "FINALIZE_MISSING_PORTALSECRET",
+      message: "PortalSecrets resolvability verification failed.",
+      applicantIdActual: applicantIdActual,
+      folderUrlPresent: !!folderUrlActual,
+      portalTokenHashPresent: portalTokenHashPresent,
+      portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+      portalSecretsResolvable: portalSecretsResolvable
+    };
+  }
+  return {
+    ok: true,
+    applicantIdActual: applicantIdActual,
+    folderUrlPresent: !!folderUrlActual,
+    portalTokenHashPresent: portalTokenHashPresent,
+    portalTokenIssuedAtPresent: portalTokenIssuedAtPresent,
+    portalSecretsResolvable: portalSecretsResolvable
+  };
 }
 
 function appendRow_(sheet, payload, folder) {
@@ -4668,3 +5034,4 @@ function firstNonEmpty_() {
   }
   return "";
 }
+
