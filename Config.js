@@ -7,13 +7,13 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-23-PNG-STAGING-r239",
-  CHANGELOG_LAST: "r229: point staging runtime to clean staging sheet and current admin deployment",
-  DEPLOY_VERSION_NUMBER: 31,
-  BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
+VERSION: "2026-03-25-PNG-PROD-r244D",
+CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
+DEPLOY_VERSION_NUMBER: 44,
+BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
 
   // STAGING/PROD data mode routing (working sheet)
-  DATA_MODE: "STAGING", // "STAGING" | "PROD"
+  DATA_MODE: "PROD", // "STAGING" | "PROD"
   SPREADSHEET_ID_STAGING: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
   SPREADSHEET_ID_PROD: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU",
   SHEET_ID_STAGING: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
@@ -21,7 +21,7 @@ var CONFIG = {
   SHEET_NAME_WORKING: "FODE_Data",
   SHEET_TAB_WORKING: "FODE_Data",
   // Backward-compatible aliases (legacy callers)
-  SHEET_ID: "1YFgLtUExz__fzQ4zTNoIyGTu-nrnasS7dIaShNPl7Cs",
+  SHEET_ID: "1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4Salu",
   DATA_SHEET: "FODE_Data",
   LOG_SHEET: "Webhook_Log",
 
