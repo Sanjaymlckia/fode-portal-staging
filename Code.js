@@ -293,6 +293,9 @@ function doPost(e) {
       correlationId: correlationId,
       applicantId: applicantId
     });
+    payload = maybeStampActivationSubmitState_(payload, logSheet, {
+      applicantId: applicantId
+    });
 
     activationStage = "TOKEN_PREPARE";
     tokenState = preparePortalActivationState_(dataSheet, applicantId);
@@ -4493,6 +4496,36 @@ function canonicalizeFdIntakeFiles_(payload, applicantFolder, logSheet, context)
     out[field] = canonicalUrls.join("\n");
   }
   out.File_Log = fileLog;
+  return out;
+}
+
+function maybeStampActivationSubmitState_(payload, logSheet, context) {
+  var out = payload || {};
+  var ctx = (context && typeof context === "object") ? context : {};
+  var applicantId = clean_(ctx.applicantId || "");
+  var qualifyingFieldsDetected = (CONFIG.DOC_FIELDS || []).filter(function (doc) {
+    return clean_(doc && doc.file || "") !== "Fee_Receipt_File";
+  }).map(function (doc) {
+    return clean_(doc && doc.file || "");
+  }).filter(function (field) {
+    return !!field && normalizeToUrlList_(out[field], field).length > 0;
+  });
+  var shouldStampSubmitState = qualifyingFieldsDetected.length > 0;
+  logActivation_(logSheet, "ACTIVATION_SUBMIT_STATE_DECISION", {
+    applicantId: applicantId,
+    shouldStampSubmitState: shouldStampSubmitState,
+    qualifyingFieldsDetected: qualifyingFieldsDetected
+  });
+  if (!shouldStampSubmitState) return out;
+
+  var nowIso = new Date().toISOString();
+  if (!clean_(out.PortalLastUpdateAt || "")) out.PortalLastUpdateAt = nowIso;
+  if (!clean_(out.Portal_Submitted || "")) out.Portal_Submitted = nowIso;
+  logActivation_(logSheet, "ACTIVATION_SUBMIT_STATE_STAMPED", {
+    applicantId: applicantId,
+    PortalLastUpdateAt: clean_(out.PortalLastUpdateAt || ""),
+    Portal_Submitted: clean_(out.Portal_Submitted || "")
+  });
   return out;
 }
 

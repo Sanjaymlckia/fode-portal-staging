@@ -1877,6 +1877,19 @@ function sliceQueueByOffset_(rows, offset, limit) {
   return list.slice(from, from + size);
 }
 
+function normalizeReviewQueueData_(data) {
+  var names = ["docs", "awaitingPayment", "payments", "anomalies", "paidApproved", "postPaymentIssues"];
+  var src = (data && typeof data === "object") ? data : {};
+  var out = { counts: {} };
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var list = Array.isArray(src[name]) ? src[name] : [];
+    out[name] = list;
+    out.counts[name] = Number((src.counts && src.counts[name]) || list.length || 0);
+  }
+  return out;
+}
+
 function mergeQueuePageMeta_(queues, offset, limit) {
   var names = ["docs", "awaitingPayment", "payments", "anomalies", "paidApproved", "postPaymentIssues"];
   var hasMore = false;
@@ -2143,21 +2156,31 @@ function admin_getReviewQueues(payload) {
     } catch (_cacheWriteErr) {}
   }
 
+  fullData = normalizeReviewQueueData_(fullData);
   var pageMeta = mergeQueuePageMeta_(fullData, offset, limit);
   function refreshDocsFollowupRuntime_(rows) {
-    return (rows || []).map(function (row) {
+    var list = Array.isArray(rows) ? rows : [];
+    return list.map(function (row) {
       var out = {};
       var src = row && typeof row === "object" ? row : {};
       for (var k in src) {
         if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
       }
       var applicantId = clean_(out.ApplicantID || out.applicantId || "");
-      var key = buildDocsFollowupKey_(applicantId);
+      out.ApplicantID = clean_(out.ApplicantID || applicantId || "");
+      out.applicantId = clean_(out.applicantId || applicantId || "");
+      out.name = clean_(out.name || "");
+      out.rowNumber = Number(out.rowNumber || 0);
       var sentAt = "";
-      try { sentAt = safeStr_(PropertiesService.getScriptProperties().getProperty(key) || ""); } catch (_propErr) {}
+      if (applicantId) {
+        try {
+          var key = buildDocsFollowupKey_(CONFIG.DATA_MODE, applicantId);
+          sentAt = safeStr_(PropertiesService.getScriptProperties().getProperty(key) || "");
+        } catch (_propErr) {}
+      }
       out.docsFollowupSentAt = sentAt;
       var eligibleBase = !!out.docsFollowupEligibleBase;
-      out.eligibleDocsFollowUp = eligibleBase && !sentAt;
+      out.eligibleDocsFollowUp = !!(applicantId && eligibleBase && !sentAt);
       return out;
     });
   }
