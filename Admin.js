@@ -1866,6 +1866,19 @@ function hasMandatoryDocIssue_(rowObj, idx) {
   return false;
 }
 
+function isQueueCandidateRow_(rowObj) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || "");
+  if (!applicantId) return false;
+
+  var portalSubmittedRaw = clean_(row.Portal_Submitted || "");
+  var portalSubmitted = nonEmpty_(portalSubmittedRaw) && portalSubmittedRaw !== "No";
+  var docsVerified = clean_(row.Docs_Verified || "") === "Yes";
+  var paymentVerified = clean_(row.Payment_Verified || "") === "Yes";
+
+  return portalSubmitted || docsVerified || paymentVerified;
+}
+
 function getDashboardCacheKey_(adminEmail) {
   return "ADMIN_DASHBOARD::" + clean_(adminEmail || "").toLowerCase();
 }
@@ -1954,6 +1967,9 @@ function admin_getReviewQueues(payload) {
       var paidApproved = [];
       var postPaymentIssues = [];
       var debugRows = [];
+      var scannedCount = 0;
+      var skippedCount = 0;
+      var candidateCount = 0;
       function pushQueueItem_(target, item) {
         var rowNum = Number(item && item.rowNumber || 0);
         if (!Number.isFinite(rowNum) || rowNum < 2) return;
@@ -1974,8 +1990,14 @@ function admin_getReviewQueues(payload) {
           rowObj[h] = row[c];
         }
 
+        scannedCount++;
+        if (!isQueueCandidateRow_(rowObj)) {
+          skippedCount++;
+          continue;
+        }
+        candidateCount++;
+
         var applicantId = clean_(rowObj.ApplicantID || "");
-        if (!applicantId) continue;
         var firstName = clean_(rowObj.First_Name || "");
         var lastName = clean_(rowObj.Last_Name || "");
         var name = (firstName + " " + lastName).trim();
@@ -2144,6 +2166,16 @@ function admin_getReviewQueues(payload) {
         paidApproved: paidApproved.length
       }));
       Logger.log("R232_QUEUE_CANARY SUMMARY " + JSON.stringify({
+        docs: docs.length,
+        awaitingPayment: awaitingPayment.length,
+        payments: payments.length,
+        anomalies: anomalies.length,
+        paidApproved: paidApproved.length
+      }));
+      Logger.log("QUEUE_PREFILTER_SUMMARY " + JSON.stringify({
+        scanned: scannedCount,
+        skipped: skippedCount,
+        candidates: candidateCount,
         docs: docs.length,
         awaitingPayment: awaitingPayment.length,
         payments: payments.length,
