@@ -163,10 +163,13 @@ function doPost(e) {
       }
       var failDbgId = clean_(resultObj.debugId || debugId) || debugId;
       var failCode = clean_(resultObj && resultObj.error && resultObj.error.code || "");
+      var failValidationErrors = Array.isArray(resultObj.validationErrors) ? resultObj.validationErrors : [];
+      var failFields = failValidationErrors.map(function (item) { return clean_(item && item.field || ""); }).filter(function (item) { return !!item; });
+      var failCodes = failValidationErrors.map(function (item) { return clean_(item && item.code || ""); }).filter(function (item) { return !!item; });
       var isPaymentVerifiedLock = failCode === "PAYMENT_VERIFIED_LOCK";
       var failRedirect = isPaymentVerifiedLock
         ? buildPortalRedirectUrl_(applicantId, secret, { locked: true, msg: "enrolled" })
-        : buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: failDbgId });
+        : buildPortalRedirectUrl_(applicantId, secret, { error: true, dbg: failDbgId, val: failValidationErrors.length > 0, fields: failFields.join(","), errCode: failCodes.join(",") });
       logPortalPostEvent_("PORTAL_POST_REDIRECT", {
         reqId: reqId,
         redirectUrl: failRedirect,
@@ -283,6 +286,12 @@ function doPost(e) {
       correlation_id: correlationId,
       folderUrl: folderUrl,
       folderId: clean_(folder && folder.getId ? folder.getId() : "")
+    });
+
+    activationStage = "FILE_CANONICALIZE";
+    payload = canonicalizeFdIntakeFiles_(payload, folder, logSheet, {
+      correlationId: correlationId,
+      applicantId: applicantId
     });
 
     activationStage = "TOKEN_PREPARE";
@@ -488,6 +497,9 @@ function renderPortalPageResponse_(e, opts) {
   var uploadOk = clean_(params.ok || "") === "1";
   var uploadDocKey = clean_(params.docKey || "");
   var uploadErrCode = clean_(params.errCode || "");
+  var validationFlag = clean_(params.val || "") === "1";
+  var validationFields = parsePortalCsvParam_(params.fields || "");
+  var validationCodes = parsePortalCsvParam_(params.errCode || "");
   if (uploadRes) {
     uploadResult = true;
     uploadOk = uploadRes.ok === true;
@@ -598,6 +610,9 @@ function renderPortalPageResponse_(e, opts) {
     uploadOk: uploadOk,
     uploadDocKey: uploadDocKey,
     uploadErrCode: uploadErrCode,
+    validationFlag: validationFlag,
+    validationFields: validationFields,
+    validationCodes: validationCodes,
     record: record,
     subjects: CONFIG.PORTAL_SUBJECTS,
     examSites: examSites,
@@ -750,6 +765,99 @@ function authDriveYearFolder() {
 
 
 /******************** PORTAL UPDATE HANDLER ********************/
+function parsePortalCsvParam_(raw) {
+  return clean_(raw).split(",").map(function (part) {
+    return clean_(part);
+  }).filter(function (part) {
+    return !!part;
+  });
+}
+
+function portalValidationMessageForCode_(code) {
+  var key = clean_(code || "");
+  if (key === "DOB_REQUIRED") return "Date of Birth is required.";
+  if (key === "DOB_INVALID") return "Enter a valid Date of Birth.";
+  if (key === "SUBJECTS_REQUIRED") return "Select at least one subject.";
+  if (key === "SUBJECTS_INVALID_FOR_GRADE") return "Selected subjects are not valid for the chosen grade.";
+  if (key === "SUBJECT_LOCK_DOCS_VERIFIED") return "Subjects are locked because documents have been verified by Admin.";
+  return "Please correct the highlighted fields before submitting.";
+}
+
+function sanitizePortalUpdateValue_(field, value) {
+  var raw = value;
+  var cleaned = clean_(value);
+  if (field === "Parent_Phone") cleaned = cleaned.replace(/\s+/g, " ");
+  if (field === "Date_Of_Birth") {
+    if (!cleaned) return { raw: raw, sanitized: "", omit: false, blank: true, typed: true };
+    var iso = toIsoDateInput_(cleaned);
+    if (!iso) return { raw: raw, sanitized: cleaned, omit: false, invalid: true, typed: true };
+    return { raw: raw, sanitized: iso, omit: false, typed: true };
+  }
+  if (field === "Physical_Exam_Site") {
+    if (!cleaned) return { raw: raw, sanitized: "", omit: true, typed: true };
+    return { raw: raw, sanitized: cleaned, omit: false, typed: true };
+  }
+  if (!cleaned) return { raw: raw, sanitized: "", omit: true };
+  return { raw: raw, sanitized: cleaned, omit: false };
+}
+
+function normalizePortalSubjectsCsv_(raw) {
+  var csv = subjectsToCsv_(raw);
+  if (!csv) return "";
+  var known = {};
+  var ordered = [];
+  var configured = CONFIG.PORTAL_SUBJECTS || [];
+  for (var i = 0; i < configured.length; i++) {
+    var configuredName = clean_(configured[i]);
+    if (!configuredName) continue;
+    known[configuredName.toLowerCase()] = configuredName;
+  }
+  var seen = {};
+  var parts = csv.split(",");
+  for (var j = 0; j < parts.length; j++) {
+    var part = clean_(parts[j]);
+    if (!part) continue;
+    var key = part.toLowerCase();
+    if (seen[key]) continue;
+    seen[key] = true;
+    ordered.push(known[key] || part);
+  }
+  ordered.sort(function (a, b) {
+    var ai = configured.indexOf(a);
+    var bi = configured.indexOf(b);
+    if (ai >= 0 && bi >= 0) return ai - bi;
+    if (ai >= 0) return -1;
+    if (bi >= 0) return 1;
+    return a.toLowerCase() < b.toLowerCase() ? -1 : (a.toLowerCase() > b.toLowerCase() ? 1 : 0);
+  });
+  return ordered.join(", ");
+}
+
+function validatePortalSubjectsForGrade_(gradeRaw, subjectsCsv) {
+  var csv = normalizePortalSubjectsCsv_(subjectsCsv);
+  if (!csv) return { ok: false, invalidSubjects: [], reason: "SUBJECTS_REQUIRED" };
+  var gradeMatch = clean_(gradeRaw).match(/(\d{1,2})/);
+  var gradeNum = gradeMatch ? Number(gradeMatch[1]) : 0;
+  var disallow = {};
+  if (gradeNum === 7 || gradeNum === 8) {
+    ["Biology", "Chemistry", "Physics", "History", "Geography", "Economics", "Business Studies", "Accounting"].forEach(function (name) {
+      disallow[name.toLowerCase()] = true;
+    });
+  } else if (gradeNum === 11 || gradeNum === 12) {
+    ["Science", "Social Science"].forEach(function (name) {
+      disallow[name.toLowerCase()] = true;
+    });
+  }
+  var invalid = csv.split(",").map(function (part) { return clean_(part); }).filter(function (part) {
+    return !!disallow[part.toLowerCase()];
+  });
+  return {
+    ok: invalid.length === 0,
+    invalidSubjects: invalid,
+    reason: invalid.length ? "SUBJECTS_INVALID_FOR_GRADE" : ""
+  };
+}
+
 function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debugId) {
   if (!dataSheet || dataSheet.getName() !== CONFIG.DATA_SHEET) {
     throw new Error("DATA_SHEET mismatch");
@@ -765,7 +873,8 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
   var secret = clean_(payload.s || "");
   var safeDebugId = clean_(debugId || newDebugId_()) || newDebugId_();
   var rowIndex = 0;
-  var failResult = function (message, code) {
+  var failResult = function (message, code, extras) {
+    var extra = (extras && typeof extras === "object") ? extras : {};
     return {
       ok: false,
       debugId: safeDebugId,
@@ -773,7 +882,27 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
       error: {
         message: clean_(message || "Portal update failed."),
         code: clean_(code || "PORTAL_UPDATE_FAILED")
-      }
+      },
+      validationErrors: Array.isArray(extra.validationErrors) ? extra.validationErrors : []
+    };
+  };
+  var logValidationError = function (field, rawValue, sanitizedValue, code, reason) {
+    var entry = {
+      dbgId: safeDebugId,
+      applicantId: id,
+      field: clean_(field || ""),
+      rawValue: rawValue == null ? "" : String(rawValue),
+      sanitizedValue: sanitizedValue == null ? "" : String(sanitizedValue),
+      reason: clean_(reason || code || "")
+    };
+    try { log_(logSheet, "PORTAL_UPDATE_VALIDATION_ERRORS", JSON.stringify(entry)); } catch (_logValidationErr) {}
+    return {
+      field: entry.field,
+      rawValue: entry.rawValue,
+      sanitizedValue: entry.sanitizedValue,
+      reason: entry.reason,
+      code: clean_(code || "VALIDATION_FAILED"),
+      message: portalValidationMessageForCode_(code)
     };
   };
   if (!id || !secret) {
@@ -829,19 +958,27 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
     s: redactToken_(hasOwn_(posted, "s") ? posted.s : (payload.s || payload.secret || ""))
   });
 
-  var updates = {};
-  var editFields = effectiveEditFields;
   var sourceFields = postKeys.length ? posted : payload;
+  var validatedUpdates = {};
+  var rawByField = {};
+  var validationErrors = [];
+  var includeUpdate = function (field, rawValue, sanitizedValue) {
+    validatedUpdates[field] = sanitizedValue;
+    rawByField[field] = rawValue == null ? "" : String(rawValue);
+  };
+  var addValidationError = function (field, rawValue, sanitizedValue, code, reason) {
+    validationErrors.push(logValidationError(field, rawValue, sanitizedValue, code, reason));
+  };
 
-  if (editFields.indexOf("Subjects_Selected_Canonical") >= 0 && isDocsVerified_(found.record)) {
+  if (effectiveEditFields.indexOf("Subjects_Selected_Canonical") >= 0 && isDocsVerified_(found.record)) {
     var attemptedSubjectsCanonical = hasOwn_(sourceFields, "Subjects_Selected_Canonical")
       ? clean_(sourceFields.Subjects_Selected_Canonical)
       : "";
     var attemptedSubjectsLegacy = hasOwn_(sourceFields, "Subjects_Selected")
       ? sourceFields.Subjects_Selected
       : (payload.Subjects_Selected || payload.field_Subjects_Selected || "");
-    var attemptedSubjectsCsv = attemptedSubjectsCanonical || subjectsToCsv_(attemptedSubjectsLegacy);
-    var existingSubjectsCsv = clean_(found.record.Subjects_Selected_Canonical || "") || subjectsToCsv_(found.record.Subjects_Selected || "");
+    var attemptedSubjectsCsv = normalizePortalSubjectsCsv_(attemptedSubjectsCanonical || subjectsToCsv_(attemptedSubjectsLegacy));
+    var existingSubjectsCsv = normalizePortalSubjectsCsv_(clean_(found.record.Subjects_Selected_Canonical || "") || subjectsToCsv_(found.record.Subjects_Selected || ""));
     if (attemptedSubjectsCsv && attemptedSubjectsCsv !== existingSubjectsCsv) {
       var attemptedFields = Object.keys(sourceFields || {}).filter(function (k) {
         return k === "Subjects_Selected_Canonical" || k === "Subjects_Selected" || k === "subj";
@@ -854,84 +991,93 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
           attemptedFields: attemptedFields
         }));
       } catch (_subjectLockBlockLogErr) {}
-      return {
-        ok: false,
-        code: "SUBJECT_LOCK_DOCS_VERIFIED",
-        message: "Subjects are locked because documents have been verified by Admin.",
-        debugId: safeDebugId,
-        applicantId: id,
-        error: {
-          message: "Subjects are locked because documents have been verified by Admin.",
-          code: "SUBJECT_LOCK_DOCS_VERIFIED"
-        }
-      };
+      addValidationError("Subjects_Selected_Canonical", attemptedSubjectsCanonical || attemptedSubjectsLegacy, attemptedSubjectsCsv, "SUBJECT_LOCK_DOCS_VERIFIED", "docs_verified_locked");
+      return failResult("Subjects are locked because documents have been verified by Admin.", "SUBJECT_LOCK_DOCS_VERIFIED", {
+        validationErrors: validationErrors
+      });
     }
   }
 
-    // Core fields from portal
-  if (hasOwn_(sourceFields, "Date_Of_Birth")) {
-    updates.Date_Of_Birth = normalize_(sourceFields.Date_Of_Birth);
+  var genericSkip = {
+    Parent_Email: true,
+    Date_Of_Birth: true,
+    Physical_Exam_Site: true,
+    Subjects_Selected_Canonical: true
+  };
+  for (var i = 0; i < effectiveEditFields.length; i++) {
+    var h = effectiveEditFields[i];
+    if (genericSkip[h]) continue;
+    if (!hasOwn_(sourceFields, h)) continue;
+    var sanitizedGeneric = sanitizePortalUpdateValue_(h, sourceFields[h]);
+    if (sanitizedGeneric.omit) continue;
+    includeUpdate(h, sourceFields[h], sanitizedGeneric.sanitized);
+  }
+
+  var dobSubmitted = hasOwn_(sourceFields, "Date_Of_Birth");
+  var storedDobIso = toIsoDateInput_(found.record.Date_Of_Birth);
+  if (dobSubmitted) {
+    var dobSanitized = sanitizePortalUpdateValue_("Date_Of_Birth", sourceFields.Date_Of_Birth);
+    if (dobSanitized.blank) {
+      addValidationError("Date_Of_Birth", sourceFields.Date_Of_Birth, "", "DOB_REQUIRED", "submitted_blank");
+    } else if (dobSanitized.invalid) {
+      addValidationError("Date_Of_Birth", sourceFields.Date_Of_Birth, dobSanitized.sanitized, "DOB_INVALID", "submitted_invalid");
+    } else {
+      includeUpdate("Date_Of_Birth", sourceFields.Date_Of_Birth, dobSanitized.sanitized);
+    }
+  } else if (!storedDobIso) {
+    addValidationError("Date_Of_Birth", found.record.Date_Of_Birth, "", "DOB_REQUIRED", "effective_blank_on_submit");
   }
 
   if (hasOwn_(sourceFields, "Physical_Exam_Site")) {
-    updates.Physical_Exam_Site = normalize_(sourceFields.Physical_Exam_Site);
+    var examSanitized = sanitizePortalUpdateValue_("Physical_Exam_Site", sourceFields.Physical_Exam_Site);
+    if (!examSanitized.omit) includeUpdate("Physical_Exam_Site", sourceFields.Physical_Exam_Site, examSanitized.sanitized);
   }
 
-    // Subjects canonical is authoritative; normalize legacy/raw payloads if canonical is absent.
-  var subjectsCanonical = hasOwn_(sourceFields, "Subjects_Selected_Canonical")
-    ? clean_(sourceFields.Subjects_Selected_Canonical)
-    : "";
-  var subjectsLegacyRaw = hasOwn_(sourceFields, "Subjects_Selected")
-    ? sourceFields.Subjects_Selected
-    : (payload.Subjects_Selected || payload.field_Subjects_Selected || "");
-  var subjectsCsv = subjectsCanonical || subjectsToCsv_(subjectsLegacyRaw);
-  if (subjectsCanonical || subjectsCsv) updates.Subjects_Selected_Canonical = subjectsCsv;
-  if (hasOwn_(sourceFields, "Upgrade_Grade_Stream")) {
-    updates.Upgrade_Grade_Stream = normalize_(sourceFields.Upgrade_Grade_Stream);
+  var storedSubjectsCsv = normalizePortalSubjectsCsv_(clean_(found.record.Subjects_Selected_Canonical || "") || subjectsToCsv_(found.record.Subjects_Selected || ""));
+  var hasSubmittedSubjects = hasOwn_(sourceFields, "Subjects_Selected_Canonical") || hasOwn_(sourceFields, "Subjects_Selected") || hasOwn_(sourceFields, "subj");
+  var submittedSubjectsRaw = hasOwn_(sourceFields, "Subjects_Selected_Canonical")
+    ? sourceFields.Subjects_Selected_Canonical
+    : (hasOwn_(sourceFields, "Subjects_Selected") ? sourceFields.Subjects_Selected : (payload.Subjects_Selected || payload.field_Subjects_Selected || ""));
+  var submittedSubjectsCsv = normalizePortalSubjectsCsv_(submittedSubjectsRaw);
+  var effectiveGrade = clean_(validatedUpdates.Grade_Applying_For || found.record.Grade_Applying_For || "");
+  if (hasSubmittedSubjects) {
+    if (!submittedSubjectsCsv) {
+      addValidationError("Subjects_Selected_Canonical", submittedSubjectsRaw, submittedSubjectsCsv, "SUBJECTS_REQUIRED", "submitted_blank");
+    } else {
+      var subjectsValidation = validatePortalSubjectsForGrade_(effectiveGrade, submittedSubjectsCsv);
+      if (!subjectsValidation.ok) {
+        if (submittedSubjectsCsv !== storedSubjectsCsv) {
+          addValidationError("Subjects_Selected_Canonical", submittedSubjectsRaw, submittedSubjectsCsv, "SUBJECTS_INVALID_FOR_GRADE", subjectsValidation.invalidSubjects.join(", "));
+        }
+      } else {
+        includeUpdate("Subjects_Selected_Canonical", submittedSubjectsRaw, submittedSubjectsCsv);
+      }
+    }
+  } else if (!storedSubjectsCsv) {
+    addValidationError("Subjects_Selected_Canonical", "", "", "SUBJECTS_REQUIRED", "effective_blank_on_submit");
   }
 
-    // Never overwrite Parent_Email directly; allow Parent_Email_Corrected only when explicitly provided.
-    // Read editable values directly from posted keys that match sheet headers.
-  for (var i = 0; i < editFields.length; i++) {
-    var h = editFields[i];
-    if (h === "Parent_Email") continue;
-    if (!hasOwn_(sourceFields, h)) continue;
-    updates[h] = normalize_(sourceFields[h]);
+  if (validationErrors.length) {
+    return failResult("Please correct the highlighted fields before submitting.", validationErrors[0].code || "VALIDATION_FAILED", {
+      validationErrors: validationErrors
+    });
+  }
+  validatedUpdates.PortalLastUpdateAt = new Date().toISOString();
+  rawByField.PortalLastUpdateAt = validatedUpdates.PortalLastUpdateAt;
+  if (!clean_(found.record.Portal_Submitted)) {
+    validatedUpdates.Portal_Submitted = new Date().toISOString();
+    rawByField.Portal_Submitted = validatedUpdates.Portal_Submitted;
   }
 
-    // Validation
-  var missing = [];
-
-  var effectiveDob = updates.Date_Of_Birth || clean_(found.record.Date_Of_Birth || "");
-  if (!effectiveDob) missing.push("Date of Birth");
-
-  var effectiveSubjects =
-    updates.Subjects_Selected_Canonical ||
-    clean_(found.record.Subjects_Selected_Canonical || "") ||
-    subjectsToCsv_(found.record.Subjects_Selected || "");
-  if (!effectiveSubjects) missing.push("Subjects");
-
-  var effectiveSite = updates.Physical_Exam_Site || clean_(found.record.Physical_Exam_Site || "");
-  if (!effectiveSite) missing.push("Physical Exam Site");
-
-  if (missing.length) {
-    return failResult("Please complete/fix: " + missing.join(", "), "VALIDATION_FAILED");
-  }
-
-  updates.PortalLastUpdateAt = new Date().toISOString();
-
-    // mark first submit time if empty
-  if (!clean_(found.record.Portal_Submitted)) updates.Portal_Submitted = new Date().toISOString();
-
-  var updateKeys = Object.keys(updates);
+  var updateKeys = Object.keys(validatedUpdates);
   var emailBefore = clean_(found.record.Parent_Email_Corrected || "");
-  var emailAfter = hasOwn_(updates, "Parent_Email_Corrected") ? clean_(updates.Parent_Email_Corrected) : emailBefore;
-  var emailChanged = hasOwn_(updates, "Parent_Email_Corrected")
+  var emailAfter = hasOwn_(validatedUpdates, "Parent_Email_Corrected") ? clean_(validatedUpdates.Parent_Email_Corrected) : emailBefore;
+  var emailChanged = hasOwn_(validatedUpdates, "Parent_Email_Corrected")
     && emailAfter.toLowerCase() !== emailBefore.toLowerCase();
   var patchSample = {};
   for (var ps = 0; ps < updateKeys.length && ps < 5; ps++) {
     var patchKey = updateKeys[ps];
-    var patchVal = clean_(updates[patchKey]);
+    var patchVal = clean_(validatedUpdates[patchKey]);
     patchSample[patchKey] = patchVal.length > 120 ? patchVal.slice(0, 120) : patchVal;
   }
   portalDebugLog_("PORTAL_UPDATE_PATCH", {
@@ -942,23 +1088,49 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
   });
 
   log_(logSheet, "PORTAL_UPDATE_PATCH", "keys=" + updateKeys.join(","));
-  log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(updates));
+  log_(logSheet, "PORTAL_UPDATE updates", JSON.stringify(validatedUpdates));
   var beforeReceiptRow = {
     ApplicantID: clean_(found.record.ApplicantID || id || ""),
     First_Name: clean_(found.record.First_Name || ""),
     Last_Name: clean_(found.record.Last_Name || ""),
     Fee_Receipt_File: clean_(found.record.Fee_Receipt_File || "")
   };
+  var headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
   try {
-    writeBack_(dataSheet, rowIndex, updates);
+    for (var uk = 0; uk < updateKeys.length; uk++) {
+      var key = updateKeys[uk];
+      var colIndex = headers.indexOf(key);
+      if (colIndex < 0) continue;
+      try {
+        dataSheet.getRange(rowIndex, colIndex + 1).setValue(validatedUpdates[key]);
+      } catch (writeFieldErr) {
+        var writeEntry = {
+          dbgId: safeDebugId,
+          applicantId: id,
+          rowIndex: rowIndex,
+          field: key,
+          rawValue: rawByField[key] == null ? "" : String(rawByField[key]),
+          sanitizedValue: validatedUpdates[key] == null ? "" : String(validatedUpdates[key]),
+          error: String(writeFieldErr && writeFieldErr.message ? writeFieldErr.message : writeFieldErr),
+          stack: clean_(writeFieldErr && writeFieldErr.stack ? writeFieldErr.stack : "")
+        };
+        try { log_(logSheet, "PORTAL_UPDATE_WRITE_ERROR", JSON.stringify(writeEntry)); } catch (_writeLogErr) {}
+        portalDebugLog_("PORTAL_UPDATE_WRITE_ERROR", writeEntry);
+        throw writeFieldErr;
+      }
+    }
     SpreadsheetApp.flush();
   } catch (e) {
-    portalDebugLog_("PORTAL_UPDATE_ERROR", {
-      applicantId: id,
-      rowNumber: rowIndex,
-      error: String(e && e.message ? e.message : e)
-    });
-    return failResult(String(e && e.message ? e.message : e), "WRITE_FAILED");
+    try {
+      log_(logSheet, "PORTAL_UPDATE_WRITE_ERROR", JSON.stringify({
+        dbgId: safeDebugId,
+        applicantId: id,
+        rowIndex: rowIndex,
+        error: String(e && e.message ? e.message : e),
+        stack: clean_(e && e.stack ? e.stack : "")
+      }));
+    } catch (_writeSummaryErr) {}
+    return failResult("We could not save your update. Please try again or contact admissions.", "WRITE_FAILED");
   }
   if (emailChanged) {
     var docsKey = buildDocsFollowupKey_(id);
@@ -977,7 +1149,7 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
     } catch (_docsResetLogErr) {}
   }
   try {
-    if (Object.prototype.hasOwnProperty.call(updates, "Fee_Receipt_File")) {
+    if (Object.prototype.hasOwnProperty.call(validatedUpdates, "Fee_Receipt_File")) {
       var afterReceiptRow = getRowObject_(dataSheet, rowIndex);
       maybeNotifyPaymentReceiptUploadTransition_(beforeReceiptRow, afterReceiptRow, rowIndex, { source: "portal_update" });
     }
@@ -1625,6 +1797,9 @@ function renderPortalHtml_(opts) {
   var uploadOk = opts.uploadOk === true;
   var uploadDocKey = clean_(opts.uploadDocKey || "");
   var uploadErrCode = clean_(opts.uploadErrCode || "");
+  var validationFlag = opts.validationFlag === true;
+  var validationFields = Array.isArray(opts.validationFields) ? opts.validationFields : [];
+  var validationCodes = Array.isArray(opts.validationCodes) ? opts.validationCodes : [];
   var subjects = opts.subjects || [];
   var examSites = opts.examSites || [];
   var editFields = opts.editFields || [];
@@ -1659,6 +1834,25 @@ function renderPortalHtml_(opts) {
   var dobVal = esc_(toIsoDateInput_(record.Date_Of_Birth));
 
   var examVal = clean_(record.Physical_Exam_Site || "");
+  var validationFieldSet = {};
+  for (var vf = 0; vf < validationFields.length; vf++) validationFieldSet[validationFields[vf]] = true;
+  var validationCodeSet = {};
+  for (var vc = 0; vc < validationCodes.length; vc++) validationCodeSet[validationCodes[vc]] = true;
+  var dobAttention = !!(validationFieldSet.Date_Of_Birth || validationCodeSet.DOB_REQUIRED || validationCodeSet.DOB_INVALID || (!dobVal && !locked));
+  var dobMessage = validationCodeSet.DOB_REQUIRED
+    ? "Date of Birth is required."
+    : (validationCodeSet.DOB_INVALID
+        ? "Enter a valid Date of Birth."
+        : ((!dobVal && !locked) ? "Date of Birth is required to complete your application." : ""));
+  var subjectsAttention = !!(validationFieldSet.Subjects_Selected_Canonical || validationCodeSet.SUBJECTS_REQUIRED || validationCodeSet.SUBJECTS_INVALID_FOR_GRADE || validationCodeSet.SUBJECT_LOCK_DOCS_VERIFIED);
+  var subjectsMessage = validationCodeSet.SUBJECTS_REQUIRED
+    ? "Select at least one subject."
+    : ((validationCodeSet.SUBJECTS_INVALID_FOR_GRADE || validationCodeSet.SUBJECT_LOCK_DOCS_VERIFIED)
+        ? portalValidationMessageForCode_(validationCodes[0] || "SUBJECTS_INVALID_FOR_GRADE")
+        : "");
+  var dobInputStyle = 'padding:8px;width:260px;' + (dobAttention ? 'border:2px solid #b30000;background:#fff7f7;' : '');
+  var examInputStyle = 'padding:8px;width:520px;';
+  var subjectsBoxStyle = 'margin-top:8px;padding:12px;border:' + (subjectsAttention ? '2px solid #b30000' : '1px solid #eee') + ';border-radius:10px;' + (subjectsAttention ? 'background:#fff7f7;' : '');
 
   // exam site options
   var examList = (examSites.length ? examSites : ["Port Moresby - HQ"]);
@@ -1706,9 +1900,12 @@ function renderPortalHtml_(opts) {
   var errText = uploadFail
     ? ("Upload failed. Please try again." + (uploadField ? (" Field: " + uploadField + ".") : ""))
     : "Portal update failed.";
-  var showErrorBanner = hasErr && !isPaymentVerifiedLock;
+  var showErrorBanner = hasErr && !isPaymentVerifiedLock && !validationFlag;
   var errBlock = showErrorBanner
     ? '<div style="background:#ffecec;border:1px solid #b30000;padding:8px;margin-bottom:12px;color:#000;">' + esc_(errText) + (dbg ? (" Debug: " + esc_(dbg)) : "") + "</div>"
+    : "";
+  var validationSummaryBlock = validationFlag
+    ? '<div style="background:#ffecec;border:1px solid #b30000;padding:10px;border-radius:8px;margin-bottom:12px;color:#000;"><b>Please correct the highlighted fields before submitting.</b></div>'
     : "";
   var uploadBannerId = "portalUploadResultBanner";
   var uploadResultBlock = "";
@@ -1782,6 +1979,7 @@ function renderPortalHtml_(opts) {
     + '<div id="portalErrorBanner" style="display:none;background:#ffecec;border:1px solid #b30000;padding:10px;border-radius:8px;margin-bottom:12px;color:#000;"></div>'
     + savedBlock
     + errBlock
+    + validationSummaryBlock
     + enrollmentConfirmedBlock
     + '<div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-bottom:16px;">'
     + "<div><b>Applicant ID:</b> " + esc_(id) + "</div>"
@@ -1819,13 +2017,14 @@ function renderPortalHtml_(opts) {
     + '<h3 style="margin-top:0;">Update / Confirm Information</h3>'
 
     + '<div style="margin:12px 0;">'
-    + "<label><b>Date of Birth (mandatory):</b></label><br/>"
-    + '<input type="date" name="Date_Of_Birth" value="' + dobVal + '" style="padding:8px;width:260px;" ' + ro + " />"
+    + "<label for=\"portalDobInput\"><b>Date of Birth <span style=\"color:#b30000;\">*</span></b></label><br/>"
+    + '<input id="portalDobInput" type="date" name="Date_Of_Birth" value="' + dobVal + '" style="' + dobInputStyle + '" ' + ro + " />"
+    + '<div id="portalDobError" style="margin-top:6px;color:#b30000;display:' + (dobMessage ? 'block' : 'none') + ';">' + esc_(dobMessage) + '</div>'
     + "</div>"
 
     + '<div style="margin:12px 0;">'
-    + "<label><b>Physical Exam Site (mandatory):</b></label><br/>"
-    + '<select name="Physical_Exam_Site" style="padding:8px;width:520px;" ' + dis + ">"
+    + "<label><b>Physical Exam Site (optional):</b></label><br/>"
+    + '<select name="Physical_Exam_Site" style="' + examInputStyle + '" ' + dis + ">"
     + '<option value="">-- Select Exam Site --</option>'
     + examOptions
     + "</select>"
@@ -1833,11 +2032,12 @@ function renderPortalHtml_(opts) {
     + "</div>"
 
     + '<div style="margin:12px 0;">'
-    + "<label><b>Select Subjects (mandatory):</b></label>"
-    + '<div style="margin-top:8px;padding:12px;border:1px solid #eee;border-radius:10px;">'
+    + "<label><b>Select Subjects <span style=\"color:#b30000;\">*</span></b></label>"
+    + '<div id="portalSubjectsBox" style="' + subjectsBoxStyle + '">'
     + subjectChecks
     + subjectsLockedNotice
-    + "</div>"
+    + '</div>'
+    + '<div id="portalSubjectsError" style="margin-top:6px;color:#b30000;display:' + (subjectsMessage ? 'block' : 'none') + ';">' + esc_(subjectsMessage) + '</div>'
     + "</div>"
 
     + (editFields.length ? ('<div style="margin:12px 0;">'
@@ -1858,8 +2058,34 @@ function renderPortalHtml_(opts) {
     + "var boxes=[].slice.call(document.querySelectorAll('input[name=\"subj\"]:checked'));"
     + "var vals=boxes.map(function(b){return b.value;}).filter(Boolean);"
     + "document.getElementById('Subjects_Selected_Canonical').value=vals.join(', ');"
-    + "if(!vals.length){alert('Please select at least one subject.');return false;}"
-    + "return true;}"
+    + "return vals.length>0;}"
+    + "function setPortalFieldMessage_(field,msg){"
+    + "var el=null;"
+    + "if(field==='Date_Of_Birth') el=document.getElementById('portalDobError');"
+    + "else if(field==='Subjects_Selected_Canonical') el=document.getElementById('portalSubjectsError');"
+    + "if(!el) return;"
+    + "var text=String(msg||'').trim();"
+    + "el.textContent=text;"
+    + "el.style.display=text?'block':'none';"
+    + "}"
+    + "function markPortalFieldInvalid_(field){"
+    + "if(field==='Date_Of_Birth'){ var dob=document.getElementById('portalDobInput'); if(dob){ dob.style.border='2px solid #b30000'; dob.style.background='#fff7f7'; } return; }"
+    + "if(field==='Subjects_Selected_Canonical'){ var box=document.getElementById('portalSubjectsBox'); if(box){ box.style.border='2px solid #b30000'; box.style.background='#fff7f7'; } return; }"
+    + "var form=document.getElementById('portalForm');"
+    + "if(!form) return;"
+    + "var nodes=form.querySelectorAll('[name=\"'+field+'\"]');"
+    + "[].slice.call(nodes).forEach(function(node){ if(node){ node.style.border='2px solid #b30000'; node.style.background='#fff7f7'; } });"
+    + "}"
+    + "function applyPortalValidationState_(){"
+    + "var fields=" + JSON.stringify(validationFields) + ";"
+    + "var codes=" + JSON.stringify(validationCodes) + ";"
+    + "fields.forEach(function(field){ markPortalFieldInvalid_(field); });"
+    + "if(codes.indexOf('DOB_REQUIRED')>=0) setPortalFieldMessage_('Date_Of_Birth','Date of Birth is required.');"
+    + "else if(codes.indexOf('DOB_INVALID')>=0) setPortalFieldMessage_('Date_Of_Birth','Enter a valid Date of Birth.');"
+    + "if(codes.indexOf('SUBJECTS_REQUIRED')>=0) setPortalFieldMessage_('Subjects_Selected_Canonical','Select at least one subject.');"
+    + "else if(codes.indexOf('SUBJECTS_INVALID_FOR_GRADE')>=0) setPortalFieldMessage_('Subjects_Selected_Canonical','Selected subjects are not valid for the chosen grade.');"
+    + "else if(codes.indexOf('SUBJECT_LOCK_DOCS_VERIFIED')>=0) setPortalFieldMessage_('Subjects_Selected_Canonical','Subjects are locked because documents have been verified by Admin.');"
+    + "}"
     + "function ensurePortalFormSerialization(form){"
     + "if(!form) return;"
     + "var oldClones=[].slice.call(form.querySelectorAll('input[data-portal-clone=\"1\"]'));"
@@ -1880,7 +2106,22 @@ function renderPortalHtml_(opts) {
     + "});"
     + "}"
     + "function beforePortalSubmit(evt,form){"
-    + "if(!packSubjects()) return false;"
+    + "clearPortalError_();"
+    + "setPortalFieldMessage_('Date_Of_Birth','');"
+    + "setPortalFieldMessage_('Subjects_Selected_Canonical','');"
+    + "if(!packSubjects()){"
+    + "setPortalError_('Please correct the highlighted fields before submitting.');"
+    + "setPortalFieldMessage_('Subjects_Selected_Canonical','Select at least one subject.');"
+    + "markPortalFieldInvalid_('Subjects_Selected_Canonical');"
+    + "return false;}"
+    + "var dobInput=document.getElementById('portalDobInput');"
+    + "var dobValue=dobInput?String(dobInput.value||'').trim():'';"
+    + "if(!dobValue){"
+    + "setPortalError_('Please correct the highlighted fields before submitting.');"
+    + "setPortalFieldMessage_('Date_Of_Birth','Date of Birth is required.');"
+    + "markPortalFieldInvalid_('Date_Of_Birth');"
+    + "if(dobInput && typeof dobInput.focus==='function') dobInput.focus();"
+    + "return false;}"
     + "ensurePortalFormSerialization(form);"
     + "var fd=new FormData(form);"
     + "var obj={};"
@@ -1926,7 +2167,8 @@ function renderPortalHtml_(opts) {
     + "var uploadFailQ=(params.get('uploadFail')==='1');"
     + "var fieldQ=params.get('field')||'';"
     + "if(hasSaved){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'success',ts:Date.now()})); }"
-    + "if(hasError){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,mode:(uploadFailQ?'upload':'update'),field:fieldQ,ts:Date.now()})); }"
+    + "var validationQ=(params.get('val')==='1');"
+    + "if(hasError && !validationQ){ sessionStorage.setItem('portalFlash', JSON.stringify({type:'error',dbg:dbgQ,mode:(uploadFailQ?'upload':'update'),field:fieldQ,ts:Date.now()})); }"
     + "if(params.get('u')==='1'){"
     + "params.delete('u');"
     + "params.delete('ok');"
@@ -1985,6 +2227,7 @@ function renderPortalHtml_(opts) {
     + "}"
     + "function initPortalPage(){"
     + "initPortalFlashAndCleanup();"
+    + "applyPortalValidationState_();"
     + "initStudentVersionFooter();"
     + "renderMilestone(" + JSON.stringify(milestoneStatus) + ");"
     + "}"
@@ -2979,6 +3222,9 @@ function buildPortalRedirectUrl_(applicantId, secret) {
   if (opts.dbg) url += "&dbg=" + encodeURIComponent(clean_(opts.dbg));
   if (opts.uploadFail === true) url += "&uploadFail=1";
   if (opts.field) url += "&field=" + encodeURIComponent(clean_(opts.field));
+  if (opts.val === true) url += "&val=1";
+  if (opts.fields) url += "&fields=" + encodeURIComponent(clean_(opts.fields));
+  if (opts.errCode) url += "&errCode=" + encodeURIComponent(clean_(opts.errCode));
   return url;
 }
 
@@ -4111,6 +4357,145 @@ function commitPortalActivationState_(payload, applicantId, tokenState) {
   return { ok: true, rowIndex: sh.getLastRow(), created: true };
 }
 
+function fileExtensionFromName_(name) {
+  var raw = clean_(name || "");
+  var idx = raw.lastIndexOf(".");
+  if (idx < 0 || idx === raw.length - 1) return "";
+  return raw.slice(idx + 1).replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
+}
+
+function fileExtensionFromUrl_(url) {
+  var raw = clean_(url || "");
+  var match = raw.match(/\.([a-zA-Z0-9]{1,10})(?:[?#].*)?$/);
+  return match ? clean_(match[1] || "").toLowerCase() : "";
+}
+
+function fileExtensionFromContentType_(contentType) {
+  var type = clean_(contentType || "").toLowerCase();
+  if (!type) return "";
+  var map = {
+    "application/pdf": "pdf",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/heic": "heic",
+    "image/heif": "heif",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "text/plain": "txt"
+  };
+  return map[type] || "";
+}
+
+function canonicalizeFdIntakeFiles_(payload, applicantFolder, logSheet, context) {
+  var sourcePayload = payload || {};
+  var out = {};
+  for (var key in sourcePayload) {
+    if (!Object.prototype.hasOwnProperty.call(sourcePayload, key)) continue;
+    out[key] = sourcePayload[key];
+  }
+  if (!applicantFolder) return out;
+
+  var ctx = (context && typeof context === "object") ? context : {};
+  var correlationId = clean_(ctx.correlationId || "");
+  var applicantId = clean_(ctx.applicantId || "");
+  var folderId = clean_(applicantFolder.getId ? applicantFolder.getId() : "");
+  var folderUrl = clean_(applicantFolder.getUrl ? applicantFolder.getUrl() : "");
+  var fileLog = clean_(out.File_Log || "");
+  var fields = (CONFIG.DOC_FIELDS || []).map(function (doc) {
+    return clean_(doc && doc.file || "");
+  }).filter(function (field) {
+    return !!field;
+  });
+
+  for (var i = 0; i < fields.length; i++) {
+    var field = fields[i];
+    var rawUrls = normalizeToUrlList_(out[field], field);
+    if (!rawUrls.length) continue;
+    var canonicalUrls = [];
+    for (var u = 0; u < rawUrls.length; u++) {
+      var rawUrl = clean_(rawUrls[u]);
+      if (!rawUrl) continue;
+      try {
+        var response = UrlFetchApp.fetch(rawUrl, { muteHttpExceptions: true });
+        var responseCode = Number(response && response.getResponseCode ? response.getResponseCode() : 0);
+        if (responseCode != 200) {
+          logActivation_(logSheet, "ACTIVATION_FILE_CANONICALIZE_SKIP", {
+            correlation_id: correlationId,
+            applicantId: applicantId,
+            field: field,
+            reason: "fetch_failed",
+            rawUrl: rawUrl,
+            responseCode: responseCode
+          });
+          continue;
+        }
+        var blob = response.getBlob();
+        if (!blob) {
+          logActivation_(logSheet, "ACTIVATION_FILE_CANONICALIZE_SKIP", {
+            correlation_id: correlationId,
+            applicantId: applicantId,
+            field: field,
+            reason: "blob_missing",
+            rawUrl: rawUrl
+          });
+          continue;
+        }
+        var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Pacific/Port_Moresby", "yyyyMMdd_HHmmss_SSS");
+        var ext = fileExtensionFromContentType_(blob.getContentType()) || fileExtensionFromUrl_(rawUrl) || fileExtensionFromName_(blob.getName()) || "bin";
+        var newName = field + "_" + timestamp + (ext ? ("." + ext) : "");
+        blob.setName(newName);
+        var newFile = applicantFolder.createFile(blob);
+        newFile.setName(newName);
+        var newUrl = clean_(newFile.getUrl() || "");
+        if (!newUrl) {
+          logActivation_(logSheet, "ACTIVATION_FILE_CANONICALIZE_SKIP", {
+            correlation_id: correlationId,
+            applicantId: applicantId,
+            field: field,
+            reason: "canonical_url_missing",
+            rawUrl: rawUrl,
+            newFileId: clean_(newFile.getId() || "")
+          });
+          continue;
+        }
+        canonicalUrls.push(newUrl);
+        fileLog = appendLog_(fileLog, new Date().toISOString()
+          + " | " + field
+          + " | fetched_and_copied"
+          + " | rawUrl=" + rawUrl
+          + " | newFileId=" + clean_(newFile.getId() || "")
+          + " | folder=" + folderId);
+        logActivation_(logSheet, "ACTIVATION_FILE_CANONICALIZED", {
+          correlation_id: correlationId,
+          applicantId: applicantId,
+          field: field,
+          rawUrl: rawUrl,
+          newFileId: clean_(newFile.getId() || ""),
+          folderId: folderId,
+          folderUrl: folderUrl
+        });
+      } catch (fileErr) {
+        logActivation_(logSheet, "ACTIVATION_FILE_CANONICALIZE_SKIP", {
+          correlation_id: correlationId,
+          applicantId: applicantId,
+          field: field,
+          reason: "fetch_or_create_failed",
+          rawUrl: rawUrl,
+          error: String(fileErr && fileErr.message ? fileErr.message : fileErr)
+        });
+      }
+    }
+    out[field] = canonicalUrls.join("\n");
+  }
+  out.File_Log = fileLog;
+  return out;
+}
+
 function buildActivatedIntakeRow_(sheet, payload, folderUrl, applicantId, tokenState) {
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   var row = [];
@@ -5034,4 +5419,5 @@ function firstNonEmpty_() {
   }
   return "";
 }
+
 
