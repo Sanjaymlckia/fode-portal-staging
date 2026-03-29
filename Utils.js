@@ -1793,3 +1793,166 @@ function isFileInFolderChain_(file, folderId) {
   }
   return false;
 }
+
+
+function getCampaignEffectiveEmail_(row) {
+  var r = row || {};
+  return clean_(r.Parent_Email_Corrected || r.Parent_Email || "");
+}
+
+function isCampaignPortalSubmittedActive_(row) {
+  var r = row || {};
+  var submitted = clean_(r.Portal_Submitted || "");
+  return !!(submitted && submitted !== "No");
+}
+
+function isCampaignBounceFlagTrue_(value) {
+  var s = clean_(value || "").toLowerCase();
+  return s === "true" || s === "yes" || s === "1";
+}
+
+function isValidCampaignEmail_(email) {
+  var normalized = clean_(email || "").toLowerCase();
+  if (!normalized) return false;
+  if (/[\s,;]/.test(normalized)) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+}
+
+function getCampaignColumnsMap_(headers) {
+  var row = Array.isArray(headers) ? headers : [];
+  var approved = Array.isArray(CONFIG.CAMPAIGN_COLUMNS) ? CONFIG.CAMPAIGN_COLUMNS : [];
+  var map = {};
+  for (var i = 0; i < approved.length; i++) {
+    map[approved[i]] = 0;
+  }
+  for (var c = 0; c < row.length; c++) {
+    var h = clean_(row[c]);
+    if (h && Object.prototype.hasOwnProperty.call(map, h)) map[h] = c + 1;
+  }
+  return map;
+}
+
+function ensureCampaignColumns_(sheet) {
+  var sh = sheet;
+  if (!sh) throw new Error("Missing sheet for campaign columns");
+  var approved = Array.isArray(CONFIG.CAMPAIGN_COLUMNS) ? CONFIG.CAMPAIGN_COLUMNS.slice() : [];
+  if (!approved.length) return {};
+  var lastCol = Math.max(1, sh.getLastColumn());
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return clean_(h); });
+  var missing = [];
+  for (var i = 0; i < approved.length; i++) {
+    if (headers.indexOf(approved[i]) === -1) missing.push(approved[i]);
+  }
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+    headers = headers.concat(missing);
+  }
+  return getCampaignColumnsMap_(headers);
+}
+
+function normalizeEmailStatus_(value) {
+  var allowed = {
+    NEW: true,
+    READY: true,
+    SENT: true,
+    BOUNCED: true,
+    RESPONDED: true,
+    DO_NOT_CONTACT: true
+  };
+  var normalized = clean_(value || "").toUpperCase();
+  return allowed[normalized] ? normalized : "";
+}
+
+function computeCampaignEligibility_(row) {
+  var r = row || {};
+  var applicantId = clean_(r.ApplicantID || "");
+  var effectiveEmail = getCampaignEffectiveEmail_(r);
+  var status = normalizeEmailStatus_(r.Email_Status || "");
+  var portalSubmittedActive = isCampaignPortalSubmittedActive_(r);
+  var bounceFlag = isCampaignBounceFlagTrue_(r.Email_Bounce_Flag);
+  var result = {
+    eligible: false,
+    reason: "",
+    applicantId: applicantId,
+    effectiveEmail: effectiveEmail,
+    status: status,
+    portalSubmittedActive: portalSubmittedActive,
+    bounceFlag: bounceFlag
+  };
+  if (!applicantId) {
+    result.reason = "MISSING_APPLICANT_ID";
+    return result;
+  }
+  if (!isValidCampaignEmail_(effectiveEmail)) {
+    result.reason = "INVALID_EFFECTIVE_EMAIL";
+    return result;
+  }
+  if (bounceFlag) {
+    result.reason = "BOUNCED";
+    return result;
+  }
+  if (status === "DO_NOT_CONTACT") {
+    result.reason = "DO_NOT_CONTACT";
+    return result;
+  }
+  if (status === "RESPONDED") {
+    result.reason = "RESPONDED";
+    return result;
+  }
+  if (portalSubmittedActive) {
+    result.reason = "PORTAL_SUBMITTED";
+    return result;
+  }
+  result.eligible = true;
+  result.reason = "READY";
+  return result;
+}
+
+function getActivePortalSecretForCampaign_(applicantId) {
+  var id = clean_(applicantId || "");
+  if (!id) return { ok: false, code: "MISSING_APPLICANT_ID" };
+  try {
+    assertDriveId_(CONFIG.PORTAL_SECRETS_SHEET_ID, "CONFIG.PORTAL_SECRETS_SHEET_ID");
+    var ss = SpreadsheetApp.openById(CONFIG.PORTAL_SECRETS_SHEET_ID);
+    var sh = ss.getSheetByName(clean_(CONFIG.PORTAL_SECRETS_TAB || "PortalSecrets"));
+    if (!sh) return { ok: false, code: "SECRETS_TAB_NOT_FOUND" };
+    var rowIndex = findPortalSecretsRowByApplicantId_(sh, id);
+    if (!rowIndex) return { ok: false, code: "NO_SECRET" };
+    var rec = readPortalSecretsRecord_(sh, rowIndex);
+    var status = clean_(rec.Status || "");
+    var secretPlain = clean_(rec.Secret_Plain || "");
+    var secretHash = clean_(rec.Secret_Hash || "");
+    if (status !== "Active") return { ok: false, code: "INACTIVE_SECRET", status: status };
+    if (!secretPlain || !secretHash) return { ok: false, code: "UNUSABLE_SECRET", status: status };
+    return {
+      ok: true,
+      applicantId: id,
+      rowIndex: rowIndex,
+      status: status,
+      secretPlain: secretPlain,
+      secretHash: secretHash,
+      createdAt: safeStr_(rec.Created_At || "")
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      code: "SECRET_LOOKUP_FAILED",
+      error: safeStr_(stringifyGsError_(e) || "Secret lookup failed")
+    };
+  }
+}
+
+function buildLegacyCampaignPortalUrl_(applicantId, secret) {
+  if (typeof buildStudentPortalUrl_ !== "function") throw new Error("Missing buildStudentPortalUrl_");
+  var url = buildStudentPortalUrl_(applicantId, secret);
+  return clean_(url).replace("/a/macros/", "/macros/");
+}
+
+function computeNextActionDate_(attemptCount, baseDate) {
+  var count = Math.max(1, Math.floor(Number(attemptCount || 1)));
+  var delayDays = Math.max(1, Math.floor(Number(CONFIG.CAMPAIGN_FOLLOWUP_DELAY_DAYS || 2)));
+  var dt = (baseDate instanceof Date) ? new Date(baseDate.getTime()) : new Date(baseDate || new Date());
+  dt.setHours(0, 0, 0, 0);
+  dt.setDate(dt.getDate() + (delayDays * count));
+  return dt.toISOString();
+}

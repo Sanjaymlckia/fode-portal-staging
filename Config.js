@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "2026-03-25-PNG-PROD-r244D",
+VERSION: "2026-03-29-PNG-PROD-r247",
 CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
-DEPLOY_VERSION_NUMBER: 44,
+DEPLOY_VERSION_NUMBER: 56,
 BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
 
   // STAGING/PROD data mode routing (working sheet)
@@ -103,6 +103,25 @@ BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
   DOCS_FOLLOWUP_EMAIL_SUBJECT: "FODE Application - Documents Verified | Quote, Payment Instructions & Next Steps",
   DOCS_FOLLOWUP_REPLY_TO: "fode@kundu.ac",
   DOCS_FOLLOWUP_CC: "fode_kia@kundu.ac",
+  CAMPAIGN_GMAIL_ALIAS: "fode_kia@kundu.ac",
+  CAMPAIGN_REPLY_TO: "fode@kundu.ac",
+  CAMPAIGN_BATCH_SIZE_DEFAULT: 50,
+  CAMPAIGN_FOLLOWUP_DELAY_DAYS: 2,
+  CAMPAIGN_BOUNCE_LOOKBACK_DAYS: 7,
+  CAMPAIGN_COLUMNS: [
+    "Email_Status",
+    "Email_Last_Sent_At",
+    "Email_Attempt_Count",
+    "Email_Bounce_Flag",
+    "Email_Bounce_Reason",
+    "Email_Next_Action_Date",
+    "Email_Campaign_Batch"
+  ],
+  CAMPAIGN_EMAIL_SUBJECTS: [
+    "Complete Your Child's FODE Admission - Action Required",
+    "Your FODE Application Is Still Pending - Complete It Now",
+    "Important: Finish Your FODE Enrollment"
+  ],
   DOCS_FOLLOWUP_SENDER_MODE: "ALIAS",
   DOCS_FOLLOWUP_COOLDOWN_MS: 300000,
   ADMIN_THEME_BLUE_MODE: "IMPROVED_V2",

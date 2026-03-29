@@ -5454,3 +5454,625 @@ function firstNonEmpty_() {
 }
 
 
+
+
+function campaignLog_(label, payload) {
+  var tag = clean_(label || "CAMPAIGN_LOG");
+  var data = payload && typeof payload === "object" ? payload : {};
+  try {
+    log_(mustGetSheet_(getWorkingSpreadsheet_(), CONFIG.LOG_SHEET), tag, JSON.stringify(data));
+  } catch (_logErr) {
+    try { Logger.log(tag + " " + JSON.stringify(data)); } catch (_e) {}
+  }
+}
+
+function campaignGetContext_() {
+  var ss = getWorkingSpreadsheet_();
+  var sh = mustGetDataSheet_(ss);
+  ensureCampaignColumns_(sh);
+  var values = sh.getDataRange().getValues();
+  var headers = values[0] || [];
+  var idx = getHeaderIndexMap_(sh);
+  return {
+    spreadsheet: ss,
+    sheet: sh,
+    values: values,
+    headers: headers,
+    idx: idx,
+    campaignCols: getCampaignColumnsMap_(headers)
+  };
+}
+
+function campaignRowObjectFromValues_(headers, row) {
+  var out = {};
+  var head = Array.isArray(headers) ? headers : [];
+  var vals = Array.isArray(row) ? row : [];
+  for (var i = 0; i < head.length; i++) {
+    var key = clean_(head[i]);
+    if (key) out[key] = vals[i];
+  }
+  return out;
+}
+
+function campaignAttemptCount_(row) {
+  var raw = Number(row && row.Email_Attempt_Count || 0);
+  if (!isFinite(raw) || raw < 0) return 0;
+  return Math.floor(raw);
+}
+
+function campaignBatchLabel_(baseDate) {
+  var dt = baseDate instanceof Date ? baseDate : new Date();
+  return "LEGACY-" + Utilities.formatDate(dt, Session.getScriptTimeZone(), "yyyyMMdd-HHmmss");
+}
+
+function campaignSubjectForAttempt_(attemptCount, rowNumber) {
+  var subjects = Array.isArray(CONFIG.CAMPAIGN_EMAIL_SUBJECTS) ? CONFIG.CAMPAIGN_EMAIL_SUBJECTS : [];
+  if (!subjects.length) return "FODE Admissions Follow-Up";
+  var attempt = Math.max(0, Math.floor(Number(attemptCount || 0)));
+  if (attempt > 0) return subjects[attempt % subjects.length] || subjects[0];
+  var rowNum = Math.max(0, Math.floor(Number(rowNumber || 0)));
+  return subjects[rowNum % subjects.length] || subjects[0];
+}
+
+function campaignBodyForAttempt_(rowObj, portalUrl, batchLabel, attemptCount) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || "");
+  var parentName = clean_(row.Parent_Full_Name || "") || "Parent/Guardian";
+  var batch = clean_(batchLabel || "");
+  var url = clean_(portalUrl || "");
+  var attempt = Math.max(0, Math.floor(Number(attemptCount || 0)));
+  if (attempt <= 0) {
+    return [
+      "Dear " + parentName + ",",
+      "",
+      "We are writing to you regarding your earlier online application submitted to Kundu FODE.",
+      "",
+      "We are pleased to inform you that we are now fully ready to deliver our Flexible Open Distance Education (FODE) program with online access capability, allowing students in distance locations to complete their enrolment and academic process remotely.",
+      "",
+      "This rollout has also been aligned with and endorsed by FODE Head Office, ensuring that our delivery meets required standards and pathways.",
+      "",
+      "---",
+      "",
+      "Your Application - Next Step",
+      "",
+      "You may now access your student record and complete the required updates using the secure portal link below:",
+      "",
+      url,
+      "",
+      "(This link is unique to your application. Please do not share it.)",
+      "",
+      "ApplicantID: " + applicantId,
+      "Campaign Batch: " + batch,
+      "",
+      "---",
+      "",
+      "What You Need To Do",
+      "",
+      "1. Review your personal and academic details",
+      "2. Upload the required documents clearly",
+      "3. Upload a recent passport-size photo",
+      "4. Provide accurate contact details",
+      "5. Submit your application for verification",
+      "",
+      "---",
+      "",
+      "Document Requirements (Important)",
+      "",
+      "* All documents must be clear and readable",
+      "* Photos must be recent and passport-style",
+      "* Files must belong to the correct applicant",
+      "* Blurred, incomplete, or incorrect uploads will not be accepted",
+      "",
+      "---",
+      "",
+      "Important Policy Notes",
+      "",
+      "* All fees (registration and subject fees) are strictly non-refundable under any circumstances",
+      "* Submission of false, misleading, or incorrect documents may result in application cancellation without notice",
+      "* Once enrolled, placement and subject selections are final and cannot be changed",
+      "* The application process must be completed fully before further steps are initiated",
+      "",
+      "---",
+      "",
+      "Program Overview",
+      "",
+      "Through Kundu FODE, students are able to:",
+      "",
+      "* Upgrade Grades 8, 10, or 12",
+      "* Continue education through a flexible system",
+      "* Access structured subjects including English, Mathematics, Science, ICT, and Business Studies",
+      "* Progress towards national examinations and certification",
+      "",
+      "---",
+      "",
+      "Final Note",
+      "",
+      "Your application has been kept on record, and this is your opportunity to proceed under the newly available online system.",
+      "",
+      "We recommend completing your portal submission as soon as possible to secure your placement.",
+      "",
+      "If you require assistance, you may contact our office.",
+      "",
+      "Regards,",
+      "FODE Admissions",
+      "Kundu International Academy",
+      "WhatsApp: +675 7860 4013",
+      "Email: fode@kundu.ac"
+    ].join("\n");
+  }
+  if (attempt === 1) {
+    return [
+      "Dear Parent/Guardian,",
+      "",
+      "This is a reminder that your child?s FODE application is still pending completion.",
+      "",
+      "Please complete the portal form using your secure link below:",
+      "",
+      url,
+      "",
+      "ApplicantID: " + applicantId,
+      "Campaign Batch: " + batch,
+      "",
+      "Once submitted, your application can move forward for review.",
+      "",
+      "Regards,",
+      "FODE Admissions",
+      "Kundu / Minerva Learning Centers"
+    ].join("\n");
+  }
+  return [
+    "Dear Parent/Guardian,",
+    "",
+    "This is a final reminder that your child?s FODE application is still incomplete.",
+    "",
+    "Please complete the portal submission here:",
+    "",
+    url,
+    "",
+    "ApplicantID: " + applicantId,
+    "Campaign Batch: " + batch,
+    "",
+    "If no action is taken, the application may remain inactive.",
+    "",
+    "Regards,",
+    "FODE Admissions",
+    "Kundu / Minerva Learning Centers"
+  ].join("\n");
+}
+
+function campaignSendEmailGmail_(toEmail, subject, body) {
+  var alias = clean_(CONFIG.CAMPAIGN_GMAIL_ALIAS || "");
+  var replyTo = clean_(CONFIG.CAMPAIGN_REPLY_TO || "fode@kundu.ac");
+  var to = clean_(toEmail || "");
+  if (!to) return { ok: false, error: "Missing recipient email" };
+  if (!alias) return { ok: false, error: "Missing campaign Gmail alias" };
+  try {
+    var aliases = GmailApp.getAliases();
+    if (Array.isArray(aliases) && aliases.indexOf(alias) === -1) {
+      return { ok: false, error: "Campaign alias not configured: " + alias };
+    }
+  } catch (_aliasErr) {}
+  try {
+    GmailApp.sendEmail(to, String(subject || ""), String(body || ""), {
+      from: alias,
+      replyTo: replyTo,
+      name: clean_(CONFIG.EMAIL_FROM_NAME || "FODE Admissions") || "FODE Admissions"
+    });
+    return { ok: true, to: to, from: alias, replyTo: replyTo };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e), to: to, from: alias, replyTo: replyTo };
+  }
+}
+
+function campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel) {
+  var applicantId = clean_(rowObj.ApplicantID || "");
+  var secretRes = getActivePortalSecretForCampaign_(applicantId);
+  if (!secretRes.ok) {
+    return {
+      ok: false,
+      code: clean_(secretRes.code || "NO_SECRET"),
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      effectiveEmail: getCampaignEffectiveEmail_(rowObj),
+      error: clean_(secretRes.error || secretRes.code || "Missing active secret")
+    };
+  }
+  var portalUrl = buildLegacyCampaignPortalUrl_(applicantId, secretRes.secretPlain);
+  var subject = campaignSubjectForAttempt_(attemptCount, rowNumber);
+  var body = campaignBodyForAttempt_(rowObj, portalUrl, batchLabel, attemptCount);
+  return {
+    ok: true,
+    applicantId: applicantId,
+    rowNumber: rowNumber,
+    effectiveEmail: getCampaignEffectiveEmail_(rowObj),
+    attemptCount: attemptCount,
+    batchLabel: batchLabel,
+    portalUrl: portalUrl,
+    subject: subject,
+    body: body
+  };
+}
+
+function campaignPrepareLegacyRows_() {
+  var ctx = campaignGetContext_();
+  var sh = ctx.sheet;
+  var headers = ctx.headers;
+  var prepared = 0;
+  var keptReady = 0;
+  var skippedMissingSecret = 0;
+  var skippedIneligible = 0;
+  var scanned = Math.max(0, ctx.values.length - 1);
+  for (var r = 1; r < ctx.values.length; r++) {
+    var rowNumber = r + 1;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    var status = normalizeEmailStatus_(rowObj.Email_Status || "");
+    if (status === "READY") {
+      keptReady++;
+      continue;
+    }
+    if (status && status !== "NEW") {
+      skippedIneligible++;
+      continue;
+    }
+    var eligibility = computeCampaignEligibility_(rowObj);
+    if (!eligibility.eligible) {
+      skippedIneligible++;
+      continue;
+    }
+    var secretRes = getActivePortalSecretForCampaign_(eligibility.applicantId);
+    if (!secretRes.ok) {
+      skippedMissingSecret++;
+      continue;
+    }
+    applyPatch_(sh, rowNumber, { Email_Status: "READY" });
+    prepared++;
+  }
+  var summary = {
+    ok: true,
+    scanned: scanned,
+    prepared: prepared,
+    keptReady: keptReady,
+    skippedMissingSecret: skippedMissingSecret,
+    skippedIneligible: skippedIneligible
+  };
+  campaignLog_("CAMPAIGN_PREPARE_SUMMARY", summary);
+  return summary;
+}
+
+function campaign_sendLegacyBatch_(limit, opts) {
+  var options = opts && typeof opts === "object" ? opts : {};
+  var dryRun = options.dryRun === true;
+  var requestedId = clean_(options.applicantId || "");
+  var batchLimit = Math.max(1, Math.floor(Number(limit || CONFIG.CAMPAIGN_BATCH_SIZE_DEFAULT || 50)));
+  var ctx = campaignGetContext_();
+  var sh = ctx.sheet;
+  var headers = ctx.headers;
+  var now = new Date();
+  var batchLabel = clean_(options.batchLabel || "") || campaignBatchLabel_(now);
+  var selected = 0;
+  var sent = 0;
+  var dryRunCount = 0;
+  var skippedIneligible = 0;
+  var skippedMissingSecret = 0;
+  var sendFailed = 0;
+  var skippedNoStatus = 0;
+  var previews = [];
+  var skipped = [];
+  for (var r = 1; r < ctx.values.length; r++) {
+    if (selected >= batchLimit) break;
+    var rowNumber = r + 1;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (requestedId && applicantId !== requestedId) continue;
+    var status = normalizeEmailStatus_(rowObj.Email_Status || "");
+    if (status && ["NEW", "READY"].indexOf(status) === -1) {
+      skippedNoStatus++;
+      continue;
+    }
+    var eligibility = computeCampaignEligibility_(rowObj);
+    if (!eligibility.eligible) {
+      skippedIneligible++;
+      if (requestedId) skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: eligibility.reason });
+      continue;
+    }
+    var attemptCount = campaignAttemptCount_(rowObj);
+    var preview = campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel);
+    if (!preview.ok) {
+      skippedMissingSecret++;
+      skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: preview.code || "NO_SECRET" });
+      campaignLog_("CAMPAIGN_SKIP_NO_SECRET", { applicantId: applicantId, rowNumber: rowNumber, code: preview.code || "NO_SECRET" });
+      continue;
+    }
+    selected++;
+    previews.push({
+      applicantId: applicantId,
+      rowNumber: rowNumber,
+      effectiveEmail: preview.effectiveEmail,
+      subject: preview.subject,
+      portalUrl: preview.portalUrl,
+      batchLabel: batchLabel,
+      dryRun: dryRun
+    });
+    if (dryRun) {
+      dryRunCount++;
+      continue;
+    }
+    var sendRes = campaignSendEmailGmail_(preview.effectiveEmail, preview.subject, preview.body);
+    if (!sendRes.ok) {
+      sendFailed++;
+      skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: sendRes.error || "SEND_FAILED" });
+      campaignLog_("CAMPAIGN_SEND_FAILED", { applicantId: applicantId, rowNumber: rowNumber, error: sendRes.error || "SEND_FAILED" });
+      continue;
+    }
+    var nextAttempt = attemptCount + 1;
+    applyPatch_(sh, rowNumber, {
+      Email_Status: "SENT",
+      Email_Last_Sent_At: now.toISOString(),
+      Email_Attempt_Count: nextAttempt,
+      Email_Next_Action_Date: computeNextActionDate_(nextAttempt, now),
+      Email_Campaign_Batch: batchLabel
+    });
+    sent++;
+  }
+  var summary = {
+    ok: true,
+    dryRun: dryRun,
+    requestedApplicantId: requestedId,
+    requestedLimit: batchLimit,
+    batchLabel: batchLabel,
+    selected: selected,
+    sent: sent,
+    dryRunCount: dryRunCount,
+    skippedIneligible: skippedIneligible,
+    skippedMissingSecret: skippedMissingSecret,
+    skippedNoStatus: skippedNoStatus,
+    sendFailed: sendFailed,
+    preview: previews,
+    skipped: skipped
+  };
+  campaignLog_(dryRun ? "CAMPAIGN_DRY_RUN_SUMMARY" : "CAMPAIGN_SEND_SUMMARY", summary);
+  return summary;
+}
+
+function campaign_syncResponses_() {
+  var ctx = campaignGetContext_();
+  var sh = ctx.sheet;
+  var headers = ctx.headers;
+  var scanned = Math.max(0, ctx.values.length - 1);
+  var updated = 0;
+  for (var r = 1; r < ctx.values.length; r++) {
+    var rowNumber = r + 1;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    if (!isCampaignPortalSubmittedActive_(rowObj)) continue;
+    var status = normalizeEmailStatus_(rowObj.Email_Status || "");
+    if (status === "RESPONDED") continue;
+    if (status === "DO_NOT_CONTACT") continue;
+    applyPatch_(sh, rowNumber, { Email_Status: "RESPONDED" });
+    updated++;
+  }
+  var summary = { ok: true, scanned: scanned, updated: updated };
+  campaignLog_("CAMPAIGN_SYNC_RESPONSES", summary);
+  return summary;
+}
+
+function campaignExtractBounceEmails_(text) {
+  var lower = String(text || "").toLowerCase();
+  var matches = lower.match(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/g) || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < matches.length; i++) {
+    var email = clean_(matches[i]).toLowerCase();
+    if (!email || seen[email]) continue;
+    seen[email] = true;
+    out.push(email);
+  }
+  return out;
+}
+
+function campaignExtractApplicantIds_(text) {
+  var matches = String(text || "").match(/FODE-[A-Za-z0-9\-]+/g) || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < matches.length; i++) {
+    var id = clean_(matches[i]);
+    if (!id || seen[id]) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+function campaignExtractBatchLabel_(text) {
+  var match = String(text || "").match(/Campaign Batch:\s*([A-Za-z0-9\-]+)/i);
+  return match ? clean_(match[1]) : "";
+}
+
+function campaignIsBounceMessage_(message) {
+  var lower = String(message || "").toLowerCase();
+  return lower.indexOf("mail delivery subsystem") >= 0
+    || lower.indexOf("delivery status notification") >= 0
+    || lower.indexOf("undeliverable") >= 0
+    || lower.indexOf("failure notice") >= 0
+    || lower.indexOf("delivery has failed") >= 0;
+}
+
+function campaign_processBounces_() {
+  var ctx = campaignGetContext_();
+  var sh = ctx.sheet;
+  var headers = ctx.headers;
+  var rowsByEmail = {};
+  var rowsByApplicantId = {};
+  for (var r = 1; r < ctx.values.length; r++) {
+    var rowNumber = r + 1;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    var effectiveEmail = clean_(getCampaignEffectiveEmail_(rowObj)).toLowerCase();
+    if (effectiveEmail) {
+      rowsByEmail[effectiveEmail] = rowsByEmail[effectiveEmail] || [];
+      rowsByEmail[effectiveEmail].push({ rowNumber: rowNumber, row: rowObj });
+    }
+    if (applicantId) rowsByApplicantId[applicantId] = { rowNumber: rowNumber, row: rowObj };
+  }
+  var lookbackDays = Math.max(1, Math.floor(Number(CONFIG.CAMPAIGN_BOUNCE_LOOKBACK_DAYS || 7)));
+  var threads = GmailApp.search("newer_than:" + lookbackDays + "d", 0, 200);
+  var bouncedRows = 0;
+  var unmatchedBounceCount = 0;
+  var processedMessages = 0;
+  var skippedAlreadyBounced = 0;
+  var seenRowNumbers = {};
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    for (var m = 0; m < messages.length; m++) {
+      var msg = messages[m];
+      var blob = [msg.getFrom(), msg.getSubject(), msg.getPlainBody()].join("\n");
+      if (!campaignIsBounceMessage_(blob)) continue;
+      processedMessages++;
+      var emailMatches = campaignExtractBounceEmails_(blob).filter(function (email) {
+        return !!rowsByEmail[email];
+      });
+      var matched = null;
+      if (emailMatches.length === 1 && rowsByEmail[emailMatches[0]].length === 1) {
+        matched = rowsByEmail[emailMatches[0]][0];
+      }
+      if (!matched) {
+        var applicantIds = campaignExtractApplicantIds_(blob);
+        var batchLabel = campaignExtractBatchLabel_(blob);
+        var candidateMatches = [];
+        for (var i = 0; i < applicantIds.length; i++) {
+          var cand = rowsByApplicantId[applicantIds[i]];
+          if (!cand) continue;
+          if (batchLabel) {
+            var rowBatch = clean_(cand.row.Email_Campaign_Batch || "");
+            if (rowBatch && rowBatch !== batchLabel) continue;
+          }
+          candidateMatches.push(cand);
+        }
+        if (candidateMatches.length === 1) matched = candidateMatches[0];
+      }
+      if (!matched) {
+        unmatchedBounceCount++;
+        continue;
+      }
+      var rowNumber = Number(matched.rowNumber || 0);
+      if (!rowNumber || seenRowNumbers[rowNumber]) continue;
+      seenRowNumbers[rowNumber] = true;
+      var currentStatus = normalizeEmailStatus_(matched.row.Email_Status || "");
+      if (currentStatus === "BOUNCED" || isCampaignBounceFlagTrue_(matched.row.Email_Bounce_Flag)) {
+        skippedAlreadyBounced++;
+        continue;
+      }
+      var reason = clean_(msg.getSubject() || "") || clean_(msg.getPlainBody() || "").slice(0, 180);
+      applyPatch_(sh, rowNumber, {
+        Email_Bounce_Flag: true,
+        Email_Bounce_Reason: reason,
+        Email_Status: "BOUNCED"
+      });
+      bouncedRows++;
+    }
+  }
+  var summary = {
+    ok: true,
+    lookbackDays: lookbackDays,
+    processedMessages: processedMessages,
+    bouncedRows: bouncedRows,
+    skippedAlreadyBounced: skippedAlreadyBounced,
+    unmatchedBounceCount: unmatchedBounceCount
+  };
+  campaignLog_("CAMPAIGN_BOUNCE_SUMMARY", summary);
+  return summary;
+}
+
+function campaign_sendLegacyFollowups_(limit) {
+  var batchLimit = Math.max(1, Math.floor(Number(limit || CONFIG.CAMPAIGN_BATCH_SIZE_DEFAULT || 50)));
+  var ctx = campaignGetContext_();
+  var sh = ctx.sheet;
+  var headers = ctx.headers;
+  var now = new Date();
+  var todayTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var batchLabel = campaignBatchLabel_(now);
+  var selected = 0;
+  var sent = 0;
+  var skipped = [];
+  for (var r = 1; r < ctx.values.length; r++) {
+    if (selected >= batchLimit) break;
+    var rowNumber = r + 1;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    if (normalizeEmailStatus_(rowObj.Email_Status || "") !== "SENT") continue;
+    if (isCampaignPortalSubmittedActive_(rowObj)) {
+      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: "PORTAL_SUBMITTED" });
+      continue;
+    }
+    if (isCampaignBounceFlagTrue_(rowObj.Email_Bounce_Flag)) continue;
+    var nextActionTs = parseTime_(rowObj.Email_Next_Action_Date || "");
+    if (!(nextActionTs > 0) || nextActionTs > todayTs) continue;
+    var attemptCount = campaignAttemptCount_(rowObj);
+    if (attemptCount < 1 || attemptCount >= 3) continue;
+    var preview = campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel);
+    if (!preview.ok) {
+      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: preview.code || "NO_SECRET" });
+      continue;
+    }
+    selected++;
+    var sendRes = campaignSendEmailGmail_(preview.effectiveEmail, preview.subject, preview.body);
+    if (!sendRes.ok) {
+      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: sendRes.error || "SEND_FAILED" });
+      continue;
+    }
+    var nextAttempt = attemptCount + 1;
+    applyPatch_(sh, rowNumber, {
+      Email_Status: "SENT",
+      Email_Last_Sent_At: now.toISOString(),
+      Email_Attempt_Count: nextAttempt,
+      Email_Next_Action_Date: computeNextActionDate_(nextAttempt, now),
+      Email_Campaign_Batch: batchLabel
+    });
+    sent++;
+  }
+  var summary = {
+    ok: true,
+    selected: selected,
+    sent: sent,
+    batchLabel: batchLabel,
+    skipped: skipped
+  };
+  campaignLog_("CAMPAIGN_FOLLOWUP_SUMMARY", summary);
+  return summary;
+}
+
+function campaign_getLegacyEmailSummary_() {
+  var ctx = campaignGetContext_();
+  var headers = ctx.headers;
+  var counts = {
+    READY: 0,
+    SENT: 0,
+    BOUNCED: 0,
+    RESPONDED: 0,
+    DO_NOT_CONTACT: 0,
+    NEW: 0,
+    BLANK: 0
+  };
+  var eligibleForInitialSend = 0;
+  var eligibleForFollowup = 0;
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var todayTs = today.getTime();
+  for (var r = 1; r < ctx.values.length; r++) {
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    var status = normalizeEmailStatus_(rowObj.Email_Status || "");
+    if (!status) counts.BLANK++;
+    else if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status]++;
+    var eligibility = computeCampaignEligibility_(rowObj);
+    if (eligibility.eligible && (!status || status === "NEW" || status === "READY")) eligibleForInitialSend++;
+    if (status === "SENT" && !isCampaignPortalSubmittedActive_(rowObj) && !isCampaignBounceFlagTrue_(rowObj.Email_Bounce_Flag)) {
+      var attempts = campaignAttemptCount_(rowObj);
+      var nextActionTs = parseTime_(rowObj.Email_Next_Action_Date || "");
+      if (attempts < 3 && nextActionTs > 0 && nextActionTs <= todayTs) eligibleForFollowup++;
+    }
+  }
+  return {
+    ok: true,
+    counts: counts,
+    eligibleForInitialSend: eligibleForInitialSend,
+    eligibleForFollowup: eligibleForFollowup
+  };
+}

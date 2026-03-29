@@ -2696,3 +2696,54 @@ function test_BackfillPortalTokens_DryRun() {
 function audit_NoHardcodedRowDefaults() {
   Logger.log("Run: rg -n \"\\|\\|\\s*17|payload\\.rowNumber\\s*\\|\\|\\s*[0-9]+|selectedRow\\s*=\\s*[0-9]+\" Admin.js AdminUI.html Code.js");
 }
+
+
+function admin_campaignPrepareLegacyRows(payload) {
+  return withEnvelope_("admin_campaignPrepareLegacyRows", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    return campaign_prepareLegacyRows_();
+  });
+}
+
+function admin_campaignSendLegacyBatch(payload) {
+  return withEnvelope_("admin_campaignSendLegacyBatch", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    var p = payload || {};
+    return campaign_sendLegacyBatch_(p.limit, p);
+  });
+}
+
+function admin_campaignSyncResponses(payload) {
+  return withEnvelope_("admin_campaignSyncResponses", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    return campaign_syncResponses_();
+  });
+}
+
+function admin_campaignProcessBounces(payload) {
+  return withEnvelope_("admin_campaignProcessBounces", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    return campaign_processBounces_();
+  });
+}
+
+function admin_campaignSendLegacyFollowups(payload) {
+  return withEnvelope_("admin_campaignSendLegacyFollowups", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    var p = payload || {};
+    return campaign_sendLegacyFollowups_(p.limit);
+  });
+}
+
+function admin_campaignGetLegacyEmailSummary(payload) {
+  return withEnvelope_("admin_campaignGetLegacyEmailSummary", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    return campaign_getLegacyEmailSummary_();
+  });
+}
