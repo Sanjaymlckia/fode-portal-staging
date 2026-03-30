@@ -230,6 +230,44 @@
       color: #ffe4e8;
     }
 
+    .commMeta{
+      display:grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap:10px;
+      margin-top:8px;
+    }
+    .commControls{
+      display:flex;
+      gap:10px;
+      align-items:flex-end;
+      flex-wrap:wrap;
+      margin-top:10px;
+    }
+    .commResultBox{
+      margin-top:10px;
+      padding:12px;
+      border-radius:12px;
+      border:1px solid rgba(148,163,184,.18);
+      background: rgba(11,18,32,.45);
+    }
+    .commResultBox.warn{
+      border-color: rgba(245,158,11,.45);
+      background: rgba(120,53,15,.2);
+    }
+    .commResultBox.ok{
+      border-color: rgba(34,197,94,.45);
+      background: rgba(20,83,45,.22);
+    }
+    .commResultBox.err{
+      border-color: rgba(239,68,68,.45);
+      background: rgba(127,29,29,.24);
+    }
+    .commPreviewBody{
+      white-space:pre-wrap;
+      font-size:13px;
+      line-height:1.55;
+      margin-top:8px;
+    }
     .modalBack{
       position:fixed; inset:0; background: rgba(0,0,0,.55);
       display:none; align-items:center; justify-content:center; padding:18px;
@@ -480,6 +518,33 @@
         <div id="dirtyWarn" class="dirtyWarn hidden">⚠ Unsaved changes — click "Save Document Statuses"</div>
       </div>
 
+      <div class="box" id="communicationsCard" style="margin-top:12px;">
+        <div style="font-weight:900;">Communications</div>
+        <div class="commMeta">
+          <div class="box"><div class="k">Applicant ID</div><div class="v" id="commApplicantId">&mdash;</div></div>
+          <div class="box"><div class="k">Effective Email</div><div class="v" id="commEffectiveEmail">&mdash;</div></div>
+          <div class="box"><div class="k">Email Status</div><div class="v" id="commEmailStatus">&mdash;</div></div>
+          <div class="box"><div class="k">Last Contacted At</div><div class="v" id="commLastContactedAt">&mdash;</div></div>
+          <div class="box"><div class="k">Last Contact Type</div><div class="v" id="commLastContactType">&mdash;</div></div>
+          <div class="box"><div class="k">Last Contact By</div><div class="v" id="commLastContactBy">&mdash;</div></div>
+          <div class="box"><div class="k">Last Contact Subject</div><div class="v" id="commLastContactSubject">&mdash;</div></div>
+          <div class="box"><div class="k">Last Contact Result</div><div class="v" id="commLastContactResult">&mdash;</div></div>
+        </div>
+        <div class="commControls">
+          <div class="field" style="max-width:260px;">
+            <label>Message Type</label>
+            <select id="commMessageType">
+              <option value="legacy_invite">Legacy Invite</option>
+              <option value="reminder">Reminder</option>
+            </select>
+          </div>
+          <button id="btnCommPreview" class="btn small" type="button" onclick="previewApplicantMessageUi_()">Preview</button>
+          <button id="btnCommSend" class="btn small ok" type="button" onclick="sendApplicantMessageUi_()" disabled>Send</button>
+          <div id="commInlineNote" class="muted" style="font-size:12px;"></div>
+        </div>
+        <div id="commResult" class="commResultBox hidden"></div>
+      </div>
+
       <div id="overallLockInfo" class="box hidden" style="background:#eef6ff;border-color:#bfd8ff;">
         <div class="k">Overall Status Lock</div>
         <div class="v" style="font-size:13px;font-weight:600;color:#1f3b63;">Overall status is locked because payment is verified. Unlock the form to make further changes.</div>
@@ -630,6 +695,14 @@
     let isDocsSendBusy = false;
     let currentPortalLinkInfo = null;
     let runtimeInfoCache = null;
+    let communicationsState = {
+      applicantId: "",
+      previewApplicantId: "",
+      previewMessageType: "",
+      selectedMessageType: "legacy_invite",
+      result: null,
+      busy: false
+    };
     // Session-only fallback for "Sent" state when no persistent sent field is present in payload.
     let docsFollowupSentRows = new Set();
     let lastBackfillMode = "dry";
@@ -777,6 +850,205 @@
       if (frame) frame.src = "";
       if (back) back.classList.add("hidden");
     }
+    function isCommBounceFlagTrue_(value){
+      var raw = String(value || "").trim().toLowerCase();
+      return raw === "true" || raw === "yes" || raw === "1";
+    }
+    function commPortalSubmittedActive_(detail){
+      var raw = String((detail && detail.Portal_Submitted) || "").trim();
+      return !!raw && raw !== "No";
+    }
+    function resetCommunicationsState_(applicantId, preserveResult){
+      communicationsState.applicantId = String(applicantId || communicationsState.applicantId || "");
+      communicationsState.previewApplicantId = "";
+      communicationsState.previewMessageType = "";
+      if (!preserveResult) communicationsState.result = null;
+      communicationsState.busy = false;
+    }
+    function getSelectedCommMessageType_(){
+      var el = document.getElementById("commMessageType");
+      return String((el && el.value) || communicationsState.selectedMessageType || "legacy_invite").trim();
+    }
+    function setSelectedCommMessageType_(messageType){
+      var val = String(messageType || "legacy_invite").trim() || "legacy_invite";
+      communicationsState.selectedMessageType = val;
+      var el = document.getElementById("commMessageType");
+      if (el) el.value = val;
+    }
+    function formatCommValue_(value){
+      var raw = String(value == null ? "" : value).trim();
+      return raw || "?";
+    }
+    function communicationsDisableReason_(detail){
+      var d = detail || currentDetail || {};
+      var effectiveEmail = String(d.Effective_Email || d.Parent_Email_Corrected || d.Parent_Email || "").trim();
+      if (!effectiveEmail) return "Effective email is missing.";
+      if (String(d.Email_Status || "").trim() === "DO_NOT_CONTACT") return "This applicant is marked Do Not Contact.";
+      if (isCommBounceFlagTrue_(d.Email_Bounce_Flag)) return "This applicant email is marked bounced.";
+      if (commPortalSubmittedActive_(d)) return "Portal already submitted for this applicant.";
+      return "";
+    }
+    function renderCommunicationsStatus_(detail){
+      var d = detail || currentDetail || {};
+      var map = {
+        commApplicantId: d.ApplicantID,
+        commEffectiveEmail: d.Effective_Email || d.Parent_Email_Corrected || d.Parent_Email || "",
+        commEmailStatus: d.Email_Status,
+        commLastContactedAt: d.Last_Contacted_At,
+        commLastContactType: d.Last_Contact_Type,
+        commLastContactBy: d.Last_Contact_By,
+        commLastContactSubject: d.Last_Contact_Subject,
+        commLastContactResult: d.Last_Contact_Result
+      };
+      Object.keys(map).forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) el.textContent = formatCommValue_(map[id]);
+      });
+    }
+    function renderCommunicationsResult_(result){
+      var box = document.getElementById("commResult");
+      if (!box) return;
+      var res = result && typeof result === "object" ? result : null;
+      if (!res) {
+        box.className = "commResultBox hidden";
+        box.innerHTML = "";
+        return;
+      }
+      var resultType = String(res.result || "").trim().toUpperCase();
+      var cls = "commResultBox";
+      var title = "Result";
+      if (resultType === "BLOCKED") { cls += " warn"; title = "Action blocked"; }
+      else if (resultType === "SENT") { cls += " ok"; title = "Send complete"; }
+      else if (resultType === "FAILED") { cls += " err"; title = "Send failed"; }
+      else { title = "Preview"; }
+      var parts = [];
+      parts.push('<div style="font-weight:800;">' + esc(title) + '</div>');
+      if (res.blockReason) parts.push('<div style="margin-top:6px;">' + esc(res.blockReason) + '</div>');
+      if (resultType === 'PREVIEW' && res.subject) parts.push('<div style="margin-top:8px;"><strong>Subject:</strong> ' + esc(res.subject) + '</div>');
+      if (resultType === 'PREVIEW' && res.body) parts.push('<div class="commPreviewBody">' + esc(res.body) + '</div>');
+      if (resultType === "SENT") {
+        parts.push('<div style="margin-top:6px;">Message sent successfully.</div>');
+        if (res.subject) parts.push('<div style="margin-top:6px;"><strong>Subject:</strong> ' + esc(res.subject) + '</div>');
+      }
+      if (resultType === "FAILED") {
+        var detail = String(res.error || res.message || res.code || "Send failed.").trim();
+        parts.push('<div style="margin-top:6px;">' + esc(detail) + '</div>');
+      }
+      if (res.blockCode) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Code: ' + esc(res.blockCode) + '</div>');
+      if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(res.debugId) + '</div>');
+      box.className = cls;
+      box.innerHTML = parts.join("");
+    }
+    function updateCommunicationsUi_(){
+      var previewBtn = document.getElementById("btnCommPreview");
+      var sendBtn = document.getElementById("btnCommSend");
+      var selectEl = document.getElementById("commMessageType");
+      var noteEl = document.getElementById("commInlineNote");
+      if (!previewBtn || !sendBtn || !selectEl || !noteEl) return;
+      var detail = currentDetail || {};
+      var selectedType = getSelectedCommMessageType_();
+      var disableReason = communicationsDisableReason_(detail);
+      var previewReady = communicationsState.previewApplicantId === String(detail.ApplicantID || "") && communicationsState.previewMessageType === selectedType && communicationsState.result && String(communicationsState.result.result || "").toUpperCase() === "PREVIEW";
+      var controlsDisabled = !currentRowNumber || isUiBusy || communicationsState.busy || !!disableReason;
+      selectEl.disabled = !currentRowNumber || isUiBusy || communicationsState.busy;
+      previewBtn.disabled = controlsDisabled;
+      sendBtn.disabled = controlsDisabled || !previewReady;
+      previewBtn.textContent = communicationsState.busy ? "Working..." : "Preview";
+      sendBtn.textContent = communicationsState.busy ? "Sending..." : "Send";
+      noteEl.textContent = communicationsState.busy ? (previewReady ? "Sending..." : "Loading preview...") : (disableReason || (previewReady ? "Preview ready. You may send this message." : "Preview is required before send."));
+    }
+    function resetCommunicationsForSelection_(preserveResult){
+      communicationsState.previewApplicantId = "";
+      communicationsState.previewMessageType = "";
+      if (!preserveResult) communicationsState.result = null;
+      renderCommunicationsResult_(communicationsState.result);
+      updateCommunicationsUi_();
+    }
+    function onCommunicationsMessageTypeChange_(){
+      setSelectedCommMessageType_(getSelectedCommMessageType_());
+      resetCommunicationsForSelection_(false);
+    }
+    function runCommunicationsAction_(fnName, payload, onOk){
+      communicationsState.busy = true;
+      updateCommunicationsUi_();
+      var reqId = ++lastRequestId;
+      setUiBusy_(true);
+      var runner = google.script.run
+        .withSuccessHandler(function(res){
+          if (reqId !== lastRequestId) return;
+          communicationsState.busy = false;
+          setUiBusy_(false);
+          if (typeof onOk === "function") onOk(res);
+          updateCommunicationsUi_();
+        })
+        .withFailureHandler(function(err){
+          if (reqId !== lastRequestId) return;
+          communicationsState.busy = false;
+          setUiBusy_(false);
+          communicationsState.result = {
+            ok: false,
+            result: "FAILED",
+            blockCode: "",
+            blockReason: String((err && err.message) || err || "Server error"),
+            debugId: ""
+          };
+          renderCommunicationsResult_(communicationsState.result);
+          updateCommunicationsUi_();
+        });
+      runner[fnName](payload || {});
+    }
+    function refreshCommunicationsDetail_(done){
+      if (!currentRowNumber) {
+        if (typeof done === "function") done(null);
+        return;
+      }
+      google.script.run
+        .withSuccessHandler(function(res){
+          var detail = normalizeDetailResponse_(res);
+          if (detail) {
+            currentDetail = detail;
+            renderCommunicationsStatus_(detail);
+          }
+          if (typeof done === "function") done(detail || null);
+        })
+        .withFailureHandler(function(_err){
+          if (typeof done === "function") done(null);
+        })
+        .admin_getApplicantDetail_json({ rowNumber: currentRowNumber, applicantId: (currentDetail && currentDetail.ApplicantID) || "" });
+    }
+    function previewApplicantMessageUi_(){
+      if (!currentDetail || communicationsState.busy) return;
+      var applicantId = String(currentDetail.ApplicantID || "").trim();
+      var messageType = getSelectedCommMessageType_();
+      communicationsState.result = null;
+      updateCommunicationsUi_();
+      runCommunicationsAction_("admin_previewApplicantMessage", { applicantId: applicantId, messageType: messageType }, function(res){
+        communicationsState.result = res && typeof res === "object" ? res : { ok: false, result: "FAILED", blockReason: "Invalid preview response.", debugId: "" };
+        if (communicationsState.result.eligible === true && String(communicationsState.result.result || "").toUpperCase() === "PREVIEW") {
+          communicationsState.previewApplicantId = applicantId;
+          communicationsState.previewMessageType = messageType;
+        } else {
+          communicationsState.previewApplicantId = "";
+          communicationsState.previewMessageType = "";
+        }
+        renderCommunicationsResult_(communicationsState.result);
+      });
+    }
+    function sendApplicantMessageUi_(){
+      if (!currentDetail || communicationsState.busy) return;
+      var applicantId = String(currentDetail.ApplicantID || "").trim();
+      var messageType = getSelectedCommMessageType_();
+      var previewReady = communicationsState.previewApplicantId === applicantId && communicationsState.previewMessageType === messageType && communicationsState.result && String(communicationsState.result.result || "").toUpperCase() === "PREVIEW";
+      if (!previewReady) return;
+      if (!window.confirm("Send " + messageType.replaceAll("_", " ") + " to this applicant now?")) return;
+      runCommunicationsAction_("admin_sendApplicantMessage", { applicantId: applicantId, messageType: messageType }, function(res){
+        communicationsState.result = res && typeof res === "object" ? res : { ok: false, result: "FAILED", blockReason: "Invalid send response.", debugId: "" };
+        renderCommunicationsResult_(communicationsState.result);
+        if (String(communicationsState.result.result || "").toUpperCase() === "SENT") {
+          refreshCommunicationsDetail_(function(){ updateCommunicationsUi_(); });
+        }
+      });
+    }
     function isEnvelope_(res){ return !!res && typeof res === "object" && Object.prototype.hasOwnProperty.call(res, "ok"); }
     function getErrorText_(res, fallback){
       if (res && typeof res.error === "string" && res.error.trim()) return res.error.trim();
@@ -894,6 +1166,7 @@
       applyPortalLockControls_(currentDetail);
       syncModalEditControls_();
       updateDirtyGuardUi_();
+      updateCommunicationsUi_();
     }
 
     function setUiBusy_(flag){
@@ -905,6 +1178,7 @@
       setActionButtonsEnabled(!!currentRowNumber);
       applyPortalLockControls_(currentDetail);
       syncModalEditControls_();
+      updateCommunicationsUi_();
     }
 
     function applyPortalLockControls_(detail){
@@ -1783,6 +2057,8 @@
       }
       currentRowNumber = (Number.isFinite(rowNum) && rowNum >= 2) ? rowNum : null;
       currentDetail = null;
+      resetCommunicationsState_("", false);
+      renderCommunicationsResult_(null);
       currentPortalLinkInfo = null;
       setActionButtonsEnabled(false);
       document.getElementById("portalLinkBox").textContent = "";
@@ -2037,6 +2313,20 @@
       document.getElementById("mAudit").textContent = "Last: " + (d.Doc_Last_Verified_At ? String(d.Doc_Last_Verified_At) : "—")
         + " | By: " + (d.Doc_Last_Verified_By || "—");
 
+      var incomingApplicantId = String((d && d.ApplicantID) || "").trim();
+      var previousApplicantId = String(communicationsState.applicantId || "").trim();
+      if (incomingApplicantId !== previousApplicantId) {
+        resetCommunicationsState_(incomingApplicantId, false);
+        setSelectedCommMessageType_("legacy_invite");
+      } else {
+        communicationsState.applicantId = incomingApplicantId;
+        setSelectedCommMessageType_(communicationsState.selectedMessageType || "legacy_invite");
+      }
+      renderCommunicationsStatus_(d);
+      renderCommunicationsResult_(incomingApplicantId !== previousApplicantId ? null : communicationsState.result);
+      updateCommunicationsUi_();
+      var commTypeEl = document.getElementById("commMessageType");
+      if (commTypeEl) commTypeEl.onchange = onCommunicationsMessageTypeChange_;
       document.getElementById("overallStatus").value = d.Overall_Status_Stored || overallComputed || "Pending";
       document.getElementById("overallReason").value = "";
       document.getElementById("portalLinkBox").textContent = "";
