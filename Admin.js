@@ -2887,3 +2887,67 @@ function admin_planLegacyInviteBatch(payload) {
   merged.filterType = "legacy_invite_eligible";
   return admin_planApplicantBatch(merged);
 }
+
+function adminDryRunFirst50LegacyInvites() {
+  var ss = SpreadsheetApp.openById('1fHmeGNmpOj9PEPQ5Fp4tUyCP4UdH70lltukraD4SalU');
+  var sh = ss.getSheetByName('FODE_Applications_2026');
+  if (!sh) throw new Error('Missing sheet: FODE_Applications_2026');
+
+  var values = sh.getDataRange().getDisplayValues();
+  if (!values || values.length < 2) {
+    return {
+      ok: true,
+      dryRun: true,
+      scanned: 0,
+      eligible: 0,
+      blocked: 0,
+      failed: 0,
+      firstEligibleApplicantId: '',
+      lastEligibleApplicantId: ''
+    };
+  }
+
+  var headers = values[0];
+  var idIdx = headers.indexOf('ApplicantID');
+  if (idIdx < 0) throw new Error('Missing ApplicantID header');
+
+  var summary = {
+    ok: true,
+    dryRun: true,
+    scanned: 0,
+    eligible: 0,
+    blocked: 0,
+    failed: 0,
+    firstEligibleApplicantId: '',
+    lastEligibleApplicantId: ''
+  };
+
+  for (var r = 1; r < values.length; r++) {
+    if (summary.eligible >= 50) break;
+
+    var applicantId = String(values[r][idIdx] || '').trim();
+    if (!applicantId) continue;
+
+    summary.scanned++;
+
+    try {
+      var preview = admin_previewApplicantMessage({
+        applicantId: applicantId,
+        messageType: 'legacy_invite'
+      });
+
+      if (preview && preview.ok === true) {
+        summary.eligible++;
+        if (!summary.firstEligibleApplicantId) summary.firstEligibleApplicantId = applicantId;
+        summary.lastEligibleApplicantId = applicantId;
+      } else {
+        summary.blocked++;
+      }
+    } catch (err) {
+      summary.failed++;
+    }
+  }
+
+  console.log('DRYRUN_50 ' + JSON.stringify(summary));
+  return summary;
+}
