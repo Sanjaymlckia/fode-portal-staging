@@ -5507,136 +5507,79 @@ function campaignBatchLabel_(baseDate) {
 
 function campaignSubjectForAttempt_(attemptCount, rowNumber) {
   var subjects = Array.isArray(CONFIG.CAMPAIGN_EMAIL_SUBJECTS) ? CONFIG.CAMPAIGN_EMAIL_SUBJECTS : [];
-  if (!subjects.length) return "FODE Admissions Follow-Up";
-  var attempt = Math.max(0, Math.floor(Number(attemptCount || 0)));
-  if (attempt > 0) return subjects[attempt % subjects.length] || subjects[0];
-  var rowNum = Math.max(0, Math.floor(Number(rowNumber || 0)));
-  return subjects[rowNum % subjects.length] || subjects[0];
+  return subjects[0] || "Your FODE KIA Online Application - Status & Next Step";
 }
 
-function campaignBodyForAttempt_(rowObj, portalUrl, batchLabel, attemptCount) {
-  var row = rowObj || {};
-  var applicantId = clean_(row.ApplicantID || "");
-  var parentName = clean_(row.Parent_Full_Name || "") || "Parent/Guardian";
-  var batch = clean_(batchLabel || "");
-  var url = clean_(portalUrl || "");
-  var attempt = Math.max(0, Math.floor(Number(attemptCount || 0)));
-  if (attempt <= 0) {
-    return [
-      "Dear " + parentName + ",",
-      "",
-      "We are writing to you regarding your earlier online application submitted to Kundu FODE.",
-      "",
-      "We are pleased to inform you that we are now fully ready to deliver our Flexible Open Distance Education (FODE) program with online access capability, allowing students in distance locations to complete their enrolment and academic process remotely.",
-      "",
-      "This rollout has also been aligned with and endorsed by FODE Head Office, ensuring that our delivery meets required standards and pathways.",
-      "",
-      "---",
-      "",
-      "Your Application - Next Step",
-      "",
-      "You may now access your student record and complete the required updates using the secure portal link below:",
-      "",
-      url,
-      "",
-      "(This link is unique to your application. Please do not share it.)",
-      "",
-      "ApplicantID: " + applicantId,
-      "Campaign Batch: " + batch,
-      "",
-      "---",
-      "",
-      "What You Need To Do",
-      "",
-      "1. Review your personal and academic details",
-      "2. Upload the required documents clearly",
-      "3. Upload a recent passport-size photo",
-      "4. Provide accurate contact details",
-      "5. Submit your application for verification",
-      "",
-      "---",
-      "",
-      "Document Requirements (Important)",
-      "",
-      "* All documents must be clear and readable",
-      "* Photos must be recent and passport-style",
-      "* Files must belong to the correct applicant",
-      "* Blurred, incomplete, or incorrect uploads will not be accepted",
-      "",
-      "---",
-      "",
-      "Important Policy Notes",
-      "",
-      "* All fees (registration and subject fees) are strictly non-refundable under any circumstances",
-      "* Submission of false, misleading, or incorrect documents may result in application cancellation without notice",
-      "* Once enrolled, placement and subject selections are final and cannot be changed",
-      "* The application process must be completed fully before further steps are initiated",
-      "",
-      "---",
-      "",
-      "Program Overview",
-      "",
-      "Through Kundu FODE, students are able to:",
-      "",
-      "* Upgrade Grades 8, 10, or 12",
-      "* Continue education through a flexible system",
-      "* Access structured subjects including English, Mathematics, Science, ICT, and Business Studies",
-      "* Progress towards national examinations and certification",
-      "",
-      "---",
-      "",
-      "Final Note",
-      "",
-      "Your application has been kept on record, and this is your opportunity to proceed under the newly available online system.",
-      "",
-      "We recommend completing your portal submission as soon as possible to secure your placement.",
-      "",
-      "If you require assistance, you may contact our office.",
-      "",
-      "Regards,",
-      "FODE Admissions",
-      "Kundu International Academy",
-      "WhatsApp: +675 7860 4013",
-      "Email: fode@kundu.ac"
-    ].join("\n");
-  }
-  if (attempt === 1) {
-    return [
-      "Dear Parent/Guardian,",
-      "",
-      "This is a reminder that your child?s FODE application is still pending completion.",
-      "",
-      "Please complete the portal form using your secure link below:",
-      "",
-      url,
-      "",
-      "ApplicantID: " + applicantId,
-      "Campaign Batch: " + batch,
-      "",
-      "Once submitted, your application can move forward for review.",
-      "",
-      "Regards,",
-      "FODE Admissions",
-      "Kundu / Minerva Learning Centers"
-    ].join("\n");
-  }
+function buildCampaignEmailBody_(row, portalUrl, applicantId) {
   return [
     "Dear Parent/Guardian,",
     "",
-    "This is a final reminder that your child?s FODE application is still incomplete.",
+    "We are writing to you regarding your online application submitted to Kundu International Academy under the FODE program.",
     "",
-    "Please complete the portal submission here:",
+    "Your application is currently on record, and you are now invited to proceed to the next stage through our fully online enrolment and learning system.",
     "",
-    url,
+    "Kundu International Academy has received formal approval from the FODE Head Office to deliver the FODE program through an approved online model. This approval was granted following a detailed review of our academic systems, delivery structure, and compliance measures, ensuring full alignment with national FODE curriculum standards and requirements.",
     "",
-    "ApplicantID: " + applicantId,
-    "Campaign Batch: " + batch,
+    "This means students across Papua New Guinea, including those in remote and rural areas, can now complete their enrolment, submit documents, and progress academically without the need for physical paperwork or travel.",
     "",
-    "If no action is taken, the application may remain inactive.",
+    "You may access your student record using the secure link below:",
     "",
-    "Regards,",
+    String(portalUrl || ""),
+    "",
+    "This link is unique to your application and should not be shared.",
+    "",
+    "Applicant ID: " + String(applicantId || ""),
+    "",
+    "What you need to do:",
+    "",
+    "- Review your personal and academic details",
+    "- Upload all required documents clearly",
+    "- Upload a recent passport-size photo",
+    "- Provide accurate contact details",
+    "- Submit your application for verification",
+    "",
+    "Fees and Payment:",
+    "",
+    "- Registration Fee: K600 (one-time)",
+    "- Subject Fee: K450 per subject",
+    "- Total cost depends on the number of subjects selected",
+    "",
+    "All fees are strictly non-refundable, so please ensure all details and documents are accurate before submission.",
+    "",
+    "Document Requirements:",
+    "",
+    "- All documents must be clear and readable",
+    "- Photos must be recent and passport-style",
+    "- Documents must belong to the correct applicant",
+    "- Incomplete or incorrect uploads will not be accepted",
+    "",
+    "Important Information:",
+    "",
+    "- Submission of false or misleading information may result in cancellation of the application",
+    "- Subject selections and placement are final once enrolment is completed",
+    "- The application must be fully submitted before further processing can begin",
+    "",
+    "About the Program:",
+    "",
+    "Through Kundu FODE, students can:",
+    "",
+    "- Upgrade Grades 8, 10, or 12",
+    "- Study through a structured and flexible system",
+    "- Access core subjects including English, Mathematics, Science, ICT, and Business Studies",
+    "- Progress towards national examinations and certification",
+    "",
+    "Kundu International Academy is a registered permitted school under the Papua New Guinea Department of Education (Registration No: PS557/1983) and is formally authorized by FODE Head Office to deliver FODE programs online.",
+    "",
+    "Your application is already in our system, and this is your opportunity to proceed using the newly approved online platform.",
+    "",
+    "We strongly recommend completing your submission as soon as possible to secure your place.",
+    "",
+    "If you require assistance, please contact us:",
+    "",
     "FODE Admissions",
-    "Kundu / Minerva Learning Centers"
+    "Kundu International Academy",
+    "WhatsApp: +675 7860 4013",
+    "Email: fode@kundu.ac"
   ].join("\n");
 }
 
@@ -5679,7 +5622,7 @@ function campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel)
   }
   var portalUrl = buildLegacyCampaignPortalUrl_(applicantId, secretRes.secretPlain);
   var subject = campaignSubjectForAttempt_(attemptCount, rowNumber);
-  var body = campaignBodyForAttempt_(rowObj, portalUrl, batchLabel, attemptCount);
+  var body = buildCampaignEmailBody_(rowObj, portalUrl, applicantId);
   return {
     ok: true,
     applicantId: applicantId,
@@ -5693,7 +5636,11 @@ function campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel)
   };
 }
 
-function campaignPrepareLegacyRows_() {
+function testCampaignPing() {
+  return "OK";
+}
+
+function campaign_prepareLegacyRows_() {
   var ctx = campaignGetContext_();
   var sh = ctx.sheet;
   var headers = ctx.headers;
@@ -6074,5 +6021,12 @@ function campaign_getLegacyEmailSummary_() {
     counts: counts,
     eligibleForInitialSend: eligibleForInitialSend,
     eligibleForFollowup: eligibleForFollowup
+  };
+}
+
+function testCampaignGmailAuth() {
+  return {
+    ok: true,
+    aliases: GmailApp.getAliases()
   };
 }

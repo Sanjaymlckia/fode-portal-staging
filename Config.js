@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "2026-03-29-PNG-PROD-r247",
+VERSION: "2026-03-30-PNG-PROD-r247B",
 CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
-DEPLOY_VERSION_NUMBER: 56,
+DEPLOY_VERSION_NUMBER: 58,
 BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
 
   // STAGING/PROD data mode routing (working sheet)
@@ -118,9 +118,7 @@ BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
     "Email_Campaign_Batch"
   ],
   CAMPAIGN_EMAIL_SUBJECTS: [
-    "Complete Your Child's FODE Admission - Action Required",
-    "Your FODE Application Is Still Pending - Complete It Now",
-    "Important: Finish Your FODE Enrollment"
+    "Your FODE KIA Online Application - Status & Next Step"
   ],
   DOCS_FOLLOWUP_SENDER_MODE: "ALIAS",
   DOCS_FOLLOWUP_COOLDOWN_MS: 300000,
