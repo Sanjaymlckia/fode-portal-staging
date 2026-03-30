@@ -2747,3 +2747,136 @@ function admin_campaignGetLegacyEmailSummary(payload) {
     return campaign_getLegacyEmailSummary_();
   });
 }
+
+function resolveAdminCommActor_(payload) {
+  var p = payload && typeof payload === "object" ? payload : {};
+  var trusted = parseOverrideFlag_(p, "trustedInternal") || parseOverrideFlag_(p, "internal");
+  var serverEmail = clean_(getActiveUserEmail_() || "");
+  var actorEmail = serverEmail || (trusted ? clean_(p.actorEmail || "") : "");
+  var actorRole = serverEmail ? clean_(getAdminRole_(serverEmail) || "") : "";
+  if (!actorRole && trusted) actorRole = clean_(p.actorRole || "");
+  actorRole = String(actorRole || "VERIFIER").toUpperCase();
+  return {
+    actorEmail: actorEmail || "",
+    actorRole: actorRole,
+    isSuper: actorRole === "SUPER"
+  };
+}
+
+function adminCommBlockedResult_(action, blockCode, debugId, extra) {
+  var more = extra && typeof extra === "object" ? extra : {};
+  return {
+    ok: false,
+    action: clean_(action || ""),
+    result: "BLOCKED",
+    eligible: false,
+    blockCode: clean_(blockCode || "BLOCKED"),
+    blockReason: clean_(more.blockReason || ""),
+    applicantId: clean_(more.applicantId || ""),
+    messageType: clean_(more.messageType || ""),
+    effectiveEmail: clean_(more.effectiveEmail || ""),
+    filterType: clean_(more.filterType || ""),
+    limit: Number(more.limit || 0),
+    debugId: clean_(debugId || adminDebugId_())
+  };
+}
+
+function admin_previewApplicantMessage(payload) {
+  return withEnvelope_("admin_previewApplicantMessage", function (dbgId) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    var p = payload && typeof payload === "object" ? payload : {};
+    var applicantId = clean_(p.applicantId || "");
+    var requestedType = clean_(p.messageType || "");
+    var messageType = normalizeApplicantMessageType_(requestedType);
+    var actor = resolveAdminCommActor_(p);
+    if (!applicantId) return adminCommBlockedResult_("preview", "MISSING_APPLICANT_ID", dbgId, { blockReason: "Applicant ID is required." });
+    if (!messageType) {
+      return adminCommBlockedResult_("preview", "UNSUPPORTED_MESSAGE_TYPE", dbgId, {
+        applicantId: applicantId,
+        messageType: requestedType,
+        blockReason: "Unsupported message type."
+      });
+    }
+    return previewApplicantMessage_(applicantId, messageType, {
+      actorEmail: actor.actorEmail,
+      actorRole: actor.actorRole,
+      batchLabel: clean_(p.batchLabel || ""),
+      debugId: clean_(p.debugId || dbgId)
+    });
+  });
+}
+
+function admin_sendApplicantMessage(payload) {
+  return withEnvelope_("admin_sendApplicantMessage", function (dbgId) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    var p = payload && typeof payload === "object" ? payload : {};
+    var applicantId = clean_(p.applicantId || "");
+    var requestedType = clean_(p.messageType || "");
+    var messageType = normalizeApplicantMessageType_(requestedType);
+    var actor = resolveAdminCommActor_(p);
+    if (!applicantId) return adminCommBlockedResult_("send", "MISSING_APPLICANT_ID", dbgId, { blockReason: "Applicant ID is required." });
+    if (!messageType) {
+      return adminCommBlockedResult_("send", "UNSUPPORTED_MESSAGE_TYPE", dbgId, {
+        applicantId: applicantId,
+        messageType: requestedType,
+        blockReason: "Unsupported message type."
+      });
+    }
+    return sendApplicantMessage_(applicantId, messageType, {
+      actorEmail: actor.actorEmail,
+      actorRole: actor.actorRole,
+      batchLabel: clean_(p.batchLabel || ""),
+      debugId: clean_(p.debugId || dbgId)
+    });
+  });
+}
+
+function admin_planApplicantBatch(payload) {
+  return withEnvelope_("admin_planApplicantBatch", function (dbgId) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    var p = payload && typeof payload === "object" ? payload : {};
+    var requestedFilter = clean_(p.filterType || "");
+    var filterType = normalizeApplicantBatchFilterType_(requestedFilter);
+    var rawLimit = Number(p.limit || 0);
+    var limit = Math.max(1, Math.min(100, Math.floor(rawLimit || 0)));
+    var actor = resolveAdminCommActor_(p);
+    if (!filterType) {
+      return adminCommBlockedResult_("plan", "UNSUPPORTED_FILTER_TYPE", dbgId, {
+        filterType: requestedFilter,
+        limit: rawLimit,
+        blockReason: "Unsupported filter type."
+      });
+    }
+    if (!(rawLimit > 0)) {
+      return adminCommBlockedResult_("plan", "INVALID_LIMIT", dbgId, {
+        filterType: filterType,
+        limit: rawLimit,
+        blockReason: "Limit must be a positive integer."
+      });
+    }
+    if (!actor.isSuper) {
+      return adminCommBlockedResult_("plan", "ROLE_BLOCKED", dbgId, {
+        filterType: filterType,
+        limit: limit,
+        blockReason: "Your role is not allowed to perform this action."
+      });
+    }
+    return planApplicantBatch_(filterType, limit, {
+      actorEmail: actor.actorEmail,
+      actorRole: actor.actorRole,
+      batchLabel: clean_(p.batchLabel || ""),
+      debugId: clean_(p.debugId || dbgId)
+    });
+  });
+}
+
+function admin_planLegacyInviteBatch(payload) {
+  var p = payload && typeof payload === "object" ? payload : {};
+  var merged = {};
+  Object.keys(p).forEach(function (k) { merged[k] = p[k]; });
+  merged.filterType = "legacy_invite_eligible";
+  return admin_planApplicantBatch(merged);
+}
