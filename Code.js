@@ -5890,6 +5890,27 @@ function resolveApplicantMessageContext_(applicantId, messageType, opts) {
   return context;
 }
 
+
+function recordApplicantContactOutcome_(context, outcome, extra) {
+  var ctx = context || {};
+  var more = extra && typeof extra === "object" ? extra : {};
+  if (!ctx.sheet || !ctx.rowNumber) return false;
+  var actorEmail = clean_(more.actorEmail || ctx.actorEmail || "");
+  var updates = {
+    Last_Contact_Type: clean_(ctx.messageType || ""),
+    Last_Contact_By: actorEmail,
+    Last_Contact_Result: clean_(outcome || ""),
+    Last_Contact_Batch: clean_(more.batchLabel || ctx.batchLabel || ""),
+    Last_Contact_DebugId: clean_(ctx.debugId || more.debugId || "")
+  };
+  var subject = clean_(more.subject || "");
+  if (subject) updates.Last_Contact_Subject = subject;
+  if (clean_(outcome || "") === "SENT") {
+    updates.Last_Contacted_At = clean_(more.sentAt || new Date().toISOString());
+  }
+  return writeApplicantContactTracking_(ctx.sheet, ctx.rowNumber, updates);
+}
+
 function buildApplicantMessage_(context) {
   var ctx = context || {};
   var type = normalizeApplicantMessageType_(ctx.messageType || "");
@@ -5929,10 +5950,11 @@ function dispatchApplicantMessage_(context, builtMessage, opts) {
   var ctx = context || {};
   var message = builtMessage || {};
   var options = opts && typeof opts === "object" ? opts : {};
+  var actorEmail = clean_(options.actorEmail || ctx.actorEmail || (typeof getCallerEmail_ === "function" ? getCallerEmail_() : "") || "");
   if (!ctx.eligible) {
     return {
       ok: false,
-      result: "blocked",
+      result: "BLOCKED",
       blockCode: clean_(ctx.blockCode || ""),
       blockReason: clean_(ctx.blockReason || ""),
       applicantId: clean_(ctx.applicantId || ""),
@@ -5941,25 +5963,37 @@ function dispatchApplicantMessage_(context, builtMessage, opts) {
     };
   }
   if (!clean_(message.subject || "") || !clean_(message.body || "") || !clean_(ctx.effectiveEmail || "") || !ctx.sheet || !ctx.rowNumber) {
+    recordApplicantContactOutcome_(ctx, "FAILED", {
+      actorEmail: actorEmail,
+      batchLabel: clean_(options.batchLabel || ctx.batchLabel || ""),
+      subject: clean_(message.subject || "")
+    });
     return {
       ok: false,
-      result: "failed",
+      result: "FAILED",
       code: "DISPATCH_INVALID",
       applicantId: clean_(ctx.applicantId || ""),
       messageType: clean_(ctx.messageType || ""),
+      effectiveEmail: clean_(ctx.effectiveEmail || ""),
       debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
     };
   }
   var sendRes = campaignSendEmailGmail_(ctx.effectiveEmail, message.subject, message.body);
   if (!sendRes.ok) {
+    recordApplicantContactOutcome_(ctx, "FAILED", {
+      actorEmail: actorEmail,
+      batchLabel: clean_(options.batchLabel || ctx.batchLabel || ""),
+      subject: clean_(message.subject || "")
+    });
     return {
       ok: false,
-      result: "failed",
+      result: "FAILED",
       code: "SEND_FAILED",
       error: clean_(sendRes.error || "SEND_FAILED"),
       applicantId: clean_(ctx.applicantId || ""),
       messageType: clean_(ctx.messageType || ""),
       effectiveEmail: clean_(ctx.effectiveEmail || ""),
+      subject: clean_(message.subject || ""),
       debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
     };
   }
@@ -5974,16 +6008,25 @@ function dispatchApplicantMessage_(context, builtMessage, opts) {
   if (clean_(options.batchLabel || ctx.batchLabel || "")) patch.Email_Campaign_Batch = clean_(options.batchLabel || ctx.batchLabel || "");
   applyPatch_(ctx.sheet, ctx.rowNumber, patch);
   setLastCommunicationSentAt_(ctx.applicantId, ctx.messageType, now.toISOString());
+  recordApplicantContactOutcome_(ctx, "SENT", {
+    actorEmail: actorEmail,
+    batchLabel: clean_(options.batchLabel || ctx.batchLabel || ""),
+    subject: clean_(message.subject || ""),
+    sentAt: now.toISOString()
+  });
   return {
     ok: true,
-    result: "sent",
+    eligible: true,
+    result: "SENT",
     applicantId: clean_(ctx.applicantId || ""),
     messageType: clean_(ctx.messageType || ""),
     effectiveEmail: clean_(ctx.effectiveEmail || ""),
     subject: clean_(message.subject || ""),
     sentAt: now.toISOString(),
     rowNumber: Number(ctx.rowNumber || 0),
-    debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
+    debugId: clean_(ctx.debugId || options.debugId || newDebugId_()),
+    blockCode: "",
+    blockReason: ""
   };
 }
 
@@ -5995,10 +6038,12 @@ function previewApplicantMessage_(applicantId, messageType, opts) {
       ok: true,
       action: "preview",
       eligible: false,
+      result: "BLOCKED",
       blockCode: clean_(context.blockCode || ""),
       blockReason: clean_(context.blockReason || ""),
       applicantId: clean_(context.applicantId || applicantId || ""),
       messageType: clean_(context.messageType || messageType || ""),
+      effectiveEmail: clean_(context.effectiveEmail || ""),
       debugId: clean_(context.debugId || newDebugId_())
     };
     campaignLog_("COMM_PREVIEW", {
@@ -6007,7 +6052,7 @@ function previewApplicantMessage_(applicantId, messageType, opts) {
       actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
       actorRole: clean_(context.actorRole || options.actorRole || ""),
       blockCode: blocked.blockCode,
-      result: "blocked",
+      result: "BLOCKED",
       debugId: blocked.debugId,
       batchLabel: clean_(options.batchLabel || "")
     });
@@ -6018,6 +6063,9 @@ function previewApplicantMessage_(applicantId, messageType, opts) {
     ok: true,
     action: "preview",
     eligible: true,
+    result: "PREVIEW",
+    blockCode: "",
+    blockReason: "",
     applicantId: clean_(context.applicantId || ""),
     messageType: clean_(context.messageType || ""),
     effectiveEmail: clean_(context.effectiveEmail || ""),
@@ -6032,7 +6080,7 @@ function previewApplicantMessage_(applicantId, messageType, opts) {
     actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
     actorRole: clean_(context.actorRole || options.actorRole || ""),
     blockCode: "",
-    result: "previewed",
+    result: "PREVIEW",
     debugId: preview.debugId,
     batchLabel: clean_(options.batchLabel || "")
   });
@@ -6043,24 +6091,29 @@ function sendApplicantMessage_(applicantId, messageType, opts) {
   var options = opts && typeof opts === "object" ? opts : {};
   var context = resolveApplicantMessageContext_(applicantId, messageType, Object.assign({}, options, { action: "send" }));
   if (!context.eligible) {
+    recordApplicantContactOutcome_(context, "BLOCKED", {
+      actorEmail: clean_(options.actorEmail || context.actorEmail || (typeof getCallerEmail_ === "function" ? getCallerEmail_() : "") || ""),
+      batchLabel: clean_(options.batchLabel || "")
+    });
     var blocked = {
       ok: true,
       action: "send",
-      result: "blocked",
+      result: "BLOCKED",
       eligible: false,
       blockCode: clean_(context.blockCode || ""),
       blockReason: clean_(context.blockReason || ""),
       applicantId: clean_(context.applicantId || applicantId || ""),
       messageType: clean_(context.messageType || messageType || ""),
+      effectiveEmail: clean_(context.effectiveEmail || ""),
       debugId: clean_(context.debugId || newDebugId_())
     };
-    campaignLog_("COMM_SEND", {
+    campaignLog_("COMM_BLOCKED", {
       applicantId: blocked.applicantId,
       messageType: blocked.messageType,
       actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
       actorRole: clean_(context.actorRole || options.actorRole || ""),
       blockCode: blocked.blockCode,
-      result: "blocked",
+      result: "BLOCKED",
       debugId: blocked.debugId,
       batchLabel: clean_(options.batchLabel || "")
     });
@@ -6068,13 +6121,13 @@ function sendApplicantMessage_(applicantId, messageType, opts) {
   }
   var built = buildApplicantMessage_(context);
   var dispatched = dispatchApplicantMessage_(context, built, options);
-  campaignLog_("COMM_SEND", {
+  campaignLog_(dispatched.result === "SENT" ? "COMM_SENT" : "COMM_FAILED", {
     applicantId: clean_(context.applicantId || applicantId || ""),
     messageType: clean_(context.messageType || messageType || ""),
     actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
     actorRole: clean_(context.actorRole || options.actorRole || ""),
     blockCode: clean_(dispatched.blockCode || dispatched.code || ""),
-    result: clean_(dispatched.result || (dispatched.ok ? "sent" : "failed")),
+    result: clean_(dispatched.result || (dispatched.ok ? "SENT" : "FAILED")),
     debugId: clean_(dispatched.debugId || context.debugId || newDebugId_()),
     batchLabel: clean_(options.batchLabel || "")
   });
@@ -6257,12 +6310,12 @@ function campaign_sendLegacyBatch_(limit, opts) {
       requestedLimit: batchLimit,
       batchLabel: batchLabel,
       selected: single.eligible || single.result === "sent" ? 1 : 1,
-      sent: single.result === "sent" ? 1 : 0,
+      sent: single.result === "SENT" ? 1 : 0,
       dryRunCount: dryRun && single.eligible ? 1 : 0,
       skippedIneligible: (!single.eligible && single.blockCode) ? 1 : 0,
       skippedMissingSecret: single.blockCode === "MISSING_PORTAL_SECRET" ? 1 : 0,
       skippedNoStatus: 0,
-      sendFailed: single.result === "failed" ? 1 : 0,
+      sendFailed: single.result === "FAILED" ? 1 : 0,
       preview: single.subject ? [{
         applicantId: clean_(single.applicantId || requestedId),
         effectiveEmail: clean_(single.effectiveEmail || ""),
@@ -6271,7 +6324,7 @@ function campaign_sendLegacyBatch_(limit, opts) {
         batchLabel: batchLabel,
         dryRun: dryRun
       }] : [],
-      skipped: (!single.eligible && single.blockCode) || single.result === "failed"
+      skipped: (!single.eligible && single.blockCode) || single.result === "FAILED"
         ? [{ applicantId: clean_(single.applicantId || requestedId), rowNumber: Number(single.rowNumber || 0), reason: clean_(single.blockCode || single.code || single.error || "BLOCKED") }]
         : []
     };
@@ -6308,8 +6361,8 @@ function campaign_sendLegacyBatch_(limit, opts) {
       continue;
     }
     var sendResult = sendApplicantMessage_(candidate.applicantId, "legacy_invite", mergedOpts);
-    if (sendResult.result === "sent") sent++;
-    else if (sendResult.result === "failed") {
+    if (sendResult.result === "SENT") sent++;
+    else if (sendResult.result === "FAILED") {
       sendFailed++;
       skipped.push({ applicantId: candidate.applicantId, rowNumber: candidate.rowNumber, reason: sendResult.code || sendResult.error || "SEND_FAILED" });
     } else if (sendResult.blockCode) {
@@ -6509,7 +6562,7 @@ function campaign_sendLegacyFollowups_(limit) {
     if (attemptCount < 1 || attemptCount >= 3) continue;
     selected++;
     var sendRes = sendApplicantMessage_(clean_(rowObj.ApplicantID || ""), "reminder", { batchLabel: batchLabel });
-    if (sendRes.result === "sent") sent++;
+    if (sendRes.result === "SENT") sent++;
     else skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: clean_(sendRes.blockCode || sendRes.code || sendRes.error || "SEND_FAILED") });
   }
   var summary = {

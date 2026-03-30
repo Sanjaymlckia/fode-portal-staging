@@ -1956,3 +1956,45 @@ function computeNextActionDate_(attemptCount, baseDate) {
   dt.setDate(dt.getDate() + (delayDays * count));
   return dt.toISOString();
 }
+
+
+function ensureCommunicationTrackingColumns_(sheet) {
+  var sh = sheet;
+  if (!sh) throw new Error("Missing sheet for communication tracking columns");
+  var required = [
+    "Last_Contacted_At",
+    "Last_Contact_Type",
+    "Last_Contact_By",
+    "Last_Contact_Subject",
+    "Last_Contact_Result",
+    "Last_Contact_Batch",
+    "Last_Contact_DebugId"
+  ];
+  var lastCol = Math.max(1, sh.getLastColumn());
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return clean_(h); });
+  var missing = [];
+  for (var i = 0; i < required.length; i++) {
+    if (headers.indexOf(required[i]) === -1) missing.push(required[i]);
+  }
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return getHeaderIndexMap_(sh);
+}
+
+function writeApplicantContactTracking_(sheet, rowIndex, updates) {
+  var sh = sheet;
+  var rowNum = Number(rowIndex || 0);
+  if (!sh || rowNum < 2) return false;
+  var patch = {};
+  var src = updates && typeof updates === "object" ? updates : {};
+  var idx = ensureCommunicationTrackingColumns_(sh);
+  Object.keys(src).forEach(function (key) {
+    if (!Object.prototype.hasOwnProperty.call(idx, key)) return;
+    if (src[key] === undefined) return;
+    patch[key] = src[key];
+  });
+  if (!Object.keys(patch).length) return false;
+  applyPatch_(sh, rowNum, patch);
+  return true;
+}
