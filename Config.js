@@ -7,9 +7,9 @@
  */
 var CONFIG = {
   // Versioning (change control)
-VERSION: "2026-03-30-PNG-PROD-r247B",
+VERSION: "2026-03-30-PNG-PROD-r248A",
 CHANGELOG_LAST: "r244D: align main portal working sheet to PROD and sync runtime identity",
-DEPLOY_VERSION_NUMBER: 58,
+DEPLOY_VERSION_NUMBER: 59,
 BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
 
   // STAGING/PROD data mode routing (working sheet)
@@ -119,6 +119,18 @@ BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
   ],
   CAMPAIGN_EMAIL_SUBJECTS: [
     "Your FODE KIA Online Application - Status & Next Step"
+  ],
+  COMMUNICATION_COOLDOWN_MINUTES: 60,
+  COMMUNICATION_ALLOWED_MESSAGE_TYPES: [
+    "legacy_invite",
+    "reminder",
+    "docs_missing",
+    "payment_followup"
+  ],
+  COMMUNICATION_ALLOWED_BATCH_FILTER_TYPES: [
+    "legacy_invite_eligible",
+    "docs_missing",
+    "payment_pending"
   ],
   DOCS_FOLLOWUP_SENDER_MODE: "ALIAS",
   DOCS_FOLLOWUP_COOLDOWN_MS: 300000,

@@ -5636,6 +5636,552 @@ function campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel)
   };
 }
 
+function normalizeApplicantMessageType_(messageType) {
+  var raw = clean_(messageType || "").toLowerCase();
+  var allowed = Array.isArray(CONFIG.COMMUNICATION_ALLOWED_MESSAGE_TYPES) ? CONFIG.COMMUNICATION_ALLOWED_MESSAGE_TYPES : [];
+  return allowed.indexOf(raw) >= 0 ? raw : "";
+}
+
+function normalizeApplicantBatchFilterType_(filterType) {
+  var raw = clean_(filterType || "").toLowerCase();
+  var allowed = Array.isArray(CONFIG.COMMUNICATION_ALLOWED_BATCH_FILTER_TYPES) ? CONFIG.COMMUNICATION_ALLOWED_BATCH_FILTER_TYPES : [];
+  return allowed.indexOf(raw) >= 0 ? raw : "";
+}
+
+function communicationCooldownMs_() {
+  return Math.max(1, Number(CONFIG.COMMUNICATION_COOLDOWN_MINUTES || 60)) * 60 * 1000;
+}
+
+function communicationCooldownKey_(applicantId, messageType) {
+  return "COMM_LAST::" + clean_(messageType || "") + "::" + clean_(applicantId || "");
+}
+
+function getLastCommunicationSentAt_(applicantId, messageType) {
+  try {
+    return clean_(PropertiesService.getScriptProperties().getProperty(communicationCooldownKey_(applicantId, messageType)) || "");
+  } catch (_err) {
+    return "";
+  }
+}
+
+function setLastCommunicationSentAt_(applicantId, messageType, isoValue) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(communicationCooldownKey_(applicantId, messageType), clean_(isoValue || ""));
+  } catch (_err) {}
+}
+
+function communicationGetActorInfo_(opts) {
+  var o = opts && typeof opts === "object" ? opts : {};
+  var email = clean_(o.actorEmail || "");
+  if (!email && typeof getCallerEmail_ === "function") email = clean_(getCallerEmail_() || "");
+  var role = clean_(o.actorRole || "").toUpperCase();
+  if (!role && email) {
+    if (typeof getAdminRole_ === "function") role = clean_(getAdminRole_(email) || "").toUpperCase();
+    if (!role) {
+      var mapped = CONFIG.ADMIN_ROLES || {};
+      role = clean_(mapped[String(email || "").toLowerCase()] || "VERIFIER").toUpperCase();
+    }
+  }
+  var isAdmin = false;
+  if (typeof isAdmin_ === "function") isAdmin = isAdmin_(email);
+  else isAdmin = !!role;
+  if (!role && isAdmin) role = "VERIFIER";
+  return {
+    email: email,
+    role: role || "",
+    isAdmin: !!isAdmin,
+    isSuper: role === "SUPER"
+  };
+}
+
+function communicationBlockReason_(code, messageType) {
+  var map = {
+    NO_EFFECTIVE_EMAIL: "No effective parent email is available.",
+    BOUNCED: "This applicant email is marked as bounced.",
+    DO_NOT_CONTACT: "This applicant is marked as do not contact.",
+    PORTAL_ALREADY_SUBMITTED: "The portal has already been submitted for this applicant.",
+    MISSING_PORTAL_SECRET: "No active portal link is available for this applicant.",
+    COOLDOWN_ACTIVE: "A recent message of this type was already sent. Try again later.",
+    ROLE_BLOCKED: "Your role is not allowed to perform this action.",
+    UNKNOWN_MESSAGE_TYPE: "Unsupported message type.",
+    APPLICANT_NOT_FOUND: "Applicant not found.",
+    UNKNOWN_FILTER_TYPE: "Unsupported batch planning filter.",
+    DOCS_ALREADY_COMPLETE: "Documents are already complete for this applicant.",
+    PAYMENT_ALREADY_RESOLVED: "Payment is already resolved for this applicant."
+  };
+  return map[clean_(code || "")] || ("Action blocked for message type: " + clean_(messageType || "unknown"));
+}
+
+function communicationRequiresPortalUrl_(messageType) {
+  return ["legacy_invite", "reminder", "docs_missing", "payment_followup"].indexOf(clean_(messageType || "")) >= 0;
+}
+
+function communicationDocsMissing_(rowObj) {
+  var row = rowObj || {};
+  return computeDocVerificationStatus_(row) !== "Verified";
+}
+
+function communicationPaymentOutstanding_(rowObj) {
+  var row = rowObj || {};
+  return !(derivePaymentBadge_(row) === "Verified" || clean_(row.Payment_Verified || "") === "Yes");
+}
+
+function communicationMessageTypeForFilter_(filterType) {
+  var normalized = normalizeApplicantBatchFilterType_(filterType);
+  if (normalized === "legacy_invite_eligible") return "legacy_invite";
+  if (normalized === "docs_missing") return "docs_missing";
+  if (normalized === "payment_pending") return "payment_followup";
+  return "";
+}
+
+function communicationMatchesFilterPrecheck_(rowObj, filterType) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || "");
+  if (!applicantId) return false;
+  var normalized = normalizeApplicantBatchFilterType_(filterType);
+  if (normalized === "legacy_invite_eligible") {
+    var status = normalizeEmailStatus_(row.Email_Status || "");
+    return !status || status === "NEW" || status === "READY";
+  }
+  if (normalized === "docs_missing") return communicationDocsMissing_(row);
+  if (normalized === "payment_pending") return communicationPaymentOutstanding_(row);
+  return false;
+}
+
+function buildReminderEmailBody_(context) {
+  return [
+    "Dear Parent/Guardian,",
+    "",
+    "This is a reminder that your FODE KIA online application is still pending completion.",
+    "",
+    "Please review and complete your application using the secure portal link below:",
+    "",
+    String(context.portalUrl || ""),
+    "",
+    "Applicant ID: " + String(context.applicantId || ""),
+    "",
+    "If you need assistance, contact FODE Admissions at fode@kundu.ac or WhatsApp +675 7860 4013.",
+    "",
+    "FODE Admissions",
+    "Kundu International Academy"
+  ].join("\n");
+}
+
+function buildDocsMissingEmailBody_(context) {
+  return [
+    "Dear Parent/Guardian,",
+    "",
+    "Your FODE KIA application is still missing required documents or has unresolved document checks.",
+    "",
+    "Please reopen the portal link below, review the required uploads, and submit the missing or corrected documents:",
+    "",
+    String(context.portalUrl || ""),
+    "",
+    "Applicant ID: " + String(context.applicantId || ""),
+    "",
+    "If you need help identifying the required documents, contact FODE Admissions at fode@kundu.ac.",
+    "",
+    "FODE Admissions",
+    "Kundu International Academy"
+  ].join("\n");
+}
+
+function buildPaymentFollowupEmailBody_(context) {
+  return [
+    "Dear Parent/Guardian,",
+    "",
+    "Your FODE KIA application is on record, but payment is still outstanding or pending verification.",
+    "",
+    "Please use the portal link below to review your application and complete the required payment follow-up steps:",
+    "",
+    String(context.portalUrl || ""),
+    "",
+    "Applicant ID: " + String(context.applicantId || ""),
+    "",
+    "If payment has already been made, please ensure the receipt is uploaded clearly in the portal.",
+    "",
+    "FODE Admissions",
+    "Kundu International Academy"
+  ].join("\n");
+}
+
+function resolveApplicantMessageContext_(applicantId, messageType, opts) {
+  var options = opts && typeof opts === "object" ? opts : {};
+  var debugId = clean_(options.debugId || newDebugId_());
+  var normalizedType = normalizeApplicantMessageType_(messageType);
+  var actor = communicationGetActorInfo_(options);
+  var context = {
+    ok: true,
+    eligible: false,
+    blockCode: "",
+    blockReason: "",
+    effectiveEmail: "",
+    portalUrl: "",
+    rowObj: null,
+    applicantId: clean_(applicantId || ""),
+    messageType: normalizedType || clean_(messageType || ""),
+    emailStatus: "",
+    portalSubmittedActive: false,
+    docsVerified: false,
+    paymentVerified: false,
+    requiresPortalUrl: false,
+    debugId: debugId,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    rowNumber: 0,
+    sheet: null,
+    batchLabel: clean_(options.batchLabel || "")
+  };
+
+  function block(code) {
+    context.eligible = false;
+    context.blockCode = clean_(code || "");
+    context.blockReason = communicationBlockReason_(context.blockCode, context.messageType);
+    return context;
+  }
+
+  if (!normalizedType) return block("UNKNOWN_MESSAGE_TYPE");
+  if (!actor.isAdmin) return block("ROLE_BLOCKED");
+  if (clean_(options.action || "") === "planBatch" && !actor.isSuper) return block("ROLE_BLOCKED");
+
+  var sheet = mustGetDataSheet_(getWorkingSpreadsheet_());
+  var rowNumber = findRowByApplicantId_(sheet, applicantId);
+  if (!rowNumber) return block("APPLICANT_NOT_FOUND");
+
+  var rowObj = getRowObject_(sheet, rowNumber);
+  context.sheet = sheet;
+  context.rowObj = rowObj;
+  context.rowNumber = rowNumber;
+  context.applicantId = clean_(rowObj.ApplicantID || applicantId || "");
+  context.effectiveEmail = getCampaignEffectiveEmail_(rowObj);
+  context.emailStatus = normalizeEmailStatus_(rowObj.Email_Status || "");
+  context.portalSubmittedActive = isCampaignPortalSubmittedActive_(rowObj);
+  context.docsVerified = computeDocVerificationStatus_(rowObj) === "Verified" || clean_(rowObj.Docs_Verified || "") === "Yes";
+  context.paymentVerified = derivePaymentBadge_(rowObj) === "Verified" || clean_(rowObj.Payment_Verified || "") === "Yes";
+  context.requiresPortalUrl = communicationRequiresPortalUrl_(normalizedType);
+
+  if (!isValidCampaignEmail_(context.effectiveEmail)) return block("NO_EFFECTIVE_EMAIL");
+  if (isCampaignBounceFlagTrue_(rowObj.Email_Bounce_Flag)) return block("BOUNCED");
+  if (context.emailStatus === "DO_NOT_CONTACT") return block("DO_NOT_CONTACT");
+
+  var lastSentAt = getLastCommunicationSentAt_(context.applicantId, normalizedType);
+  if (lastSentAt) {
+    var cooldownRemaining = parseTime_(lastSentAt) + communicationCooldownMs_();
+    if (cooldownRemaining > new Date().getTime()) return block("COOLDOWN_ACTIVE");
+  }
+
+  if (context.requiresPortalUrl) {
+    var secretRes = getActivePortalSecretForCampaign_(context.applicantId);
+    if (!secretRes.ok) return block("MISSING_PORTAL_SECRET");
+    context.portalUrl = buildLegacyCampaignPortalUrl_(context.applicantId, secretRes.secretPlain);
+  }
+
+  if ((normalizedType === "legacy_invite" || normalizedType === "reminder") && context.portalSubmittedActive) {
+    return block("PORTAL_ALREADY_SUBMITTED");
+  }
+  if (normalizedType === "docs_missing" && !communicationDocsMissing_(rowObj)) {
+    return block("DOCS_ALREADY_COMPLETE");
+  }
+  if (normalizedType === "payment_followup" && !communicationPaymentOutstanding_(rowObj)) {
+    return block("PAYMENT_ALREADY_RESOLVED");
+  }
+
+  context.eligible = true;
+  return context;
+}
+
+function buildApplicantMessage_(context) {
+  var ctx = context || {};
+  var type = normalizeApplicantMessageType_(ctx.messageType || "");
+  if (!type) return { ok: false, code: "UNKNOWN_MESSAGE_TYPE", subject: "", body: "" };
+  if (type === "legacy_invite") {
+    return {
+      ok: true,
+      subject: campaignSubjectForAttempt_(0, ctx.rowNumber || 0),
+      body: buildCampaignEmailBody_(ctx.rowObj || {}, ctx.portalUrl || "", ctx.applicantId || "")
+    };
+  }
+  if (type === "reminder") {
+    return {
+      ok: true,
+      subject: "Reminder: Complete Your FODE KIA Online Application",
+      body: buildReminderEmailBody_(ctx)
+    };
+  }
+  if (type === "docs_missing") {
+    return {
+      ok: true,
+      subject: "FODE KIA Application - Missing Documents",
+      body: buildDocsMissingEmailBody_(ctx)
+    };
+  }
+  if (type === "payment_followup") {
+    return {
+      ok: true,
+      subject: "FODE KIA Application - Payment Follow-Up",
+      body: buildPaymentFollowupEmailBody_(ctx)
+    };
+  }
+  return { ok: false, code: "UNKNOWN_MESSAGE_TYPE", subject: "", body: "" };
+}
+
+function dispatchApplicantMessage_(context, builtMessage, opts) {
+  var ctx = context || {};
+  var message = builtMessage || {};
+  var options = opts && typeof opts === "object" ? opts : {};
+  if (!ctx.eligible) {
+    return {
+      ok: false,
+      result: "blocked",
+      blockCode: clean_(ctx.blockCode || ""),
+      blockReason: clean_(ctx.blockReason || ""),
+      applicantId: clean_(ctx.applicantId || ""),
+      messageType: clean_(ctx.messageType || ""),
+      debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
+    };
+  }
+  if (!clean_(message.subject || "") || !clean_(message.body || "") || !clean_(ctx.effectiveEmail || "") || !ctx.sheet || !ctx.rowNumber) {
+    return {
+      ok: false,
+      result: "failed",
+      code: "DISPATCH_INVALID",
+      applicantId: clean_(ctx.applicantId || ""),
+      messageType: clean_(ctx.messageType || ""),
+      debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
+    };
+  }
+  var sendRes = campaignSendEmailGmail_(ctx.effectiveEmail, message.subject, message.body);
+  if (!sendRes.ok) {
+    return {
+      ok: false,
+      result: "failed",
+      code: "SEND_FAILED",
+      error: clean_(sendRes.error || "SEND_FAILED"),
+      applicantId: clean_(ctx.applicantId || ""),
+      messageType: clean_(ctx.messageType || ""),
+      effectiveEmail: clean_(ctx.effectiveEmail || ""),
+      debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
+    };
+  }
+  var now = new Date();
+  var nextAttempt = campaignAttemptCount_(ctx.rowObj) + 1;
+  var patch = {
+    Email_Status: "SENT",
+    Email_Last_Sent_At: now.toISOString(),
+    Email_Attempt_Count: nextAttempt,
+    Email_Next_Action_Date: computeNextActionDate_(nextAttempt, now)
+  };
+  if (clean_(options.batchLabel || ctx.batchLabel || "")) patch.Email_Campaign_Batch = clean_(options.batchLabel || ctx.batchLabel || "");
+  applyPatch_(ctx.sheet, ctx.rowNumber, patch);
+  setLastCommunicationSentAt_(ctx.applicantId, ctx.messageType, now.toISOString());
+  return {
+    ok: true,
+    result: "sent",
+    applicantId: clean_(ctx.applicantId || ""),
+    messageType: clean_(ctx.messageType || ""),
+    effectiveEmail: clean_(ctx.effectiveEmail || ""),
+    subject: clean_(message.subject || ""),
+    sentAt: now.toISOString(),
+    rowNumber: Number(ctx.rowNumber || 0),
+    debugId: clean_(ctx.debugId || options.debugId || newDebugId_())
+  };
+}
+
+function previewApplicantMessage_(applicantId, messageType, opts) {
+  var options = opts && typeof opts === "object" ? opts : {};
+  var context = resolveApplicantMessageContext_(applicantId, messageType, Object.assign({}, options, { action: "preview" }));
+  if (!context.eligible) {
+    var blocked = {
+      ok: true,
+      action: "preview",
+      eligible: false,
+      blockCode: clean_(context.blockCode || ""),
+      blockReason: clean_(context.blockReason || ""),
+      applicantId: clean_(context.applicantId || applicantId || ""),
+      messageType: clean_(context.messageType || messageType || ""),
+      debugId: clean_(context.debugId || newDebugId_())
+    };
+    campaignLog_("COMM_PREVIEW", {
+      applicantId: blocked.applicantId,
+      messageType: blocked.messageType,
+      actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
+      actorRole: clean_(context.actorRole || options.actorRole || ""),
+      blockCode: blocked.blockCode,
+      result: "blocked",
+      debugId: blocked.debugId,
+      batchLabel: clean_(options.batchLabel || "")
+    });
+    return blocked;
+  }
+  var built = buildApplicantMessage_(context);
+  var preview = {
+    ok: true,
+    action: "preview",
+    eligible: true,
+    applicantId: clean_(context.applicantId || ""),
+    messageType: clean_(context.messageType || ""),
+    effectiveEmail: clean_(context.effectiveEmail || ""),
+    portalUrl: clean_(context.portalUrl || ""),
+    subject: clean_(built.subject || ""),
+    body: String(built.body || ""),
+    debugId: clean_(context.debugId || newDebugId_())
+  };
+  campaignLog_("COMM_PREVIEW", {
+    applicantId: preview.applicantId,
+    messageType: preview.messageType,
+    actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
+    actorRole: clean_(context.actorRole || options.actorRole || ""),
+    blockCode: "",
+    result: "previewed",
+    debugId: preview.debugId,
+    batchLabel: clean_(options.batchLabel || "")
+  });
+  return preview;
+}
+
+function sendApplicantMessage_(applicantId, messageType, opts) {
+  var options = opts && typeof opts === "object" ? opts : {};
+  var context = resolveApplicantMessageContext_(applicantId, messageType, Object.assign({}, options, { action: "send" }));
+  if (!context.eligible) {
+    var blocked = {
+      ok: true,
+      action: "send",
+      result: "blocked",
+      eligible: false,
+      blockCode: clean_(context.blockCode || ""),
+      blockReason: clean_(context.blockReason || ""),
+      applicantId: clean_(context.applicantId || applicantId || ""),
+      messageType: clean_(context.messageType || messageType || ""),
+      debugId: clean_(context.debugId || newDebugId_())
+    };
+    campaignLog_("COMM_SEND", {
+      applicantId: blocked.applicantId,
+      messageType: blocked.messageType,
+      actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
+      actorRole: clean_(context.actorRole || options.actorRole || ""),
+      blockCode: blocked.blockCode,
+      result: "blocked",
+      debugId: blocked.debugId,
+      batchLabel: clean_(options.batchLabel || "")
+    });
+    return blocked;
+  }
+  var built = buildApplicantMessage_(context);
+  var dispatched = dispatchApplicantMessage_(context, built, options);
+  campaignLog_("COMM_SEND", {
+    applicantId: clean_(context.applicantId || applicantId || ""),
+    messageType: clean_(context.messageType || messageType || ""),
+    actorEmail: clean_(context.actorEmail || options.actorEmail || ""),
+    actorRole: clean_(context.actorRole || options.actorRole || ""),
+    blockCode: clean_(dispatched.blockCode || dispatched.code || ""),
+    result: clean_(dispatched.result || (dispatched.ok ? "sent" : "failed")),
+    debugId: clean_(dispatched.debugId || context.debugId || newDebugId_()),
+    batchLabel: clean_(options.batchLabel || "")
+  });
+  return dispatched;
+}
+
+function planApplicantBatch_(filterType, limit, opts) {
+  var options = opts && typeof opts === "object" ? opts : {};
+  var debugId = clean_(options.debugId || newDebugId_());
+  var normalizedFilter = normalizeApplicantBatchFilterType_(filterType);
+  var actor = communicationGetActorInfo_(options);
+  if (!normalizedFilter) {
+    return {
+      ok: true,
+      eligible: 0,
+      blocked: 0,
+      selected: 0,
+      sampleRecipients: [],
+      blockCounts: { UNKNOWN_FILTER_TYPE: 1 },
+      limit: Math.max(1, Math.floor(Number(limit || 20))),
+      filterType: clean_(filterType || ""),
+      debugId: debugId,
+      blockCode: "UNKNOWN_FILTER_TYPE",
+      blockReason: communicationBlockReason_("UNKNOWN_FILTER_TYPE", "")
+    };
+  }
+  if (!actor.isSuper) {
+    return {
+      ok: true,
+      eligible: 0,
+      blocked: 0,
+      selected: 0,
+      sampleRecipients: [],
+      blockCounts: { ROLE_BLOCKED: 1 },
+      limit: Math.max(1, Math.floor(Number(limit || 20))),
+      filterType: normalizedFilter,
+      debugId: debugId,
+      blockCode: "ROLE_BLOCKED",
+      blockReason: communicationBlockReason_("ROLE_BLOCKED", "")
+    };
+  }
+  var batchLimit = Math.max(1, Math.floor(Number(limit || 20)));
+  var ctx = campaignGetContext_();
+  var headers = ctx.headers;
+  var messageType = communicationMessageTypeForFilter_(normalizedFilter);
+  var selected = 0;
+  var eligible = 0;
+  var blocked = 0;
+  var blockCounts = {};
+  var sampleRecipients = [];
+  var candidates = [];
+  for (var r = 1; r < ctx.values.length; r++) {
+    if (selected >= batchLimit) break;
+    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    if (!communicationMatchesFilterPrecheck_(rowObj, normalizedFilter)) continue;
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) continue;
+    selected++;
+    var resolved = resolveApplicantMessageContext_(applicantId, messageType, Object.assign({}, options, { action: "planBatch", actorEmail: actor.email, actorRole: actor.role, debugId: debugId }));
+    if (resolved.eligible) eligible++;
+    else {
+      blocked++;
+      var key = clean_(resolved.blockCode || "UNKNOWN");
+      blockCounts[key] = Number(blockCounts[key] || 0) + 1;
+    }
+    var candidate = {
+      applicantId: applicantId,
+      eligible: !!resolved.eligible,
+      blockCode: clean_(resolved.blockCode || ""),
+      blockReason: clean_(resolved.blockReason || ""),
+      effectiveEmail: clean_(resolved.effectiveEmail || ""),
+      messageType: messageType,
+      rowNumber: Number(resolved.rowNumber || 0)
+    };
+    candidates.push(candidate);
+    if (sampleRecipients.length < 10) sampleRecipients.push(candidate);
+  }
+  var summary = {
+    ok: true,
+    selected: selected,
+    eligible: eligible,
+    blocked: blocked,
+    sampleRecipients: sampleRecipients,
+    blockCounts: blockCounts,
+    limit: batchLimit,
+    filterType: normalizedFilter,
+    debugId: debugId,
+    candidates: candidates
+  };
+  campaignLog_("COMM_BATCH_PLAN", {
+    applicantId: "",
+    messageType: messageType,
+    actorEmail: actor.email,
+    actorRole: actor.role,
+    blockCode: "",
+    result: "planned",
+    debugId: debugId,
+    batchLabel: clean_(options.batchLabel || ""),
+    filterType: normalizedFilter,
+    selected: selected,
+    eligible: eligible,
+    blocked: blocked,
+    blockCounts: blockCounts
+  });
+  return summary;
+}
+
 function testCampaignPing() {
   return "OK";
 }
@@ -5652,6 +6198,7 @@ function campaign_prepareLegacyRows_() {
   for (var r = 1; r < ctx.values.length; r++) {
     var rowNumber = r + 1;
     var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
+    var applicantId = clean_(rowObj.ApplicantID || "");
     var status = normalizeEmailStatus_(rowObj.Email_Status || "");
     if (status === "READY") {
       keptReady++;
@@ -5661,14 +6208,19 @@ function campaign_prepareLegacyRows_() {
       skippedIneligible++;
       continue;
     }
-    var eligibility = computeCampaignEligibility_(rowObj);
-    if (!eligibility.eligible) {
+    if (!applicantId) {
       skippedIneligible++;
       continue;
     }
-    var secretRes = getActivePortalSecretForCampaign_(eligibility.applicantId);
-    if (!secretRes.ok) {
-      skippedMissingSecret++;
+    var resolved = resolveApplicantMessageContext_(applicantId, "legacy_invite", {
+      actorEmail: clean_(getCallerEmail_ && getCallerEmail_()),
+      actorRole: "SUPER",
+      action: "prepare",
+      debugId: newDebugId_()
+    });
+    if (!resolved.eligible) {
+      if (resolved.blockCode === "MISSING_PORTAL_SECRET") skippedMissingSecret++;
+      else skippedIneligible++;
       continue;
     }
     applyPatch_(sh, rowNumber, { Email_Status: "READY" });
@@ -5691,94 +6243,96 @@ function campaign_sendLegacyBatch_(limit, opts) {
   var dryRun = options.dryRun === true;
   var requestedId = clean_(options.applicantId || "");
   var batchLimit = Math.max(1, Math.floor(Number(limit || CONFIG.CAMPAIGN_BATCH_SIZE_DEFAULT || 50)));
-  var ctx = campaignGetContext_();
-  var sh = ctx.sheet;
-  var headers = ctx.headers;
-  var now = new Date();
-  var batchLabel = clean_(options.batchLabel || "") || campaignBatchLabel_(now);
-  var selected = 0;
+  var batchLabel = clean_(options.batchLabel || "") || campaignBatchLabel_(new Date());
+  var mergedOpts = Object.assign({}, options, { batchLabel: batchLabel });
+
+  if (requestedId) {
+    var single = dryRun
+      ? previewApplicantMessage_(requestedId, "legacy_invite", mergedOpts)
+      : sendApplicantMessage_(requestedId, "legacy_invite", mergedOpts);
+    return {
+      ok: true,
+      dryRun: dryRun,
+      requestedApplicantId: requestedId,
+      requestedLimit: batchLimit,
+      batchLabel: batchLabel,
+      selected: single.eligible || single.result === "sent" ? 1 : 1,
+      sent: single.result === "sent" ? 1 : 0,
+      dryRunCount: dryRun && single.eligible ? 1 : 0,
+      skippedIneligible: (!single.eligible && single.blockCode) ? 1 : 0,
+      skippedMissingSecret: single.blockCode === "MISSING_PORTAL_SECRET" ? 1 : 0,
+      skippedNoStatus: 0,
+      sendFailed: single.result === "failed" ? 1 : 0,
+      preview: single.subject ? [{
+        applicantId: clean_(single.applicantId || requestedId),
+        effectiveEmail: clean_(single.effectiveEmail || ""),
+        subject: clean_(single.subject || ""),
+        portalUrl: clean_(single.portalUrl || ""),
+        batchLabel: batchLabel,
+        dryRun: dryRun
+      }] : [],
+      skipped: (!single.eligible && single.blockCode) || single.result === "failed"
+        ? [{ applicantId: clean_(single.applicantId || requestedId), rowNumber: Number(single.rowNumber || 0), reason: clean_(single.blockCode || single.code || single.error || "BLOCKED") }]
+        : []
+    };
+  }
+
+  var plan = planApplicantBatch_("legacy_invite_eligible", batchLimit, mergedOpts);
   var sent = 0;
   var dryRunCount = 0;
-  var skippedIneligible = 0;
-  var skippedMissingSecret = 0;
   var sendFailed = 0;
-  var skippedNoStatus = 0;
   var previews = [];
   var skipped = [];
-  for (var r = 1; r < ctx.values.length; r++) {
-    if (selected >= batchLimit) break;
-    var rowNumber = r + 1;
-    var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
-    var applicantId = clean_(rowObj.ApplicantID || "");
-    if (requestedId && applicantId !== requestedId) continue;
-    var status = normalizeEmailStatus_(rowObj.Email_Status || "");
-    if (status && ["NEW", "READY"].indexOf(status) === -1) {
-      skippedNoStatus++;
+  var candidates = Array.isArray(plan.candidates) ? plan.candidates : [];
+  for (var i = 0; i < candidates.length; i++) {
+    var candidate = candidates[i];
+    if (!candidate.eligible) {
+      skipped.push({ applicantId: candidate.applicantId, rowNumber: candidate.rowNumber, reason: candidate.blockCode || "BLOCKED" });
       continue;
     }
-    var eligibility = computeCampaignEligibility_(rowObj);
-    if (!eligibility.eligible) {
-      skippedIneligible++;
-      if (requestedId) skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: eligibility.reason });
-      continue;
-    }
-    var attemptCount = campaignAttemptCount_(rowObj);
-    var preview = campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel);
-    if (!preview.ok) {
-      skippedMissingSecret++;
-      skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: preview.code || "NO_SECRET" });
-      campaignLog_("CAMPAIGN_SKIP_NO_SECRET", { applicantId: applicantId, rowNumber: rowNumber, code: preview.code || "NO_SECRET" });
-      continue;
-    }
-    selected++;
-    previews.push({
-      applicantId: applicantId,
-      rowNumber: rowNumber,
-      effectiveEmail: preview.effectiveEmail,
-      subject: preview.subject,
-      portalUrl: preview.portalUrl,
-      batchLabel: batchLabel,
-      dryRun: dryRun
-    });
     if (dryRun) {
-      dryRunCount++;
+      var preview = previewApplicantMessage_(candidate.applicantId, "legacy_invite", mergedOpts);
+      if (preview.eligible) {
+        dryRunCount++;
+        previews.push({
+          applicantId: preview.applicantId,
+          effectiveEmail: preview.effectiveEmail,
+          subject: preview.subject,
+          portalUrl: preview.portalUrl,
+          batchLabel: batchLabel,
+          dryRun: true
+        });
+      } else {
+        skipped.push({ applicantId: candidate.applicantId, rowNumber: candidate.rowNumber, reason: preview.blockCode || "BLOCKED" });
+      }
       continue;
     }
-    var sendRes = campaignSendEmailGmail_(preview.effectiveEmail, preview.subject, preview.body);
-    if (!sendRes.ok) {
+    var sendResult = sendApplicantMessage_(candidate.applicantId, "legacy_invite", mergedOpts);
+    if (sendResult.result === "sent") sent++;
+    else if (sendResult.result === "failed") {
       sendFailed++;
-      skipped.push({ applicantId: applicantId, rowNumber: rowNumber, reason: sendRes.error || "SEND_FAILED" });
-      campaignLog_("CAMPAIGN_SEND_FAILED", { applicantId: applicantId, rowNumber: rowNumber, error: sendRes.error || "SEND_FAILED" });
-      continue;
+      skipped.push({ applicantId: candidate.applicantId, rowNumber: candidate.rowNumber, reason: sendResult.code || sendResult.error || "SEND_FAILED" });
+    } else if (sendResult.blockCode) {
+      skipped.push({ applicantId: candidate.applicantId, rowNumber: candidate.rowNumber, reason: sendResult.blockCode });
     }
-    var nextAttempt = attemptCount + 1;
-    applyPatch_(sh, rowNumber, {
-      Email_Status: "SENT",
-      Email_Last_Sent_At: now.toISOString(),
-      Email_Attempt_Count: nextAttempt,
-      Email_Next_Action_Date: computeNextActionDate_(nextAttempt, now),
-      Email_Campaign_Batch: batchLabel
-    });
-    sent++;
   }
-  var summary = {
+  return {
     ok: true,
     dryRun: dryRun,
     requestedApplicantId: requestedId,
     requestedLimit: batchLimit,
     batchLabel: batchLabel,
-    selected: selected,
+    selected: Number(plan.selected || 0),
     sent: sent,
     dryRunCount: dryRunCount,
-    skippedIneligible: skippedIneligible,
-    skippedMissingSecret: skippedMissingSecret,
-    skippedNoStatus: skippedNoStatus,
+    skippedIneligible: Number(plan.blocked || 0),
+    skippedMissingSecret: Number((plan.blockCounts && plan.blockCounts.MISSING_PORTAL_SECRET) || 0),
+    skippedNoStatus: 0,
     sendFailed: sendFailed,
     preview: previews,
-    skipped: skipped
+    skipped: skipped,
+    blockCounts: plan.blockCounts || {}
   };
-  campaignLog_(dryRun ? "CAMPAIGN_DRY_RUN_SUMMARY" : "CAMPAIGN_SEND_SUMMARY", summary);
-  return summary;
 }
 
 function campaign_syncResponses_() {
@@ -5932,7 +6486,6 @@ function campaign_processBounces_() {
 function campaign_sendLegacyFollowups_(limit) {
   var batchLimit = Math.max(1, Math.floor(Number(limit || CONFIG.CAMPAIGN_BATCH_SIZE_DEFAULT || 50)));
   var ctx = campaignGetContext_();
-  var sh = ctx.sheet;
   var headers = ctx.headers;
   var now = new Date();
   var todayTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -5946,7 +6499,7 @@ function campaign_sendLegacyFollowups_(limit) {
     var rowObj = campaignRowObjectFromValues_(headers, ctx.values[r]);
     if (normalizeEmailStatus_(rowObj.Email_Status || "") !== "SENT") continue;
     if (isCampaignPortalSubmittedActive_(rowObj)) {
-      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: "PORTAL_SUBMITTED" });
+      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: "PORTAL_ALREADY_SUBMITTED" });
       continue;
     }
     if (isCampaignBounceFlagTrue_(rowObj.Email_Bounce_Flag)) continue;
@@ -5954,26 +6507,10 @@ function campaign_sendLegacyFollowups_(limit) {
     if (!(nextActionTs > 0) || nextActionTs > todayTs) continue;
     var attemptCount = campaignAttemptCount_(rowObj);
     if (attemptCount < 1 || attemptCount >= 3) continue;
-    var preview = campaignBuildEmailPreview_(rowObj, rowNumber, attemptCount, batchLabel);
-    if (!preview.ok) {
-      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: preview.code || "NO_SECRET" });
-      continue;
-    }
     selected++;
-    var sendRes = campaignSendEmailGmail_(preview.effectiveEmail, preview.subject, preview.body);
-    if (!sendRes.ok) {
-      skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: sendRes.error || "SEND_FAILED" });
-      continue;
-    }
-    var nextAttempt = attemptCount + 1;
-    applyPatch_(sh, rowNumber, {
-      Email_Status: "SENT",
-      Email_Last_Sent_At: now.toISOString(),
-      Email_Attempt_Count: nextAttempt,
-      Email_Next_Action_Date: computeNextActionDate_(nextAttempt, now),
-      Email_Campaign_Batch: batchLabel
-    });
-    sent++;
+    var sendRes = sendApplicantMessage_(clean_(rowObj.ApplicantID || ""), "reminder", { batchLabel: batchLabel });
+    if (sendRes.result === "sent") sent++;
+    else skipped.push({ applicantId: clean_(rowObj.ApplicantID || ""), rowNumber: rowNumber, reason: clean_(sendRes.blockCode || sendRes.code || sendRes.error || "SEND_FAILED") });
   }
   var summary = {
     ok: true,
