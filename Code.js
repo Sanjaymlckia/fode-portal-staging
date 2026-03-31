@@ -5697,6 +5697,7 @@ function communicationGetActorInfo_(opts) {
 function communicationBlockReason_(code, messageType) {
   var map = {
     NO_EFFECTIVE_EMAIL: "No effective parent email is available.",
+    INVALID_EMAIL: "Applicant does not have a valid email address.",
     BOUNCED: "This applicant email is marked as bounced.",
     DO_NOT_CONTACT: "This applicant is marked as do not contact.",
     PORTAL_ALREADY_SUBMITTED: "The portal has already been submitted for this applicant.",
@@ -5714,6 +5715,12 @@ function communicationBlockReason_(code, messageType) {
 
 function communicationRequiresPortalUrl_(messageType) {
   return ["legacy_invite", "reminder", "docs_missing", "payment_followup"].indexOf(clean_(messageType || "")) >= 0;
+}
+
+function isValidEffectiveEmail_(email) {
+  var v = String(email || "").trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
 function communicationDocsMissing_(rowObj) {
@@ -5833,10 +5840,10 @@ function resolveApplicantMessageContext_(applicantId, messageType, opts) {
     batchLabel: clean_(options.batchLabel || "")
   };
 
-  function block(code) {
+  function block(code, reason) {
     context.eligible = false;
     context.blockCode = clean_(code || "");
-    context.blockReason = communicationBlockReason_(context.blockCode, context.messageType);
+    context.blockReason = clean_(reason || communicationBlockReason_(context.blockCode, context.messageType));
     return context;
   }
 
@@ -5860,7 +5867,8 @@ function resolveApplicantMessageContext_(applicantId, messageType, opts) {
   context.paymentVerified = derivePaymentBadge_(rowObj) === "Verified" || clean_(rowObj.Payment_Verified || "") === "Yes";
   context.requiresPortalUrl = communicationRequiresPortalUrl_(normalizedType);
 
-  if (!isValidCampaignEmail_(context.effectiveEmail)) return block("NO_EFFECTIVE_EMAIL");
+  if (!clean_(context.effectiveEmail || "")) return block("NO_EFFECTIVE_EMAIL");
+  if (!isValidEffectiveEmail_(context.effectiveEmail)) return block("INVALID_EMAIL", "Applicant does not have a valid email address.");
   if (isCampaignBounceFlagTrue_(rowObj.Email_Bounce_Flag)) return block("BOUNCED");
   if (context.emailStatus === "DO_NOT_CONTACT") return block("DO_NOT_CONTACT");
 
@@ -5890,6 +5898,20 @@ function resolveApplicantMessageContext_(applicantId, messageType, opts) {
   return context;
 }
 
+function hasPriorSuccessfulMessageSend_(context) {
+  var ctx = context || {};
+  var rowObj = ctx.rowObj || {};
+  var messageType = normalizeApplicantMessageType_(ctx.messageType || "");
+  var lastType = normalizeApplicantMessageType_(rowObj.Last_Contact_Type || "");
+  var emailStatus = normalizeEmailStatus_(ctx.emailStatus || rowObj.Email_Status || "");
+  var lastResult = clean_(rowObj.Last_Contact_Result || "").toUpperCase();
+  var lastContactedAt = clean_(rowObj.Last_Contacted_At || "");
+  var cachedSentAt = messageType ? getLastCommunicationSentAt_(ctx.applicantId || rowObj.ApplicantID || "", messageType) : "";
+
+  if (!messageType) return false;
+  if (cachedSentAt) return true;
+  return emailStatus === "SENT" && lastType === messageType && (!!lastContactedAt || lastResult === "SENT");
+}
 
 function recordApplicantContactOutcome_(context, outcome, extra) {
   var ctx = context || {};
@@ -6091,10 +6113,12 @@ function sendApplicantMessage_(applicantId, messageType, opts) {
   var options = opts && typeof opts === "object" ? opts : {};
   var context = resolveApplicantMessageContext_(applicantId, messageType, Object.assign({}, options, { action: "send" }));
   if (!context.eligible) {
-    recordApplicantContactOutcome_(context, "BLOCKED", {
-      actorEmail: clean_(options.actorEmail || context.actorEmail || (typeof getCallerEmail_ === "function" ? getCallerEmail_() : "") || ""),
-      batchLabel: clean_(options.batchLabel || "")
-    });
+    if (!hasPriorSuccessfulMessageSend_(context)) {
+      recordApplicantContactOutcome_(context, "BLOCKED", {
+        actorEmail: clean_(options.actorEmail || context.actorEmail || (typeof getCallerEmail_ === "function" ? getCallerEmail_() : "") || ""),
+        batchLabel: clean_(options.batchLabel || "")
+      });
+    }
     var blocked = {
       ok: true,
       action: "send",
