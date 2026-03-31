@@ -433,6 +433,27 @@
       <div id="stageDashboardCards" class="stageCards"></div>
     </div>
 
+    <div id="stageBatchPanel" class="card queue-panel">
+      <h3>Stage Batch Actions</h3>
+      <div class="commMeta">
+        <div class="box"><div class="k">Selected Stage</div><div class="v" id="stageBatchSelectedStage">&mdash;</div></div>
+        <div class="box"><div class="k">Priority</div><div class="v" id="stageBatchPriority">&mdash;</div></div>
+        <div class="box"><div class="k">Recommended Message Type</div><div class="v" id="stageBatchMessageType">&mdash;</div></div>
+        <div class="box"><div class="k">Sendable</div><div class="v" id="stageBatchSendable">&mdash;</div></div>
+        <div class="box"><div class="k">Disabled Reason</div><div class="v" id="stageBatchDisabledReason">&mdash;</div></div>
+      </div>
+      <div class="commControls">
+        <div class="field" style="max-width:180px;">
+          <label>Batch Size</label>
+          <input id="stageBatchLimit" type="number" min="1" max="100" step="1" value="50">
+        </div>
+        <button id="btnStageBatchPreview" class="btn small" type="button" onclick="previewStageBatchUi_()">Preview Cohort</button>
+        <button id="btnStageBatchSend" class="btn small ok" type="button" onclick="sendStageBatchUi_()" disabled>Send Stage Batch</button>
+        <div id="stageBatchInlineNote" class="muted" style="font-size:12px;"></div>
+      </div>
+      <div id="stageBatchSummary" class="sendSummary hidden"></div>
+    </div>
+
     <div id="reviewQueuesPanel" class="card queue-panel">
       <h3>Review Queues</h3>
       <div id="queueDocs" class="queue-section"></div>
@@ -713,6 +734,14 @@
     };
     let stageDashboardState = [];
     let selectedStageFilter = "";
+    let stageBatchState = {
+      busy: false,
+      action: "",
+      result: null,
+      previewReadyStage: "",
+      previewReadyLimit: 50,
+      previewEligible: 0
+    };
     let currentRowNumber = null;
     let currentDetail = null;
     let modalState = {
@@ -1437,6 +1466,196 @@
         ? ("Table filter: " + selectedStageFilter + " (click again to clear)")
         : "Click a stage to filter the applicant table.";
     }
+    function getBatchMessageTypeForStageUi_(stage){
+      var normalized = String(stage || "").trim().toUpperCase();
+      if (normalized === "INVITE_PENDING") return "legacy_invite";
+      if (["INVITED_AWAITING_RESPONSE", "REMINDER_DUE", "DOCS_REQUIRED", "PAYMENT_REQUIRED", "RECEIPT_AWAITING_VERIFICATION"].indexOf(normalized) >= 0) return "reminder";
+      return "";
+    }
+    function isBatchSendableStageUi_(stage){
+      return !!getBatchMessageTypeForStageUi_(stage);
+    }
+    function clampStageBatchLimitUi_(raw){
+      var n = Math.floor(Number(raw || 0));
+      if (!(n > 0)) return 50;
+      return Math.max(1, Math.min(100, n));
+    }
+    function getStageBatchLimitUi_(){
+      var el = document.getElementById("stageBatchLimit");
+      var value = clampStageBatchLimitUi_(el && el.value);
+      if (el) el.value = String(value);
+      return value;
+    }
+    function clearStageBatchPreviewState_(preserveResult){
+      stageBatchState.previewReadyStage = "";
+      stageBatchState.previewReadyLimit = 50;
+      stageBatchState.previewEligible = 0;
+      if (!preserveResult) stageBatchState.result = null;
+    }
+    function renderStageBatchSummary_(res){
+      var box = document.getElementById("stageBatchSummary");
+      if (!box) return;
+      if (!res) {
+        box.classList.add("hidden");
+        box.classList.remove("err");
+        box.innerHTML = "";
+        return;
+      }
+      var parts = [];
+      var blockedMap = (res && typeof res.blockedByReason === "object" && res.blockedByReason) ? res.blockedByReason : {};
+      var blockedList = Object.keys(blockedMap).sort().map(function(key){
+        return '<span>' + esc(key) + ': ' + esc(String(Number(blockedMap[key] || 0))) + '</span>';
+      }).join(' | ');
+      if (res.ok === false) {
+        parts.push('<div style="font-weight:800;">Batch Action Failed</div>');
+        if (res.blockCode || res.code) parts.push('<div style="margin-top:6px;">Code: ' + esc(String(res.blockCode || res.code || "ERROR")) + '</div>');
+        if (res.blockReason || res.message || res.error) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.blockReason || res.message || res.error || "Server returned an error.")) + '</div>');
+      } else if (stageBatchState.action === "preview") {
+        parts.push('<div style="font-weight:800;">Batch Preview</div>');
+        parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
+        parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Sendable: ' + esc(res.sendable ? "YES" : "NO") + '</div>');
+        parts.push('<div style="margin-top:6px;">Total in Stage: ' + esc(String(Number(res.totalInStage || 0))) + ' | Preview Limit: ' + esc(String(Number(res.previewLimit || 0))) + ' | Scanned: ' + esc(String(Number(res.scanned || 0))) + '</div>');
+        parts.push('<div style="margin-top:6px;">Eligible: ' + esc(String(Number(res.eligible || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + '</div>');
+        if (res.sendDisabledReason) parts.push('<div style="margin-top:6px;">Reason: ' + esc(String(res.sendDisabledReason || "")) + '</div>');
+        if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
+        if (Array.isArray(res.eligibleApplicantIdsSample) && res.eligibleApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Eligible Sample: ' + esc(res.eligibleApplicantIdsSample.join(", ")) + '</div>');
+        if (Array.isArray(res.blockedApplicantIdsSample) && res.blockedApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Blocked Sample: ' + esc(res.blockedApplicantIdsSample.join(", ")) + '</div>');
+      } else if (stageBatchState.action === "send") {
+        parts.push('<div style="font-weight:800;">Batch Send</div>');
+        parts.push('<div style="margin-top:6px;">Stage: ' + esc(String(res.stage || "")) + ' | Priority: ' + esc(String(res.priority || "")) + '</div>');
+        parts.push('<div style="margin-top:6px;">Message: ' + esc(String(res.messageType || "(none)")) + ' | Send Limit: ' + esc(String(Number(res.sendLimit || 0))) + '</div>');
+        parts.push('<div style="margin-top:6px;">Total in Stage at Send: ' + esc(String(Number(res.totalInStageAtSend || 0))) + ' | Attempted: ' + esc(String(Number(res.attempted || 0))) + '</div>');
+        parts.push('<div style="margin-top:6px;">Sent: ' + esc(String(Number(res.sent || 0))) + ' | Blocked: ' + esc(String(Number(res.blocked || 0))) + ' | Failed: ' + esc(String(Number(res.failed || 0))) + '</div>');
+        if (blockedList) parts.push('<div style="margin-top:6px;">Blocked By Reason: ' + blockedList + '</div>');
+        if (Array.isArray(res.sentApplicantIdsSample) && res.sentApplicantIdsSample.length) parts.push('<div style="margin-top:6px;">Sent Sample: ' + esc(res.sentApplicantIdsSample.join(", ")) + '</div>');
+      }
+      if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(String(res.debugId || "")) + '</div>');
+      box.classList.remove("hidden");
+      box.classList.toggle("err", !!(res && res.ok === false));
+      box.innerHTML = parts.join("");
+    }
+    function renderStageBatchUi_(){
+      var selectedStage = String(selectedStageFilter || "").trim().toUpperCase();
+      var priority = selectedStage ? mapStagePriorityUi_(selectedStage) : "";
+      var messageType = selectedStage ? getBatchMessageTypeForStageUi_(selectedStage) : "";
+      var sendable = !!messageType;
+      var limit = getStageBatchLimitUi_();
+      var stageEl = document.getElementById("stageBatchSelectedStage");
+      var priorityEl = document.getElementById("stageBatchPriority");
+      var msgTypeEl = document.getElementById("stageBatchMessageType");
+      var sendableEl = document.getElementById("stageBatchSendable");
+      var disabledReasonEl = document.getElementById("stageBatchDisabledReason");
+      var previewBtn = document.getElementById("btnStageBatchPreview");
+      var sendBtn = document.getElementById("btnStageBatchSend");
+      var noteEl = document.getElementById("stageBatchInlineNote");
+      if (stageEl) stageEl.textContent = selectedStage || "-";
+      if (priorityEl) priorityEl.innerHTML = selectedStage ? renderPriorityBadge_(priority) : "&mdash;";
+      if (msgTypeEl) msgTypeEl.textContent = messageType || "-";
+      if (sendableEl) sendableEl.textContent = selectedStage ? (sendable ? "YES" : "NO") : "-";
+      var disabledReason = "";
+      if (!selectedStage) disabledReason = "Select a stage card to preview or send a cohort.";
+      else if (!IS_SUPER) disabledReason = "SUPER admin required for stage batch actions.";
+      else if (!sendable) disabledReason = "No batch message is supported for this stage.";
+      if (disabledReasonEl) disabledReasonEl.textContent = disabledReason || "-";
+      var previewReady = stageBatchState.previewReadyStage === selectedStage
+        && Number(stageBatchState.previewReadyLimit || 0) === limit
+        && Number(stageBatchState.previewEligible || 0) > 0;
+      if (previewBtn) {
+        previewBtn.disabled = !selectedStage || stageBatchState.busy || !IS_SUPER;
+        previewBtn.textContent = stageBatchState.busy && stageBatchState.action === "preview" ? "Previewing..." : "Preview Cohort";
+      }
+      if (sendBtn) {
+        sendBtn.disabled = !selectedStage || !sendable || !previewReady || stageBatchState.busy || !IS_SUPER;
+        sendBtn.textContent = stageBatchState.busy && stageBatchState.action === "send" ? "Sending..." : "Send Stage Batch";
+      }
+      if (noteEl) {
+        if (stageBatchState.busy && stageBatchState.action === "preview") noteEl.textContent = "Loading cohort preview...";
+        else if (stageBatchState.busy && stageBatchState.action === "send") noteEl.textContent = "Sending stage cohort...";
+        else if (disabledReason) noteEl.textContent = disabledReason;
+        else if (previewReady) noteEl.textContent = "Preview ready for send.";
+        else noteEl.textContent = "Preview is required before send.";
+      }
+      renderStageBatchSummary_(stageBatchState.result);
+    }
+    function onStageBatchLimitChange_(){
+      getStageBatchLimitUi_();
+      clearStageBatchPreviewState_(false);
+      renderStageBatchUi_();
+    }
+    function bindStageBatchControls_(){
+      var input = document.getElementById("stageBatchLimit");
+      if (input && input.dataset.bound !== "1") {
+        input.dataset.bound = "1";
+        input.addEventListener("change", onStageBatchLimitChange_);
+        input.addEventListener("input", onStageBatchLimitChange_);
+      }
+      renderStageBatchUi_();
+    }
+    function previewStageBatchUi_(){
+      var stage = String(selectedStageFilter || "").trim().toUpperCase();
+      var limit = getStageBatchLimitUi_();
+      if (!stage || stageBatchState.busy || !IS_SUPER) return;
+      clearStageBatchPreviewState_(false);
+      stageBatchState.busy = true;
+      stageBatchState.action = "preview";
+      renderStageBatchUi_();
+      google.script.run
+        .withSuccessHandler(function(res){
+          stageBatchState.busy = false;
+          stageBatchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid preview response.", debugId: "" };
+          if (stageBatchState.result && stageBatchState.result.ok === true && String(stageBatchState.result.stage || "").toUpperCase() === stage && Number(stageBatchState.result.previewLimit || 0) === limit && stageBatchState.result.sendable === true && Number(stageBatchState.result.eligible || 0) > 0) {
+            stageBatchState.previewReadyStage = stage;
+            stageBatchState.previewReadyLimit = limit;
+            stageBatchState.previewEligible = Number(stageBatchState.result.eligible || 0);
+          } else {
+            clearStageBatchPreviewState_(true);
+          }
+          renderStageBatchUi_();
+        })
+        .withFailureHandler(function(err){
+          stageBatchState.busy = false;
+          clearStageBatchPreviewState_(false);
+          stageBatchState.action = "preview";
+          stageBatchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
+          renderStageBatchUi_();
+        })
+        .admin_previewStageBatch({ stage: stage, limit: limit });
+    }
+    function sendStageBatchUi_(){
+      var stage = String(selectedStageFilter || "").trim().toUpperCase();
+      var limit = getStageBatchLimitUi_();
+      var messageType = getBatchMessageTypeForStageUi_(stage);
+      var previewReady = stageBatchState.previewReadyStage === stage
+        && Number(stageBatchState.previewReadyLimit || 0) === limit
+        && Number(stageBatchState.previewEligible || 0) > 0
+        && !!messageType;
+      if (!previewReady || stageBatchState.busy || !IS_SUPER) return;
+      var confirmText = "Send " + messageType.replaceAll("_", " ") + " to the first " + String(limit) + " applicants in stage " + stage + "? Preview eligible: " + String(Number(stageBatchState.previewEligible || 0)) + ".";
+      if (!window.confirm(confirmText)) return;
+      stageBatchState.busy = true;
+      stageBatchState.action = "send";
+      renderStageBatchUi_();
+      google.script.run
+        .withSuccessHandler(function(res){
+          stageBatchState.busy = false;
+          stageBatchState.result = res && typeof res === "object" ? res : { ok: false, message: "Invalid send response.", debugId: "" };
+          clearStageBatchPreviewState_(true);
+          renderStageBatchUi_();
+          if (stageBatchState.result && stageBatchState.result.ok === true) {
+            loadStageDashboard({ force: 1 });
+            loadReviewQueues({ force: 1 });
+            if (selectedStageFilter) search();
+          }
+        })
+        .withFailureHandler(function(err){
+          stageBatchState.busy = false;
+          clearStageBatchPreviewState_(false);
+          stageBatchState.action = "send";
+          stageBatchState.result = { ok: false, message: String((err && err.message) || err || "Server failure"), debugId: "" };
+          renderStageBatchUi_();
+        })
+        .admin_sendStageBatch({ stage: stage, limit: limit, confirmSend: true });
+    }
     function renderStageDashboard_(items, emptyMessage){
       stageDashboardState = Array.isArray(items) ? items.slice() : [];
       var box = document.getElementById("stageDashboardCards");
@@ -1477,7 +1696,9 @@
     function toggleStageFilter(stage){
       var normalized = String(stage || "").trim().toUpperCase();
       selectedStageFilter = (selectedStageFilter === normalized) ? "" : normalized;
+      clearStageBatchPreviewState_(false);
       renderStageDashboard_(stageDashboardState);
+      renderStageBatchUi_();
       search();
     }
     function loadReviewQueues(opts){
@@ -3090,6 +3311,7 @@
         fetchRuntimeInfo_();
         initQueuePanelEvents_();
         bindDocsFollowupControls_();
+        bindStageBatchControls_();
         loadStageDashboard();
         loadReviewQueues();
       });
@@ -3097,6 +3319,7 @@
       fetchRuntimeInfo_();
       initQueuePanelEvents_();
       bindDocsFollowupControls_();
+      bindStageBatchControls_();
         loadStageDashboard();
         loadReviewQueues();
     }

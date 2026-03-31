@@ -2967,6 +2967,269 @@ function adminCommBlockedResult_(action, blockCode, debugId, extra) {
   };
 }
 
+function normalizeStageBatchStage_(stage) {
+  var normalized = clean_(stage || "").toUpperCase();
+  if (!normalized || normalized === "UNKNOWN") return "";
+  return stageAggregationSortIndex_(normalized) < 99 ? normalized : "";
+}
+
+function getBatchMessageTypeForStage_(stage) {
+  var normalized = normalizeStageBatchStage_(stage);
+  switch (normalized) {
+    case "INVITE_PENDING":
+      return "legacy_invite";
+    case "INVITED_AWAITING_RESPONSE":
+    case "REMINDER_DUE":
+    case "DOCS_REQUIRED":
+    case "PAYMENT_REQUIRED":
+    case "RECEIPT_AWAITING_VERIFICATION":
+      return "reminder";
+    default:
+      return "";
+  }
+}
+
+function isBatchSendableStage_(stage) {
+  return !!getBatchMessageTypeForStage_(stage);
+}
+
+function clampStageBatchLimit_(rawLimit) {
+  var n = Math.floor(Number(rawLimit || 0));
+  if (!(n > 0)) return 50;
+  return Math.max(1, Math.min(100, n));
+}
+
+function getStageBatchPreviewCacheKey_(adminEmail) {
+  return "ADMIN_STAGE_BATCH_PREVIEW::" + clean_(adminEmail || "").toLowerCase();
+}
+
+function readStageBatchPreviewCache_(adminEmail) {
+  try {
+    var raw = CacheService.getUserCache().get(getStageBatchPreviewCacheKey_(adminEmail));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_cacheErr) {
+    return null;
+  }
+}
+
+function writeStageBatchPreviewCache_(adminEmail, value) {
+  try {
+    CacheService.getUserCache().put(getStageBatchPreviewCacheKey_(adminEmail), JSON.stringify(value || {}), 600);
+  } catch (_cacheErr) {}
+}
+
+function clearStageBatchPreviewCache_(adminEmail) {
+  try {
+    CacheService.getUserCache().remove(getStageBatchPreviewCacheKey_(adminEmail));
+  } catch (_cacheErr) {}
+}
+
+function incrementStageBatchReason_(map, code) {
+  var key = clean_(code || "BLOCKED").toUpperCase() || "BLOCKED";
+  map[key] = Number(map[key] || 0) + 1;
+}
+
+function pushStageBatchSample_(list, applicantId) {
+  var id = clean_(applicantId || "");
+  if (!id) return;
+  if (list.indexOf(id) >= 0) return;
+  if (list.length < 10) list.push(id);
+}
+
+function collectStageBatchCohort_(stage, limit) {
+  var normalizedStage = normalizeStageBatchStage_(stage);
+  var batchLimit = clampStageBatchLimit_(limit);
+  var sh = openDataSheet_();
+  var values = sh.getDataRange().getValues();
+  var headers = (values && values.length) ? values[0] : [];
+  var totalInStage = 0;
+  var candidates = [];
+  if (!headers.length || values.length < 2 || !normalizedStage) {
+    return {
+      stage: normalizedStage,
+      limit: batchLimit,
+      totalInStage: 0,
+      candidates: []
+    };
+  }
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r] || [];
+    var rowObj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var h = clean_(headers[c]);
+      if (h) rowObj[h] = row[c];
+    }
+    var applicantId = clean_(rowObj.ApplicantID || "");
+    if (!applicantId) continue;
+    var snapshot = stageAggregationSnapshot_(rowObj);
+    if (clean_(snapshot.stage || "").toUpperCase() !== normalizedStage) continue;
+    totalInStage++;
+    if (candidates.length < batchLimit) {
+      candidates.push({
+        applicantId: applicantId,
+        rowNumber: r + 1
+      });
+    }
+  }
+  return {
+    stage: normalizedStage,
+    limit: batchLimit,
+    totalInStage: totalInStage,
+    candidates: candidates
+  };
+}
+
+function admin_previewStageBatch(payload) {
+  return withEnvelope_("admin_previewStageBatch", function (dbgId) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    requireSuperAdmin_(adminEmail);
+    var p = payload && typeof payload === "object" ? payload : {};
+    var actor = resolveAdminCommActor_(p);
+    var stage = normalizeStageBatchStage_(p.stage || "");
+    var limit = clampStageBatchLimit_(p.limit);
+    if (!stage) {
+      return adminCommBlockedResult_("preview_stage_batch", "UNSUPPORTED_STAGE", dbgId, {
+        blockReason: "Unsupported stage for batch preview.",
+        limit: limit
+      });
+    }
+    var messageType = getBatchMessageTypeForStage_(stage);
+    var sendable = !!messageType;
+    var priority = mapStagePriority_(stage);
+    var cohort = collectStageBatchCohort_(stage, limit);
+    var out = {
+      ok: true,
+      stage: stage,
+      priority: priority,
+      messageType: messageType,
+      sendable: sendable,
+      sendDisabledReason: sendable ? "" : "No batch message is supported for this stage.",
+      totalInStage: Number(cohort.totalInStage || 0),
+      previewLimit: Number(cohort.limit || limit),
+      scanned: Number((cohort.candidates || []).length || 0),
+      eligible: 0,
+      blocked: 0,
+      blockedByReason: {},
+      eligibleApplicantIdsSample: [],
+      blockedApplicantIdsSample: []
+    };
+    if (!sendable) {
+      clearStageBatchPreviewCache_(adminEmail);
+      return out;
+    }
+    var batchLabel = "STAGE_PREVIEW::" + stage + "::" + dbgId;
+    (cohort.candidates || []).forEach(function (candidate) {
+      var preview = previewApplicantMessage_(candidate.applicantId, messageType, {
+        actorEmail: actor.actorEmail,
+        actorRole: actor.actorRole,
+        batchLabel: batchLabel
+      });
+      if (preview && preview.eligible === true && clean_(preview.result || "").toUpperCase() === "PREVIEW") {
+        out.eligible++;
+        pushStageBatchSample_(out.eligibleApplicantIdsSample, candidate.applicantId);
+      } else {
+        out.blocked++;
+        incrementStageBatchReason_(out.blockedByReason, preview && (preview.blockCode || preview.code || "BLOCKED"));
+        pushStageBatchSample_(out.blockedApplicantIdsSample, candidate.applicantId);
+      }
+    });
+    if (out.eligible > 0) {
+      writeStageBatchPreviewCache_(adminEmail, {
+        stage: stage,
+        limit: Number(out.previewLimit || limit),
+        messageType: messageType,
+        eligible: Number(out.eligible || 0),
+        debugId: dbgId
+      });
+    } else {
+      clearStageBatchPreviewCache_(adminEmail);
+    }
+    return out;
+  });
+}
+
+function admin_sendStageBatch(payload) {
+  return withEnvelope_("admin_sendStageBatch", function (dbgId) {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    requireSuperAdmin_(adminEmail);
+    var p = payload && typeof payload === "object" ? payload : {};
+    var actor = resolveAdminCommActor_(p);
+    var stage = normalizeStageBatchStage_(p.stage || "");
+    var limit = clampStageBatchLimit_(p.limit);
+    if (p.confirmSend !== true) {
+      return adminCommBlockedResult_("send_stage_batch", "CONFIRM_REQUIRED", dbgId, {
+        blockReason: "Explicit confirmation is required before batch send.",
+        limit: limit
+      });
+    }
+    if (!stage) {
+      return adminCommBlockedResult_("send_stage_batch", "UNSUPPORTED_STAGE", dbgId, {
+        blockReason: "Unsupported stage for batch send.",
+        limit: limit
+      });
+    }
+    var messageType = getBatchMessageTypeForStage_(stage);
+    if (!messageType) {
+      return adminCommBlockedResult_("send_stage_batch", "STAGE_NOT_SENDABLE", dbgId, {
+        blockReason: "No batch message is supported for this stage.",
+        limit: limit
+      });
+    }
+    var previewGate = readStageBatchPreviewCache_(adminEmail);
+    if (!previewGate
+      || clean_(previewGate.stage || "").toUpperCase() !== stage
+      || Number(previewGate.limit || 0) !== limit
+      || clean_(previewGate.messageType || "") !== messageType
+      || !(Number(previewGate.eligible || 0) > 0)) {
+      return adminCommBlockedResult_("send_stage_batch", "PREVIEW_REQUIRED", dbgId, {
+        blockReason: "A successful preview for the same stage and batch size is required before send.",
+        limit: limit,
+        messageType: messageType
+      });
+    }
+    var priority = mapStagePriority_(stage);
+    var cohort = collectStageBatchCohort_(stage, limit);
+    var out = {
+      ok: true,
+      stage: stage,
+      priority: priority,
+      messageType: messageType,
+      sendable: true,
+      totalInStageAtSend: Number(cohort.totalInStage || 0),
+      sendLimit: Number(cohort.limit || limit),
+      attempted: 0,
+      sent: 0,
+      blocked: 0,
+      failed: 0,
+      blockedByReason: {},
+      sentApplicantIdsSample: []
+    };
+    var batchLabel = "STAGE_SEND::" + stage + "::" + dbgId;
+    (cohort.candidates || []).forEach(function (candidate) {
+      out.attempted++;
+      var sendResult = sendApplicantMessage_(candidate.applicantId, messageType, {
+        actorEmail: actor.actorEmail,
+        actorRole: actor.actorRole,
+        batchLabel: batchLabel
+      });
+      var resultType = clean_(sendResult && sendResult.result || "").toUpperCase();
+      if (resultType === "SENT") {
+        out.sent++;
+        pushStageBatchSample_(out.sentApplicantIdsSample, candidate.applicantId);
+      } else if (resultType === "BLOCKED") {
+        out.blocked++;
+        incrementStageBatchReason_(out.blockedByReason, sendResult && (sendResult.blockCode || sendResult.code || "BLOCKED"));
+      } else {
+        out.failed++;
+      }
+    });
+    clearStageBatchPreviewCache_(adminEmail);
+    return out;
+  });
+}
+
 function admin_previewApplicantMessage(payload) {
   return withEnvelope_("admin_previewApplicantMessage", function (dbgId) {
     var adminEmail = getActiveUserEmail_();
