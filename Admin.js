@@ -1971,6 +1971,89 @@ function getStageAggregationCacheKey_(adminEmail) {
   return "ADMIN_STAGE_AGG::" + clean_(adminEmail || "").toLowerCase();
 }
 
+function stageAggregationRecommendedMessageType_(stage) {
+  switch (clean_(stage || "").toUpperCase()) {
+    case "INVITE_PENDING":
+      return "legacy_invite";
+    case "INVITED_AWAITING_RESPONSE":
+    case "REMINDER_DUE":
+    case "DOCS_REQUIRED":
+    case "PAYMENT_REQUIRED":
+    case "RECEIPT_AWAITING_VERIFICATION":
+      return "reminder";
+    default:
+      return "";
+  }
+}
+
+function stageAggregationEffectiveEmail_(rowObj) {
+  var row = rowObj || {};
+  return clean_(row.Effective_Email || row.Parent_Email_Corrected || row.Parent_Email || "");
+}
+
+function stageAggregationIsValidEmail_(email) {
+  var value = String(email || "").trim();
+  if (!value) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function stageAggregationSnapshot_(rowObj) {
+  var row = rowObj || {};
+  var emailStatus = normalizeEmailStatus_(row.Email_Status || "");
+  var effectiveEmail = stageAggregationEffectiveEmail_(row);
+  var portalSubmittedActive = isCampaignPortalSubmittedActive_(row);
+  var bounceFlag = isCampaignBounceFlagTrue_(row.Email_Bounce_Flag);
+  var docsVerified = computeDocVerificationStatus_(row) === "Verified" || clean_(row.Docs_Verified || "") === "Yes";
+  var paymentBadge = derivePaymentBadge_(row);
+  var paymentVerified = paymentBadge === "Verified" || clean_(row.Payment_Verified || "") === "Yes";
+  var receiptStatus = clean_(row.Receipt_Status || "");
+  var receiptEvidencePresent = !!receiptStatus || !!clean_(row.Fee_Receipt_File || "");
+  var attemptCount = campaignAttemptCount_(row);
+  var nextActionTs = parseTime_(row.Email_Next_Action_Date || "");
+  var now = new Date();
+  var todayTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var keys = typeof resolveDocStatusKeys_ === "function" ? resolveDocStatusKeys_(row) : {};
+  var docSignals = [keys.birth, keys.report, keys.photo, keys.transfer].filter(Boolean).some(function (key) {
+    return !!clean_(row[key] || "");
+  });
+  var docStage = computeDocVerificationStatus_(row);
+  var reminderDue = emailStatus === "SENT"
+    && !portalSubmittedActive
+    && !bounceFlag
+    && attemptCount >= 1
+    && attemptCount < 3
+    && nextActionTs > 0
+    && nextActionTs <= todayTs;
+  var stage = "INVITE_PENDING";
+  var commStatus = "ACTIONABLE";
+  var recommendedMessageType = "";
+
+  if (paymentVerified) stage = "COMPLETE";
+  else if (portalSubmittedActive || emailStatus === "RESPONDED") stage = "PROCESSING";
+  else if (docsVerified && !paymentVerified && paymentBadge !== "Verified" && receiptEvidencePresent) stage = "RECEIPT_AWAITING_VERIFICATION";
+  else if (docsVerified && !paymentVerified) stage = "PAYMENT_REQUIRED";
+  else if (!docsVerified && (docSignals || docStage === "Rejected")) stage = "DOCS_REQUIRED";
+  else if (reminderDue) stage = "REMINDER_DUE";
+  else if (emailStatus === "SENT") stage = "INVITED_AWAITING_RESPONSE";
+
+  recommendedMessageType = stageAggregationRecommendedMessageType_(stage);
+
+  if (!stageAggregationIsValidEmail_(effectiveEmail)) commStatus = "INVALID_EMAIL";
+  else if (bounceFlag) commStatus = "BOUNCED";
+  else if (emailStatus === "DO_NOT_CONTACT") commStatus = "DO_NOT_CONTACT";
+  else if (portalSubmittedActive) commStatus = "PORTAL_SUBMITTED";
+  else if (emailStatus === "RESPONDED") commStatus = "RESPONDED";
+  else if (stage === "INVITED_AWAITING_RESPONSE") commStatus = "COOLDOWN";
+  else if (!recommendedMessageType) commStatus = "NOT_STAGE_MESSAGE_MATCH";
+
+  return {
+    stage: stage,
+    priority: mapStagePriority_(stage),
+    commStatus: commStatus,
+    canSendNow: commStatus === "ACTIONABLE"
+  };
+}
+
 function admin_getStageAggregation(payload) {
   var adminEmail = getActiveUserEmail_();
   if (!isAdmin_(adminEmail)) throw new Error("Access denied");
@@ -2000,9 +2083,10 @@ function admin_getStageAggregation(payload) {
       if (h) rowObj[h] = row[c];
     }
     if (!clean_(rowObj.ApplicantID || "")) continue;
-    var derived = getApplicantStageAndEligibility_(rowObj);
+    // Keep dashboard aggregation O(N): row snapshot only, no send resolver or sheet re-lookups.
+    var derived = stageAggregationSnapshot_(rowObj);
     var stage = clean_(derived.stage || "UNKNOWN").toUpperCase() || "UNKNOWN";
-    var priority = mapStagePriority_(stage);
+    var priority = clean_(derived.priority || mapStagePriority_(stage)).toUpperCase() || "LOW";
     if (!summary[stage]) {
       summary[stage] = {
         stage: stage,

@@ -1437,13 +1437,13 @@
         ? ("Table filter: " + selectedStageFilter + " (click again to clear)")
         : "Click a stage to filter the applicant table.";
     }
-    function renderStageDashboard_(items){
+    function renderStageDashboard_(items, emptyMessage){
       stageDashboardState = Array.isArray(items) ? items.slice() : [];
       var box = document.getElementById("stageDashboardCards");
       if (!box) return;
       updateStageFilterMeta_();
       if (!stageDashboardState.length) {
-        box.innerHTML = '<div class="muted" style="font-size:12px;">No stage data available.</div>';
+        box.innerHTML = '<div class="muted" style="font-size:12px;">' + esc(emptyMessage || "No data or failed to load") + '</div>';
         return;
       }
       box.innerHTML = stageDashboardState.map(function(item){
@@ -1466,11 +1466,11 @@
       google.script.run
         .withSuccessHandler(function(res){
           var rows = (res && Array.isArray(res.stages)) ? res.stages : [];
-          renderStageDashboard_(rows);
+          renderStageDashboard_(rows, rows.length ? "" : "No data or failed to load");
         })
         .withFailureHandler(function(err){
           console.error("[AdminUI] admin_getStageAggregation failure:", err);
-          renderStageDashboard_([]);
+          renderStageDashboard_([], "No data or failed to load");
         })
         .admin_getStageAggregation({ force: o.force ? 1 : 0 });
     }
