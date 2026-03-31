@@ -923,7 +923,12 @@
       else { title = "Preview"; }
       var parts = [];
       parts.push('<div style="font-weight:800;">' + esc(title) + '</div>');
-      if (res.blockReason) parts.push('<div style="margin-top:6px;">' + esc(res.blockReason) + '</div>');
+      if (resultType === "BLOCKED") {
+        parts.push('<div style="margin-top:6px;"><strong>Result:</strong> ' + esc(resultType) + '</div>');
+        if (res.blockCode) parts.push('<div style="margin-top:6px;"><strong>Code:</strong> ' + esc(res.blockCode) + '</div>');
+        if (res.blockReason) parts.push('<div style="margin-top:6px;"><strong>Reason:</strong> ' + esc(res.blockReason) + '</div>');
+        if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;"><strong>Debug:</strong> ' + esc(res.debugId) + '</div>');
+      }
       if (resultType === 'PREVIEW' && res.subject) parts.push('<div style="margin-top:8px;"><strong>Subject:</strong> ' + esc(res.subject) + '</div>');
       if (resultType === 'PREVIEW' && res.body) parts.push('<div class="commPreviewBody">' + esc(res.body) + '</div>');
       if (resultType === "SENT") {
@@ -934,8 +939,8 @@
         var detail = String(res.error || res.message || res.code || "Send failed.").trim();
         parts.push('<div style="margin-top:6px;">' + esc(detail) + '</div>');
       }
-      if (res.blockCode) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Code: ' + esc(res.blockCode) + '</div>');
-      if (res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(res.debugId) + '</div>');
+      if (resultType !== "BLOCKED" && res.blockCode) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Code: ' + esc(res.blockCode) + '</div>');
+      if (resultType !== "BLOCKED" && res.debugId) parts.push('<div class="muted" style="margin-top:6px;font-size:12px;">Debug ID: ' + esc(res.debugId) + '</div>');
       box.className = cls;
       box.innerHTML = parts.join("");
     }
