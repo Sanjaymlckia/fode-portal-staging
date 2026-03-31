@@ -91,6 +91,31 @@
     }
     .queue-section-header .caret{ font-size:12px; color:var(--muted); }
     .queue-section-body.hidden{ display:none; }
+    .stageDashboardMeta{ margin:0 0 10px 0; font-size:12px; color:var(--muted); }
+    .stageCards{ display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px; }
+    .stageCard{
+      width:100%; text-align:left; cursor:pointer;
+      border:1px solid rgba(148,163,184,.18);
+      border-radius:12px;
+      background: rgba(11,18,32,.35);
+      padding:10px;
+      color:inherit;
+    }
+    .stageCard.selected{
+      border-color: rgba(102,178,255,.68);
+      box-shadow: inset 0 0 0 1px rgba(102,178,255,.22);
+      background: rgba(17,26,46,.55);
+    }
+    .stageCardStage{ font-weight:800; font-size:13px; }
+    .stageCardMeta{ margin-top:8px; font-size:12px; color:var(--muted); display:flex; flex-wrap:wrap; gap:8px; }
+    .priorityBadge{
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:2px 8px; border-radius:999px; font-size:11px; font-weight:800;
+      border:1px solid currentColor;
+    }
+    .priorityHigh{ color:#ff4d4f; background:rgba(255,77,79,.12); }
+    .priorityNormal{ color:#faad14; background:rgba(250,173,20,.12); }
+    .priorityLow{ color:#52c41a; background:rgba(82,196,26,.12); }
     .row{ display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
     .field{ flex: 1 1 240px; }
     label{ display:block; font-size:12px; color:var(--labelText); margin-bottom:6px; font-weight:700; }
@@ -277,10 +302,11 @@
       max-height: 92vh;
       overflow:auto;
       border-radius: 18px;
-      background: rgba(17,26,46,.95);
-      border: 1px solid rgba(148,163,184,.18);
+      background: rgba(24,34,58,.97);
+      border: 1px solid rgba(191,219,254,.24);
       padding:16px;
       backdrop-filter: blur(10px);
+      box-shadow: 0 22px 60px rgba(0,0,0,.36), 0 0 0 1px rgba(191,219,254,.05);
     }
     .modalHead{
       display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
@@ -293,6 +319,8 @@
       background: rgba(11,18,32,.45);
     }
     .k{ font-size:12px; color:var(--muted); }
+    .modal .k{ color:#d7e6ff; }
+    .modal label{ color:#e4f0ff; }
     .v{ font-size:13px; margin-top:4px; }
     .docs{ display:grid; grid-template-columns: 1fr; gap:10px; margin-top:8px; }
     .doc{
@@ -397,6 +425,12 @@
     <div id="studentUrlWarn" class="card" style="display:none;border-color: rgba(245,158,11,.45);">
       <div style="color:#f59e0b;font-weight:700;">Student URL warning</div>
       <div class="muted" id="studentUrlWarnText" style="margin-top:6px;"></div>
+    </div>
+
+    <div id="stageDashboardPanel" class="card queue-panel">
+      <h3>Stage Dashboard</h3>
+      <div id="stageFilterMeta" class="stageDashboardMeta">Click a stage to filter the applicant table.</div>
+      <div id="stageDashboardCards" class="stageCards"></div>
     </div>
 
     <div id="reviewQueuesPanel" class="card queue-panel">
@@ -896,6 +930,7 @@
       var d = detail || currentDetail || {};
       var rows = [];
       if (d.Comm_Stage) rows.push({ label: "Stage", value: d.Comm_Stage });
+      if (d.Comm_Stage) rows.push({ label: "Priority", html: renderPriorityBadge_(mapStagePriorityUi_(d.Comm_Stage)) });
       if (d.Comm_Status) rows.push({ label: "Comm Status", value: d.Comm_Status });
       if (d.Comm_Can_Send_Now === true || d.Comm_Can_Send_Now === false) rows.push({ label: "Can Send Now", value: d.Comm_Can_Send_Now ? "YES" : "NO" });
       if (d.Comm_Block_Code) rows.push({ label: "Code", value: d.Comm_Block_Code });
@@ -909,7 +944,7 @@
       }
       var parts = ['<div style="font-weight:800;margin-bottom:6px;">Lifecycle & Eligibility</div>'];
       rows.forEach(function(row){
-        parts.push('<div style="margin-top:4px;"><strong>' + esc(row.label) + ':</strong> ' + esc(row.value) + '</div>');
+        parts.push('<div style="margin-top:4px;"><strong>' + esc(row.label) + ':</strong> ' + (row.html || esc(row.value)) + '</div>');
       });
       box.className = "box";
       box.style.marginTop = "10px";
@@ -1375,10 +1410,77 @@
         : "All available queue rows loaded";
     }
 
+    function mapStagePriorityUi_(stage){
+      var normalized = String(stage || "").trim().toUpperCase();
+      if (normalized === "PAYMENT_REQUIRED" || normalized === "RECEIPT_AWAITING_VERIFICATION") return "HIGH";
+      if (normalized === "DOCS_REQUIRED" || normalized === "REMINDER_DUE" || normalized === "INVITED_AWAITING_RESPONSE") return "NORMAL";
+      return "LOW";
+    }
+    function priorityClassName_(priority){
+      var normalized = String(priority || "").trim().toUpperCase();
+      if (normalized === "HIGH") return "priorityHigh";
+      if (normalized === "NORMAL") return "priorityNormal";
+      return "priorityLow";
+    }
+    function renderPriorityBadge_(priority){
+      var normalized = String(priority || "LOW").trim().toUpperCase() || "LOW";
+      return '<span class="priorityBadge ' + priorityClassName_(normalized) + '">' + esc(normalized) + '</span>';
+    }
+    function updateStageFilterMeta_(){
+      var el = document.getElementById("stageFilterMeta");
+      if (!el) return;
+      el.textContent = selectedStageFilter
+        ? ("Table filter: " + selectedStageFilter + " (click again to clear)")
+        : "Click a stage to filter the applicant table.";
+    }
+    function renderStageDashboard_(items){
+      stageDashboardState = Array.isArray(items) ? items.slice() : [];
+      var box = document.getElementById("stageDashboardCards");
+      if (!box) return;
+      updateStageFilterMeta_();
+      if (!stageDashboardState.length) {
+        box.innerHTML = '<div class="muted" style="font-size:12px;">No stage data available.</div>';
+        return;
+      }
+      box.innerHTML = stageDashboardState.map(function(item){
+        var stage = String((item && item.stage) || "UNKNOWN").trim();
+        var priority = String((item && item.priority) || mapStagePriorityUi_(stage)).trim().toUpperCase();
+        var selected = selectedStageFilter === stage;
+        return '<button type="button" class="stageCard' + (selected ? ' selected' : '') + '" onclick="toggleStageFilter(' + JSON.stringify(stage) + ')">' +
+          '<div class="stageCardStage">' + esc(stage) + '</div>' +
+          '<div style="margin-top:8px;">' + renderPriorityBadge_(priority) + '</div>' +
+          '<div class="stageCardMeta">' +
+            '<span>' + esc(String(Number(item && item.total || 0))) + ' total</span>' +
+            '<span>' + esc(String(Number(item && item.actionable || 0))) + ' actionable</span>' +
+            '<span>' + esc(String(Number(item && item.blocked || 0))) + ' blocked</span>' +
+          '</div>' +
+        '</button>';
+      }).join("");
+    }
+    function loadStageDashboard(opts){
+      var o = (opts && typeof opts === "object") ? opts : {};
+      google.script.run
+        .withSuccessHandler(function(res){
+          var rows = (res && Array.isArray(res.stages)) ? res.stages : [];
+          renderStageDashboard_(rows);
+        })
+        .withFailureHandler(function(err){
+          console.error("[AdminUI] admin_getStageAggregation failure:", err);
+          renderStageDashboard_([]);
+        })
+        .admin_getStageAggregation({ force: o.force ? 1 : 0 });
+    }
+    function toggleStageFilter(stage){
+      var normalized = String(stage || "").trim().toUpperCase();
+      selectedStageFilter = (selectedStageFilter === normalized) ? "" : normalized;
+      renderStageDashboard_(stageDashboardState);
+      search();
+    }
     function loadReviewQueues(opts){
       var o = (opts && typeof opts === "object") ? opts : {};
       var append = o.append === true;
       var force = Number(o.force || 0) === 1;
+      if (!append) loadStageDashboard({ force: force });
       if (!append) {
         resetQueuePagerState_();
         resetQueueDataState_();
@@ -2109,7 +2211,7 @@
           console.error("[AdminUI] admin_searchApplicants failure:", err);
           setMsg("msg","Error: " + (err && err.message ? err.message : err));
         })
-        .admin_searchApplicants({ applicantId, email });
+        .admin_searchApplicants({ applicantId, email, stage: selectedStageFilter });
     }
 
     function review(rowNumber, applicantId, triggerBtn){

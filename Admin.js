@@ -159,8 +159,9 @@ function admin_searchApplicants(payload) {
   payload = payload || {};
   var applicantId = clean_(payload.applicantId || "");
   var email = clean_(payload.email || "").toLowerCase();
+  var stageFilter = clean_(payload.stage || "").toUpperCase();
 
-  if (!applicantId && !email) return { ok: true, rows: [] };
+  if (!applicantId && !email && !stageFilter) return { ok: true, rows: [] };
 
   var sh = openDataSheet_();
   var values = sh.getDataRange().getValues();
@@ -187,8 +188,13 @@ function admin_searchApplicants(payload) {
     var parentEmail = hasParentEmail ? clean_(row[idx.Parent_Email - 1]).toLowerCase() : "";
     var correctedEmail = hasParentEmailCorrected ? clean_(row[idx.Parent_Email_Corrected - 1]).toLowerCase() : "";
     var effectiveEmail = correctedEmail || parentEmail;
-    var match = (applicantId && rid === applicantId) || (email && effectiveEmail === email);
-    if (!match) continue;
+    var textMatch = (!applicantId && !email) || (applicantId && rid === applicantId) || (email && effectiveEmail === email);
+    if (!textMatch) continue;
+    var stageInfo = null;
+    if (stageFilter) {
+      stageInfo = getApplicantStageAndEligibility_(rowObj);
+      if (clean_(stageInfo.stage || "").toUpperCase() !== stageFilter) continue;
+    }
     var statusRow = {
       Birth_ID_Status: idx.Birth_ID_Status ? clean_(row[idx.Birth_ID_Status - 1]) : "",
       Birth_Status: idx.Birth_Status ? clean_(row[idx.Birth_Status - 1]) : "",
@@ -211,7 +217,9 @@ function admin_searchApplicants(payload) {
       paymentVerified: paymentBadge === "Verified" ? "Payment Verified" : (paymentBadge === "Rejected" ? "Payment Rejected" : "Payment Pending"),
       portalAccess: clean_(row[idx.Portal_Access_Status - 1]) || "Open",
       eligibleDocsFollowUp: !!eligibleDocsFollowUp,
-      docsFollowupSentAt: safeStr_(docsFollowupSentAt || "")
+      docsFollowupSentAt: safeStr_(docsFollowupSentAt || ""),
+      stage: stageInfo ? clean_(stageInfo.stage || "") : "",
+      priority: stageInfo ? mapStagePriority_(stageInfo.stage || "") : ""
     });
   }
 
@@ -1927,6 +1935,93 @@ function mergeQueuePageMeta_(queues, offset, limit) {
     hasMore: hasMore,
     nextOffset: hasMore ? nextOffset : ""
   };
+}
+
+function mapStagePriority_(stage) {
+  switch (clean_(stage || "").toUpperCase()) {
+    case "PAYMENT_REQUIRED":
+    case "RECEIPT_AWAITING_VERIFICATION":
+      return "HIGH";
+    case "DOCS_REQUIRED":
+    case "REMINDER_DUE":
+    case "INVITED_AWAITING_RESPONSE":
+      return "NORMAL";
+    default:
+      return "LOW";
+  }
+}
+
+function stageAggregationSortIndex_(stage) {
+  var order = {
+    PAYMENT_REQUIRED: 1,
+    RECEIPT_AWAITING_VERIFICATION: 2,
+    DOCS_REQUIRED: 3,
+    REMINDER_DUE: 4,
+    INVITED_AWAITING_RESPONSE: 5,
+    INVITE_PENDING: 6,
+    PROCESSING: 7,
+    COMPLETE: 8,
+    UNKNOWN: 99
+  };
+  var normalized = clean_(stage || "").toUpperCase();
+  return Object.prototype.hasOwnProperty.call(order, normalized) ? order[normalized] : 99;
+}
+
+function getStageAggregationCacheKey_(adminEmail) {
+  return "ADMIN_STAGE_AGG::" + clean_(adminEmail || "").toLowerCase();
+}
+
+function admin_getStageAggregation(payload) {
+  var adminEmail = getActiveUserEmail_();
+  if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+  var p = payload && typeof payload === "object" ? payload : {};
+  var force = p.force === 1 || p.force === true;
+  var cache = CacheService.getUserCache();
+  var cacheKey = getStageAggregationCacheKey_(adminEmail);
+  if (!force) {
+    try {
+      var cached = cache.get(cacheKey);
+      if (cached) return JSON.parse(cached);
+    } catch (_cacheReadErr) {}
+  }
+
+  var sh = openDataSheet_();
+  var values = sh.getDataRange().getValues();
+  var out = { ok: true, stages: [] };
+  if (!values || values.length < 2) return out;
+
+  var headers = values[0];
+  var summary = {};
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r] || [];
+    var rowObj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var h = clean_(headers[c]);
+      if (h) rowObj[h] = row[c];
+    }
+    if (!clean_(rowObj.ApplicantID || "")) continue;
+    var derived = getApplicantStageAndEligibility_(rowObj);
+    var stage = clean_(derived.stage || "UNKNOWN").toUpperCase() || "UNKNOWN";
+    var priority = mapStagePriority_(stage);
+    if (!summary[stage]) {
+      summary[stage] = {
+        stage: stage,
+        priority: priority,
+        total: 0,
+        actionable: 0,
+        blocked: 0
+      };
+    }
+    summary[stage].total++;
+    if (derived.canSendNow) summary[stage].actionable++;
+    else summary[stage].blocked++;
+  }
+
+  out.stages = Object.keys(summary).map(function (key) { return summary[key]; }).sort(function (a, b) {
+    return stageAggregationSortIndex_(a.stage) - stageAggregationSortIndex_(b.stage);
+  });
+  try { cache.put(cacheKey, JSON.stringify(out), 120); } catch (_cacheWriteErr) {}
+  return out;
 }
 
 function admin_getReviewQueues(payload) {
