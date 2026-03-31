@@ -711,6 +711,8 @@
       hasMore: false,
       nextOffset: 0
     };
+    let stageDashboardState = [];
+    let selectedStageFilter = "";
     let currentRowNumber = null;
     let currentDetail = null;
     let modalState = {
@@ -948,8 +950,10 @@
       });
       box.className = "box";
       box.style.marginTop = "10px";
-      box.style.background = "#f8fbff";
-      box.style.borderColor = "#d7e6ff";
+      box.style.background = "rgba(18, 32, 54, .92)";
+      box.style.borderColor = "rgba(147, 197, 253, .36)";
+      box.style.color = "#edf6ff";
+      box.style.boxShadow = "inset 0 0 0 1px rgba(147, 197, 253, .08)";
       box.innerHTML = parts.join("");
     }
     function requestCommunicationsDerived_(detail){
@@ -3086,13 +3090,15 @@
         fetchRuntimeInfo_();
         initQueuePanelEvents_();
         bindDocsFollowupControls_();
+        loadStageDashboard();
         loadReviewQueues();
       });
     } else {
       fetchRuntimeInfo_();
       initQueuePanelEvents_();
       bindDocsFollowupControls_();
-      loadReviewQueues();
+        loadStageDashboard();
+        loadReviewQueues();
     }
     setActionButtonsEnabled(false);
     var resultsBody = document.getElementById("tbody");
