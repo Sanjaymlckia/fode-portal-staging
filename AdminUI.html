@@ -530,6 +530,7 @@
           <div class="box"><div class="k">Last Contact Subject</div><div class="v" id="commLastContactSubject">&mdash;</div></div>
           <div class="box"><div class="k">Last Contact Result</div><div class="v" id="commLastContactResult">&mdash;</div></div>
         </div>
+        <div id="commDerivedMeta" class="box hidden" style="margin-top:10px;background:#f8fbff;border-color:#d7e6ff;"></div>
         <div class="commControls">
           <div class="field" style="max-width:260px;">
             <label>Message Type</label>
@@ -703,6 +704,7 @@
       result: null,
       busy: false
     };
+    let commDerivedRequestId = 0;
     // Session-only fallback for "Sent" state when no persistent sent field is present in payload.
     let docsFollowupSentRows = new Set();
     let lastBackfillMode = "dry";
@@ -888,6 +890,65 @@
       if (commPortalSubmittedActive_(d)) return "Portal already submitted for this applicant.";
       return "";
     }
+    function renderCommunicationsDerived_(detail){
+      var box = document.getElementById("commDerivedMeta");
+      if (!box) return;
+      var d = detail || currentDetail || {};
+      var rows = [];
+      if (d.Comm_Stage) rows.push({ label: "Stage", value: d.Comm_Stage });
+      if (d.Comm_Status) rows.push({ label: "Comm Status", value: d.Comm_Status });
+      if (d.Comm_Can_Send_Now === true || d.Comm_Can_Send_Now === false) rows.push({ label: "Can Send Now", value: d.Comm_Can_Send_Now ? "YES" : "NO" });
+      if (d.Comm_Block_Code) rows.push({ label: "Code", value: d.Comm_Block_Code });
+      if (d.Comm_Block_Reason) rows.push({ label: "Reason", value: d.Comm_Block_Reason });
+      if (d.Comm_Recommended_Message_Type) rows.push({ label: "Recommended Message", value: d.Comm_Recommended_Message_Type });
+      if (d.Comm_Awaiting_Response === true || d.Comm_Awaiting_Response === false) rows.push({ label: "Awaiting Response", value: d.Comm_Awaiting_Response ? "YES" : "NO" });
+      if (!rows.length) {
+        box.className = "box hidden";
+        box.innerHTML = "";
+        return;
+      }
+      var parts = ['<div style="font-weight:800;margin-bottom:6px;">Lifecycle & Eligibility</div>'];
+      rows.forEach(function(row){
+        parts.push('<div style="margin-top:4px;"><strong>' + esc(row.label) + ':</strong> ' + esc(row.value) + '</div>');
+      });
+      box.className = "box";
+      box.style.marginTop = "10px";
+      box.style.background = "#f8fbff";
+      box.style.borderColor = "#d7e6ff";
+      box.innerHTML = parts.join("");
+    }
+    function requestCommunicationsDerived_(detail){
+      var d = detail || currentDetail || {};
+      var applicantId = String((d && d.ApplicantID) || "").trim();
+      var rowNumber = Number((d && d._rowNumber) || currentRowNumber || 0) || 0;
+      if (!applicantId && !rowNumber) {
+        renderCommunicationsDerived_(d);
+        return;
+      }
+      var reqId = ++commDerivedRequestId;
+      google.script.run
+        .withSuccessHandler(function(res){
+          if (reqId !== commDerivedRequestId) return;
+          if (!res || res.ok !== true || !currentDetail) return;
+          var currentId = String((currentDetail && currentDetail.ApplicantID) || "").trim();
+          var responseId = String((res && res.applicantId) || applicantId || "").trim();
+          if (currentId && responseId && currentId !== responseId) return;
+          currentDetail.Comm_Stage = String(res.Comm_Stage || "");
+          currentDetail.Comm_Status = String(res.Comm_Status || "");
+          currentDetail.Comm_Can_Send_Now = res.Comm_Can_Send_Now === true;
+          currentDetail.Comm_Block_Code = String(res.Comm_Block_Code || "");
+          currentDetail.Comm_Block_Reason = String(res.Comm_Block_Reason || "");
+          currentDetail.Comm_Recommended_Message_Type = String(res.Comm_Recommended_Message_Type || "");
+          currentDetail.Comm_Awaiting_Response = res.Comm_Awaiting_Response === true;
+          renderCommunicationsDerived_(currentDetail);
+          updateCommunicationsUi_();
+        })
+        .withFailureHandler(function(){
+          if (reqId !== commDerivedRequestId) return;
+          renderCommunicationsDerived_(d);
+        })
+        .admin_getApplicantCommDerived_json({ applicantId: applicantId, rowNumber: rowNumber });
+    }
     function renderCommunicationsStatus_(detail){
       var d = detail || currentDetail || {};
       var map = {
@@ -904,6 +965,7 @@
         var el = document.getElementById(id);
         if (el) el.textContent = formatCommValue_(map[id]);
       });
+      renderCommunicationsDerived_(d);
     }
     function renderCommunicationsResult_(result){
       var box = document.getElementById("commResult");
@@ -1013,6 +1075,7 @@
           if (detail) {
             currentDetail = detail;
             renderCommunicationsStatus_(detail);
+            requestCommunicationsDerived_(detail);
           }
           if (typeof done === "function") done(detail || null);
         })
@@ -2328,6 +2391,7 @@
         setSelectedCommMessageType_(communicationsState.selectedMessageType || "legacy_invite");
       }
       renderCommunicationsStatus_(d);
+      requestCommunicationsDerived_(d);
       renderCommunicationsResult_(incomingApplicantId !== previousApplicantId ? null : communicationsState.result);
       updateCommunicationsUi_();
       var commTypeEl = document.getElementById("commMessageType");

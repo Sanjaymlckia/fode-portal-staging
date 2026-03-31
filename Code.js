@@ -5913,6 +5913,139 @@ function hasPriorSuccessfulMessageSend_(context) {
   return emailStatus === "SENT" && lastType === messageType && (!!lastContactedAt || lastResult === "SENT");
 }
 
+function communicationRecommendedMessageTypeForStage_(stage) {
+  var normalized = clean_(stage || "").toUpperCase();
+  if (normalized === "INVITE_PENDING") return "legacy_invite";
+  if (normalized === "INVITED_AWAITING_RESPONSE") return "reminder";
+  if (normalized === "REMINDER_DUE") return "reminder";
+  if (normalized === "DOCS_REQUIRED") return "reminder";
+  if (normalized === "PAYMENT_REQUIRED") return "reminder";
+  if (normalized === "RECEIPT_AWAITING_VERIFICATION") return "reminder";
+  return "";
+}
+
+function communicationOverlayStatusFromCode_(code) {
+  var normalized = clean_(code || "").toUpperCase();
+  if (normalized === "INVALID_EMAIL") return "INVALID_EMAIL";
+  if (normalized === "BOUNCED") return "BOUNCED";
+  if (normalized === "DO_NOT_CONTACT") return "DO_NOT_CONTACT";
+  if (normalized === "COOLDOWN" || normalized === "COOLDOWN_ACTIVE") return "COOLDOWN";
+  if (normalized === "PORTAL_SUBMITTED" || normalized === "PORTAL_ALREADY_SUBMITTED") return "PORTAL_SUBMITTED";
+  if (normalized === "RESPONDED") return "RESPONDED";
+  if (normalized === "MISSING_PORTAL_SECRET" || normalized === "NO_PORTAL_SECRET") return "NO_PORTAL_SECRET";
+  return "NOT_STAGE_MESSAGE_MATCH";
+}
+
+function getApplicantStageAndEligibility_(rowObj) {
+  var row = rowObj || {};
+  var applicantId = clean_(row.ApplicantID || "");
+  var emailStatus = normalizeEmailStatus_(row.Email_Status || "");
+  var effectiveEmail = clean_(getCampaignEffectiveEmail_(row));
+  var portalSubmittedActive = isCampaignPortalSubmittedActive_(row);
+  var bounceFlag = isCampaignBounceFlagTrue_(row.Email_Bounce_Flag);
+  var docsVerified = computeDocVerificationStatus_(row) === "Verified" || clean_(row.Docs_Verified || "") === "Yes";
+  var paymentVerified = derivePaymentBadge_(row) === "Verified" || clean_(row.Payment_Verified || "") === "Yes";
+  var paymentBadge = derivePaymentBadge_(row);
+  var receiptStatus = clean_(row.Receipt_Status || "");
+  var receiptEvidencePresent = !!receiptStatus || !!clean_(row.Fee_Receipt_File || "");
+  var attemptCount = campaignAttemptCount_(row);
+  var nextActionTs = parseTime_(row.Email_Next_Action_Date || "");
+  var now = new Date();
+  var todayTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var keys = typeof resolveDocStatusKeys_ === 'function' ? resolveDocStatusKeys_(row) : {};
+  var docSignals = [keys.birth, keys.report, keys.photo, keys.transfer].filter(Boolean).some(function (key) {
+    return !!clean_(row[key] || "");
+  });
+  var docStage = computeDocVerificationStatus_(row);
+  var reminderDue = emailStatus === "SENT"
+    && !portalSubmittedActive
+    && !bounceFlag
+    && attemptCount >= 1
+    && attemptCount < 3
+    && nextActionTs > 0
+    && nextActionTs <= todayTs;
+  var stage = "INVITE_PENDING";
+
+  if (paymentVerified) stage = "COMPLETE";
+  else if (portalSubmittedActive || emailStatus === "RESPONDED") stage = "PROCESSING";
+  else if (docsVerified && !paymentVerified && paymentBadge !== "Verified" && receiptEvidencePresent) stage = "RECEIPT_AWAITING_VERIFICATION";
+  else if (docsVerified && !paymentVerified) stage = "PAYMENT_REQUIRED";
+  else if (!docsVerified && (docSignals || docStage === "Rejected")) stage = "DOCS_REQUIRED";
+  else if (reminderDue) stage = "REMINDER_DUE";
+  else if (emailStatus === "SENT") stage = "INVITED_AWAITING_RESPONSE";
+
+  var recommendedMessageType = communicationRecommendedMessageTypeForStage_(stage);
+  var awaitingResponse = ["INVITED_AWAITING_RESPONSE", "REMINDER_DUE", "DOCS_REQUIRED", "PAYMENT_REQUIRED", "RECEIPT_AWAITING_VERIFICATION"].indexOf(stage) >= 0;
+  var commStatus = "ACTIONABLE";
+  var canSendNow = false;
+  var blockCode = "";
+  var blockReason = "";
+
+  if (!effectiveEmail) {
+    commStatus = "INVALID_EMAIL";
+    blockCode = "INVALID_EMAIL";
+    blockReason = "Applicant does not have a valid email address.";
+  } else if (!isValidEffectiveEmail_(effectiveEmail)) {
+    commStatus = "INVALID_EMAIL";
+    blockCode = "INVALID_EMAIL";
+    blockReason = "Applicant does not have a valid email address.";
+  } else if (bounceFlag) {
+    commStatus = "BOUNCED";
+    blockCode = "BOUNCED";
+    blockReason = communicationBlockReason_("BOUNCED", recommendedMessageType || stage);
+  } else if (emailStatus === "DO_NOT_CONTACT") {
+    commStatus = "DO_NOT_CONTACT";
+    blockCode = "DO_NOT_CONTACT";
+    blockReason = communicationBlockReason_("DO_NOT_CONTACT", recommendedMessageType || stage);
+  } else if (portalSubmittedActive) {
+    commStatus = "PORTAL_SUBMITTED";
+    blockCode = "PORTAL_SUBMITTED";
+    blockReason = communicationBlockReason_("PORTAL_ALREADY_SUBMITTED", recommendedMessageType || stage);
+  } else if (emailStatus === "RESPONDED") {
+    commStatus = "RESPONDED";
+    blockCode = "RESPONDED";
+    blockReason = "Applicant is already under active processing.";
+  } else if (stage === "INVITED_AWAITING_RESPONSE") {
+    commStatus = "COOLDOWN";
+    blockCode = "COOLDOWN";
+    blockReason = "A follow-up reminder is not due yet.";
+  } else if (!recommendedMessageType) {
+    commStatus = "NOT_STAGE_MESSAGE_MATCH";
+    blockCode = "NOT_STAGE_MESSAGE_MATCH";
+    blockReason = "No communication is recommended for the current lifecycle stage.";
+  } else if (!applicantId) {
+    commStatus = "NOT_STAGE_MESSAGE_MATCH";
+    blockCode = "MISSING_APPLICANT_ID";
+    blockReason = "Applicant ID is required.";
+  } else {
+    var actorEmail = typeof getCallerEmail_ === 'function' ? clean_(getCallerEmail_() || "") : "";
+    var actorRole = actorEmail && typeof getAdminRole_ === 'function' ? clean_(getAdminRole_(actorEmail) || "") : "";
+    var resolved = resolveApplicantMessageContext_(applicantId, recommendedMessageType, {
+      action: "preview",
+      actorEmail: actorEmail,
+      actorRole: actorRole
+    });
+    if (resolved && resolved.eligible) {
+      commStatus = "ACTIONABLE";
+      canSendNow = true;
+    } else {
+      blockCode = clean_(resolved && resolved.blockCode || "");
+      blockReason = clean_(resolved && resolved.blockReason || "");
+      commStatus = communicationOverlayStatusFromCode_(blockCode);
+    }
+  }
+
+  return {
+    stage: stage,
+    commStatus: commStatus,
+    canSendNow: !!canSendNow,
+    blockCode: blockCode,
+    blockReason: blockReason,
+    recommendedMessageType: recommendedMessageType,
+    awaitingResponse: !!awaitingResponse
+  };
+}
+
 function recordApplicantContactOutcome_(context, outcome, extra) {
   var ctx = context || {};
   var more = extra && typeof extra === "object" ? extra : {};
@@ -6049,6 +6182,30 @@ function dispatchApplicantMessage_(context, builtMessage, opts) {
     debugId: clean_(ctx.debugId || options.debugId || newDebugId_()),
     blockCode: "",
     blockReason: ""
+  };
+}
+
+function admin_getApplicantCommDerived_json(payload) {
+  var p = payload && typeof payload === "object" ? payload : {};
+  var adminEmail = typeof getActiveUserEmail_ === 'function' ? clean_(getActiveUserEmail_() || "") : clean_((typeof getCallerEmail_ === 'function' ? getCallerEmail_() : "") || "");
+  if (typeof isAdmin_ === 'function' && !isAdmin_(adminEmail)) throw new Error("Access denied");
+  var applicantId = clean_(p.applicantId || "");
+  var rowNumber = Number(p.rowNumber || 0);
+  var sheet = mustGetDataSheet_(getWorkingSpreadsheet_());
+  if (!rowNumber && applicantId) rowNumber = findRowByApplicantId_(sheet, applicantId);
+  if (!rowNumber) return { ok: false, error: "Applicant not found.", applicantId: applicantId };
+  var rowObj = getRowObject_(sheet, rowNumber);
+  var derived = getApplicantStageAndEligibility_(rowObj);
+  return {
+    ok: true,
+    applicantId: clean_(rowObj.ApplicantID || applicantId || ""),
+    Comm_Stage: clean_(derived.stage || ""),
+    Comm_Status: clean_(derived.commStatus || ""),
+    Comm_Can_Send_Now: derived.canSendNow === true,
+    Comm_Block_Code: clean_(derived.blockCode || ""),
+    Comm_Block_Reason: clean_(derived.blockReason || ""),
+    Comm_Recommended_Message_Type: clean_(derived.recommendedMessageType || ""),
+    Comm_Awaiting_Response: derived.awaitingResponse === true
   };
 }
 
