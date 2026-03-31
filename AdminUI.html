@@ -944,16 +944,16 @@
         box.innerHTML = "";
         return;
       }
-      var parts = ['<div style="font-weight:800;margin-bottom:6px;">Lifecycle & Eligibility</div>'];
+      var parts = ['<div style="font-weight:800;margin-bottom:6px;color:#f4f9ff;">Lifecycle & Eligibility</div>'];
       rows.forEach(function(row){
-        parts.push('<div style="margin-top:4px;"><strong>' + esc(row.label) + ':</strong> ' + (row.html || esc(row.value)) + '</div>');
+        parts.push('<div style="margin-top:4px;"><span style="color:#b9cbe0;">' + esc(row.label) + ':</span> <span style="color:#f4f9ff;">' + (row.html || esc(row.value)) + '</span></div>');
       });
       box.className = "box";
       box.style.marginTop = "10px";
-      box.style.background = "rgba(18, 32, 54, .92)";
-      box.style.borderColor = "rgba(147, 197, 253, .36)";
-      box.style.color = "#edf6ff";
-      box.style.boxShadow = "inset 0 0 0 1px rgba(147, 197, 253, .08)";
+      box.style.background = "rgba(8, 18, 32, .96)";
+      box.style.borderColor = "rgba(148, 163, 184, .34)";
+      box.style.color = "#f4f9ff";
+      box.style.boxShadow = "inset 0 0 0 1px rgba(148, 163, 184, .10)";
       box.innerHTML = parts.join("");
     }
     function requestCommunicationsDerived_(detail){
