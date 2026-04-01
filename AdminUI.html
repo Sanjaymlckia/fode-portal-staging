@@ -2583,10 +2583,12 @@
 
     var isPortal = /(?:\?|&)view=portal(?:&|$)/.test(qs);
 
-    var adminBase = "https://script.google.com/macros/s/AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp/exec";
-    var studentBase = "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec";
+    var adminBase = window.WEBAPP_URL_ADMIN || "";
+    var studentBase = window.WEBAPP_URL_STUDENT_EXEC || window.WEBAPP_URL_STUDENT || "";
+    if (!adminBase && !studentBase) return;
 
     var target = (isPortal ? studentBase : adminBase) + qs;
+    if (!target || target === qs) return;
 
     // Clean redirect (no history pollution)
     window.location.replace(target);

@@ -7,10 +7,10 @@
  */
 var CONFIG = {
   // Versioning (change control)
-  VERSION: "2026-03-04-PNG-STAGING-r173",
-  CHANGELOG_LAST: "r173: remove invalid HtmlOutput meta tags from redirect",
-  DEPLOY_VERSION_NUMBER: 173,
-  BUILD_LABEL: "CIS-32 runtime diag + upload timing + canonical student URL + 5MB upload safeguards",
+  VERSION: "2026-04-01-PNG-STAGING-r250C3",
+  CHANGELOG_LAST: "r250C3: align admin config and remove hardcoded canonical fallback",
+  DEPLOY_VERSION_NUMBER: 250,
+  BUILD_LABEL: "r250C3 config alignment and canonical URL fix",
 
   // STAGING/PROD data mode routing (working sheet)
   DATA_MODE: "STAGING", // "STAGING" | "PROD"
@@ -66,12 +66,12 @@ var CONFIG = {
   // - WEBAPP_URL_ADMIN: admin deployment (/exec), executeAs=USER_ACCESSING, access=DOMAIN
   // - WEBAPP_URL_STUDENT: student deployment (/exec), executeAs=ME, access=ANYONE/ANYONE_ANONYMOUS
   // WEBAPP_URL is kept for backward compatibility and mirrors WEBAPP_URL_ADMIN.
-  WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbwUaqGym6dZSfqltKuI3sX4V31ijl9AOy9bDTPMzqmDToZVjMZc-xezclftg1EIJ8Tx/exec",
-  WEBAPP_URL: "https://script.google.com/macros/s/AKfycbwUaqGym6dZSfqltKuI3sX4V31ijl9AOy9bDTPMzqmDToZVjMZc-xezclftg1EIJ8Tx/exec",
+  WEBAPP_URL_ADMIN: "https://script.google.com/macros/s/AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp/exec",
+  WEBAPP_URL: "https://script.google.com/macros/s/AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp/exec",
   WEBAPP_URL_STUDENT: "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec",
   WEBAPP_URL_STUDENT_EXEC: "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec",
   SCRIPT_ID: "1NwyKK4NV27SD7WaXlpgn_1cCMJ9ezX0erLjvMBB6DDGq9VDt12y5qtcK",
-  DEPLOYMENT_ID_ADMIN: "AKfycbwUaqGym6dZSfqltKuI3sX4V31ijl9AOy9bDTPMzqmDToZVjMZc-xezclftg1EIJ8Tx",
+  DEPLOYMENT_ID_ADMIN: "AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp",
   DEPLOYMENT_ID_STUDENT: "AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g",
   ZOHO_API_BASE: "https://www.zohoapis.com/crm/v2",
   ZOHO_OAUTH_BASE: "https://accounts.zoho.com/oauth/v2",
