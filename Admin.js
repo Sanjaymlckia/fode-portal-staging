@@ -2913,7 +2913,15 @@ function admin_campaignProcessBounces(payload) {
   return withEnvelope_("admin_campaignProcessBounces", function () {
     var adminEmail = getActiveUserEmail_();
     if (!isAdmin_(adminEmail)) throw new Error("Access denied");
-    return campaign_processBounces_();
+    return admin_scanBounces_();
+  });
+}
+
+function admin_runBounceScan(payload) {
+  return withEnvelope_("admin_runBounceScan", function () {
+    var adminEmail = getActiveUserEmail_();
+    if (!isAdmin_(adminEmail)) throw new Error("Access denied");
+    return admin_scanBounces_();
   });
 }
 

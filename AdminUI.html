@@ -485,6 +485,7 @@
         </div>
         <button class="btn accent" onclick="search()">Search</button>
         <button class="btn" onclick="clearSearch()">Clear</button>
+        <button id="btnScanBounces" class="btn small" type="button" onclick="runBounceScanUi_()">Scan Bounces</button>
       </div>
       <div id="msg" class="muted" style="margin-top:10px;"></div>
     </div>
@@ -770,6 +771,7 @@
     let selectedDocsRowNumbers = {};
     let lastDocsSendAttemptByApplicantId = {};
     let isDocsSendBusy = false;
+    let isBounceScanBusy = false;
     let currentPortalLinkInfo = null;
     let runtimeInfoCache = null;
     let communicationsState = {
@@ -792,6 +794,40 @@
         return;
       }
       el.textContent = txt || "";
+    }
+    function setBounceScanBusy_(busy){
+      isBounceScanBusy = !!busy;
+      var btn = document.getElementById("btnScanBounces");
+      if (!btn) return;
+      btn.disabled = !!busy;
+      btn.textContent = busy ? "Scanning..." : "Scan Bounces";
+    }
+    function runBounceScanUi_(){
+      if (isBounceScanBusy) return;
+      setBounceScanBusy_(true);
+      setMsg("msg", "Scanning Gmail bounces...");
+      google.script.run
+        .withSuccessHandler(function(res){
+          setBounceScanBusy_(false);
+          var data = (res && typeof res === "object") ? res : {};
+          var summary = "Bounce scan complete: scanned=" + String(Number(data.scanned || 0))
+            + " | matched=" + String(Number(data.matched || 0))
+            + " | updated=" + String(Number(data.updated || 0));
+          setMsg("msg", summary);
+          setMsg("mMsg", summary);
+          if (String(document.getElementById("qApplicantId").value || "").trim()
+            || String(document.getElementById("qEmail").value || "").trim()
+            || (lastSearchResults && lastSearchResults.length)) {
+            search();
+          }
+        })
+        .withFailureHandler(function(err){
+          setBounceScanBusy_(false);
+          var msg = err && err.message ? err.message : err;
+          setMsg("msg", "Bounce scan error: " + msg);
+          setMsg("mMsg", "Bounce scan error: " + msg);
+        })
+        .admin_runBounceScan();
     }
     function resetModalState_(){
       modalState = {
