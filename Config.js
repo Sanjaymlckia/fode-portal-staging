@@ -279,14 +279,14 @@ BUILD_LABEL: "r244D main portal PROD sheet alignment + runtime identity sync",
   DOC_FIELDS: [
     { label: "Birth Certificate / NID / Passport", file: "Birth_ID_Passport_File", status: "Birth_ID_Status", comment: "Birth_ID_Comment", required: true, multiple: false },
     { label: "Latest School Reports / Documents", file: "Latest_School_Report_File", status: "Report_Status", comment: "Report_Comment", required: true, multiple: true },
-    { label: "Transfer Certificate (optional)", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: false, multiple: false },
+    { label: "Transfer Certificate", file: "Transfer_Certificate_File", status: "Transfer_Status", comment: "Transfer_Comment", required: true, multiple: false },
     { label: "Passport Size Colour Photo", file: "Passport_Photo_File", status: "Photo_Status", comment: "Photo_Comment", required: true, multiple: false },
-    { label: "Admission Fee Payment Receipt", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: true, multiple: false }
+    { label: "Admission Fee Payment Receipt (optional)", file: "Fee_Receipt_File", status: "Receipt_Status", comment: "Receipt_Comment", required: false, multiple: false }
   ],
 
 
   // Optional: list of doc fields that are NOT required for Docs_Verified
-  OPTIONAL_DOC_FIELDS: ["Transfer_Certificate_File"]
+  OPTIONAL_DOC_FIELDS: ["Fee_Receipt_File"]
 };
 
 

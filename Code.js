@@ -762,9 +762,11 @@ function portalValidationMessageForCode_(code) {
   var key = clean_(code || "");
   if (key === "DOB_REQUIRED") return "Date of Birth is required.";
   if (key === "DOB_INVALID") return "Enter a valid Date of Birth.";
+  if (key === "EXAM_SITE_REQUIRED") return "Exam Centre is required.";
   if (key === "SUBJECTS_REQUIRED") return "Select at least one subject.";
   if (key === "SUBJECTS_INVALID_FOR_GRADE") return "Selected subjects are not valid for the chosen grade.";
   if (key === "SUBJECT_LOCK_DOCS_VERIFIED") return "Subjects are locked because documents have been verified by Admin.";
+  if (key === "REQUIRED_DOC_MISSING") return "Upload all required documents before submitting.";
   return "Please correct the highlighted fields before submitting.";
 }
 
@@ -779,7 +781,7 @@ function sanitizePortalUpdateValue_(field, value) {
     return { raw: raw, sanitized: iso, omit: false, typed: true };
   }
   if (field === "Physical_Exam_Site") {
-    if (!cleaned) return { raw: raw, sanitized: "", omit: true, typed: true };
+    if (!cleaned) return { raw: raw, sanitized: "", omit: false, blank: true, typed: true };
     return { raw: raw, sanitized: cleaned, omit: false, typed: true };
   }
   if (!cleaned) return { raw: raw, sanitized: "", omit: true };
@@ -1013,9 +1015,29 @@ function handlePortalUpdate_(ss, dataSheet, logSheet, payload, postParams, debug
     addValidationError("Date_Of_Birth", found.record.Date_Of_Birth, "", "DOB_REQUIRED", "effective_blank_on_submit");
   }
 
+  var storedExamSite = clean_(found.record.Physical_Exam_Site || "");
   if (hasOwn_(sourceFields, "Physical_Exam_Site")) {
     var examSanitized = sanitizePortalUpdateValue_("Physical_Exam_Site", sourceFields.Physical_Exam_Site);
-    if (!examSanitized.omit) includeUpdate("Physical_Exam_Site", sourceFields.Physical_Exam_Site, examSanitized.sanitized);
+    if (examSanitized.blank) {
+      addValidationError("Physical_Exam_Site", sourceFields.Physical_Exam_Site, "", "EXAM_SITE_REQUIRED", "submitted_blank");
+    } else if (!examSanitized.omit) {
+      includeUpdate("Physical_Exam_Site", sourceFields.Physical_Exam_Site, examSanitized.sanitized);
+    }
+  } else if (!storedExamSite) {
+    addValidationError("Physical_Exam_Site", found.record.Physical_Exam_Site, "", "EXAM_SITE_REQUIRED", "effective_blank_on_submit");
+  }
+
+  var requiredPortalDocFields = (CONFIG.DOC_FIELDS || []).filter(function(doc) {
+    return !!doc && doc.required !== false && !!clean_(doc.file || "");
+  }).map(function(doc) {
+    return clean_(doc.file || "");
+  });
+  for (var rd = 0; rd < requiredPortalDocFields.length; rd++) {
+    var requiredField = requiredPortalDocFields[rd];
+    var effectiveDocValue = hasOwn_(validatedUpdates, requiredField) ? validatedUpdates[requiredField] : found.record[requiredField];
+    if (normalizeToUrlList_(effectiveDocValue, requiredField).length === 0) {
+      addValidationError(requiredField, effectiveDocValue, "", "REQUIRED_DOC_MISSING", "effective_missing_on_submit");
+    }
   }
 
   var storedSubjectsCsv = normalizePortalSubjectsCsv_(clean_(found.record.Subjects_Selected_Canonical || "") || subjectsToCsv_(found.record.Subjects_Selected || ""));
@@ -2008,7 +2030,7 @@ function renderPortalHtml_(opts) {
     + "</div>"
 
     + '<div style="margin:12px 0;">'
-    + "<label><b>Physical Exam Site (optional):</b></label><br/>"
+    + "<label><b>Exam Centre <span style=\"color:#b30000;\">*</span></b></label><br/>"
     + '<select name="Physical_Exam_Site" style="' + examInputStyle + '" ' + dis + ">"
     + '<option value="">-- Select Exam Site --</option>'
     + examOptions
@@ -3850,7 +3872,7 @@ function normalizeOverallDocValue_(v) {
 function computeDocVerificationStatus_(row) {
   row = row || {};
   var keys = resolveDocStatusKeys_(row);
-  var requiredDocs = [keys.birth, keys.report, keys.photo];
+  var requiredDocs = [keys.birth, keys.report, keys.transfer, keys.photo];
   var hasRejected = false;
   var allVerified = true;
   for (var i = 0; i < requiredDocs.length; i++) {
@@ -5741,17 +5763,39 @@ function buildReminderEmailBody_(context) {
   return [
     "Dear Parent/Guardian,",
     "",
-    "This is a reminder that your FODE KIA online application is still pending completion.",
+    "Thank you for starting your FODE application with Kundu International Academy.",
     "",
-    "Please review and complete your application using the secure portal link below:",
+    "Your application is not yet complete. To move forward, please return to your portal and complete ALL required steps.",
     "",
+    "What you must complete:",
+    "",
+    "1. Enter the student’s Date of Birth (required)",
+    "",
+    "2. Select the Exam Centre (required)",
+    "",
+    "3. Upload the following documents:",
+    "",
+    "   * Birth Certificate / NID / Passport (required)",
+    "   * Latest School Report (required)",
+    "   * Transfer Certificate (required)",
+    "   * Passport Photo (required)",
+    "   * Fee Receipt (optional, if payment already made)",
+    "",
+    "Access your application here:",
     String(context.portalUrl || ""),
     "",
-    "Applicant ID: " + String(context.applicantId || ""),
+    "Please ensure all required fields and documents are completed before final submission.",
     "",
-    "If you need assistance, contact FODE Admissions at fode@kundu.ac or WhatsApp +675 7860 4013.",
+    "If you have already completed your application, you may ignore this message.",
     "",
-    "FODE Admissions",
+    "Need help?",
+    "Email: fode@kundu.ac",
+    "WhatsApp: +675 7860 4013",
+    "",
+    "We look forward to supporting your child’s education journey.",
+    "",
+    "Kind regards,",
+    "FODE Admissions Team",
     "Kundu International Academy"
   ].join("\n");
 }
@@ -6062,7 +6106,7 @@ function buildApplicantMessage_(context) {
   if (type === "reminder") {
     return {
       ok: true,
-      subject: "Reminder: Complete Your FODE KIA Online Application",
+      subject: "Reminder: Complete Your FODE KIA Application",
       body: buildReminderEmailBody_(ctx)
     };
   }
