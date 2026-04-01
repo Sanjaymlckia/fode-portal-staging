@@ -2572,5 +2572,25 @@
       updateQueueLoadMoreUi_(false);
     }
   </script>
+  <script>
+  (function () {
+    var path = window.location.pathname || "";
+
+    // Only act on Workspace domain rewrite
+    if (!path.startsWith("/a/")) return;
+
+    var qs = window.location.search || "";
+
+    var isPortal = /(?:\?|&)view=portal(?:&|$)/.test(qs);
+
+    var adminBase = "https://script.google.com/macros/s/AKfycbwLz4rLrVzk-NriJAovTbifpg8YpQguFJiY-l02qkRrahH1ayX_2qBh3bk_rc8dVnPp/exec";
+    var studentBase = "https://script.google.com/macros/s/AKfycbx2ve4bfCEofF_pJnra-UR02BaoumJaUeDS19Amftm2con2e7ggblMfHRzcn6fYAC4g/exec";
+
+    var target = (isPortal ? studentBase : adminBase) + qs;
+
+    // Clean redirect (no history pollution)
+    window.location.replace(target);
+  })();
+  </script>
 </body>
 </html>
